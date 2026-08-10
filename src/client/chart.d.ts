@@ -1,9 +1,12 @@
 interface ChartDatasetConfig {
-  label: string;
+  label?: string;
   data: (number | null)[];
   backgroundColor?: string | string[];
-  borderColor?: string;
+  borderColor?: string | string[];
+  borderWidth?: number;
   fill?: boolean | "origin";
+  tension?: number;
+  cutout?: string | number;
 }
 
 interface ChartData {
@@ -14,6 +17,7 @@ interface ChartData {
 interface ChartOptions {
   responsive?: boolean;
   maintainAspectRatio?: boolean;
+  indexAxis?: "x" | "y";
   scales?: Record<string, unknown>;
   plugins?: Record<string, unknown>;
 }

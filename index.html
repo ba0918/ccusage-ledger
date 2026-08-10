@@ -7,70 +7,162 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #0f1117;
-        --panel: #1a1d27;
-        --border: #2a2e3d;
-        --text: #e6e8ef;
-        --muted: #9aa0b0;
-        --accent: #6ea8fe;
+        --bg: #0b0e14;
+        --panel: #141824;
+        --panel-2: #1b2030;
+        --border: #262c3d;
+        --text: #e8eaf0;
+        --muted: #8b92a7;
+        --accent: #7aa7ff;
+        --green: #4cd6a0;
+        --amber: #f5b34d;
       }
-      * { box-sizing: border-box; }
+      * { box-sizing: border-box; margin: 0; }
       body {
-        margin: 0;
         background: var(--bg);
         color: var(--text);
         font-family: ui-sans-serif, system-ui, sans-serif;
+        padding-bottom: 48px;
       }
       header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         flex-wrap: wrap;
-        gap: 12px;
-        padding: 16px 24px;
+        gap: 14px;
+        padding: 18px 28px;
+        background: rgba(11, 14, 20, 0.8);
         border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        backdrop-filter: blur(8px);
+        z-index: 10;
       }
-      h1 { font-size: 20px; margin: 0; }
-      .controls { display: flex; gap: 12px; flex-wrap: wrap; }
-      label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+      .brand { display: flex; align-items: center; gap: 10px; }
+      .brand .logo {
+        width: 26px; height: 26px; border-radius: 7px;
+        background: linear-gradient(135deg, #7aa7ff, #4cd6a0);
+        display: grid; place-items: center; font-size: 13px;
+      }
+      h1 { font-size: 16px; font-weight: 650; }
+      .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+      .controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
       select {
-        background: var(--panel);
+        background: var(--panel-2);
         color: var(--text);
         border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 6px 10px;
-        font-size: 14px;
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 13px;
       }
-      main { padding: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-      .chart-card {
+      main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
+      #status { color: var(--muted); font-size: 12px; }
+      #status.error { color: #ff8b8b; }
+
+      .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+      .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+      .kpi .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+      .kpi .value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+      .kpi .sub { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .card {
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 16px;
+        border-radius: 12px;
+        padding: 18px;
         display: flex;
         flex-direction: column;
-        height: 300px;
       }
-      .chart-card h2 { font-size: 15px; margin: 0 0 12px; color: var(--text); }
-      .chart-card.wide { grid-column: 1 / -1; }
-      .chart-card .chart-wrap { flex: 1; min-height: 0; }
-      canvas { width: 100%; height: 100%; }
-      #status { color: var(--muted); font-size: 13px; }
-      #status.error { color: #ff8b8b; }
+      .card.wide { grid-column: 1 / -1; }
+      .card h2 {
+        font-size: 13px; font-weight: 600; margin-bottom: 14px;
+        display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+      }
+      .card h2 .hint { color: var(--muted); font-size: 11px; font-weight: 400; display: flex; align-items: center; }
+      .chart { position: relative; height: 260px; }
+      .card.wide .chart { height: 300px; }
+      canvas { width: 100% !important; height: 100% !important; }
+      .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 10px; }
+      .legend span { display: flex; align-items: center; gap: 5px; }
+      .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+      .seg-toggle { display: flex; gap: 4px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+      .seg-toggle button {
+        background: transparent; border: none; color: var(--muted); font-size: 12px;
+        padding: 4px 12px; border-radius: 6px; cursor: pointer;
+      }
+      .seg-toggle button.active { background: var(--accent); color: #0b0e14; font-weight: 600; }
+
+      .donut-wrap { display: flex; gap: 28px; align-items: center; flex: 1; min-height: 0; flex-wrap: wrap; }
+      .donut { width: 190px; height: 190px; position: relative; flex-shrink: 0; }
+      .donut .donut-center {
+        position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; text-align: center; pointer-events: none;
+      }
+      .donut-center .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .donut-center .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
+      .donut-note { color: var(--muted); font-size: 13px; }
+      .agent-legend { display: flex; flex-direction: column; gap: 10px; font-size: 13px; flex: 1; min-width: 220px; }
+      .agent-legend .row { display: flex; align-items: center; gap: 10px; }
+      .agent-legend .swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+      .agent-legend .name { width: 90px; color: #cbd2e0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .agent-legend .val { margin-left: auto; font-variant-numeric: tabular-nums; color: #cbd2e0; }
+      .agent-legend .pct { width: 52px; text-align: right; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+      .table-card { margin-top: 20px; }
+      .table-head { display: flex; justify-content: space-between; align-items: baseline; padding: 18px 18px 12px; gap: 12px; flex-wrap: wrap; }
+      .table-head h2 { font-size: 13px; font-weight: 600; }
+      .table-head .hint { color: var(--muted); font-size: 11px; }
+      .table-wrap { overflow: auto; max-height: 440px; border-bottom: 1px solid var(--border); }
+      .count-badge { color: var(--muted); font-size: 11px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      thead th {
+        text-align: right; color: var(--muted); font-weight: 500; font-size: 11px;
+        padding: 8px 14px; border-bottom: 1px solid var(--border); white-space: nowrap;
+        position: sticky; top: 0; background: var(--panel); z-index: 1;
+      }
+      thead th:first-child, tbody td:first-child { text-align: left; }
+      tbody td { text-align: right; padding: 7px 14px; border-bottom: 1px solid #1b2030; white-space: nowrap; }
+      td.num { font-variant-numeric: tabular-nums; }
+      .period-row .expand-btn {
+        background: none; border: none; padding: 0; margin-right: 5px; cursor: pointer;
+        color: var(--muted); font-size: inherit; line-height: inherit;
+      }
+      .period-row .expand-btn:hover { color: var(--text); }
+      .period-row .caret { display: inline-block; transition: transform 0.15s; color: inherit; font-size: 10px; }
+      .period-row.open .caret { transform: rotate(90deg); }
+      .agent-row td { border-bottom: none; }
+      .agent-row td:first-child { color: var(--muted); }
+      .agent-row .a-label { color: var(--muted); font-weight: 600; }
+      .agent-row td { padding-top: 5px; padding-bottom: 5px; }
+      .agent-row.last td { padding-bottom: 10px; }
+      .agent-row.hidden { display: none; }
+      .agent-row .models { color: var(--muted); text-align: left; font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+      .agent-row .models b { color: var(--text); font-weight: 500; }
+      .total-row td { border-top: 1px solid var(--border); border-bottom: none; background: var(--panel-2); font-weight: 700; }
+      .empty-row td { text-align: center; color: var(--muted); padding: 24px; }
+
+      @media (max-width: 860px) {
+        .kpis { grid-template-columns: 1fr 1fr; }
+        .grid { grid-template-columns: 1fr; }
+      }
     </style>
   </head>
   <body>
     <header>
-      <h1>ccusage Dashboard</h1>
+      <div class="brand">
+        <div class="logo">◈</div>
+        <h1>ccusage Dashboard</h1>
+      </div>
       <div class="controls">
-        <label title="日別・月別コスト以外の 3 グラフに反映">期間
+        <label title="すべてのグラフの期間粒度を切り替える">期間
           <select id="section">
             <option value="daily">日次</option>
             <option value="monthly">月次</option>
             <option value="yearly">年次</option>
           </select>
         </label>
-        <label title="表示する期間の範囲。日別/月別/年次すべてに反映">表示範囲
+        <label title="表示する期間の範囲。全グラフに適用">表示範囲
           <select id="range">
             <option value="all">全期間</option>
             <option value="90d">直近90日</option>
@@ -88,26 +180,89 @@
       </div>
     </header>
     <main>
-      <div class="chart-card">
-        <h2>日別コスト積み上げ（モデル別）</h2>
-        <div class="chart-wrap"><canvas id="chart-daily-cost"></canvas></div>
-      </div>
-      <div class="chart-card">
-        <h2>月別コスト</h2>
-        <div class="chart-wrap"><canvas id="chart-monthly-cost"></canvas></div>
-      </div>
-      <div class="chart-card">
-        <h2>モデル構成比率トレンド</h2>
-        <div class="chart-wrap"><canvas id="chart-model-mix"></canvas></div>
-      </div>
-      <div class="chart-card">
-        <h2>単価推移（$/MTok）</h2>
-        <div class="chart-wrap"><canvas id="chart-unit-price"></canvas></div>
-      </div>
-      <div class="chart-card wide">
-        <h2>キャッシュヒット率推移</h2>
-        <div class="chart-wrap"><canvas id="chart-cache-hit"></canvas></div>
-      </div>
+      <section class="kpis">
+        <div class="kpi">
+          <div class="label">合計コスト</div>
+          <div class="value" id="kpi-total-cost">–</div>
+          <div class="sub">対象期間の合計</div>
+        </div>
+        <div class="kpi">
+          <div class="label">今月のコスト</div>
+          <div class="value" id="kpi-month-cost">–</div>
+          <div class="sub" id="kpi-month-sub">当月</div>
+        </div>
+        <div class="kpi">
+          <div class="label">総トークン</div>
+          <div class="value" id="kpi-total-tokens">–</div>
+          <div class="sub" id="kpi-cache-sub">キャッシュヒット率 –</div>
+        </div>
+        <div class="kpi">
+          <div class="label">アクティブモデル</div>
+          <div class="value" id="kpi-models">–</div>
+          <div class="sub" id="kpi-agents-sub">– エージェント</div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card wide">
+          <h2>コスト積み上げ（モデル別） <span class="hint">期間フィルタで 日別 / 月別 / 年別 に切り替え</span></h2>
+          <div class="chart"><canvas id="chart-cost-stacked"></canvas></div>
+        </div>
+
+        <div class="card">
+          <h2>モデル構成比率 <span class="hint">model-mix</span></h2>
+          <div class="chart"><canvas id="chart-model-mix"></canvas></div>
+        </div>
+
+        <div class="card">
+          <h2>モデル別実効単価 <span class="hint">$/MTok（キャッシュヒット率込み）</span></h2>
+          <div class="chart"><canvas id="chart-unit-price"></canvas></div>
+        </div>
+
+        <div class="card">
+          <h2>エージェント別配分 <span class="hint"><span class="seg-toggle"><button class="active" data-seg="cost">コスト</button><button data-seg="token">トークン</button></span></span></h2>
+          <div class="donut-wrap">
+            <div class="donut">
+              <canvas id="chart-agent-donut"></canvas>
+              <div class="donut-center">
+                <div>
+                  <div class="v" id="donut-value">–</div>
+                  <div class="l" id="donut-label">合計コスト</div>
+                </div>
+              </div>
+            </div>
+            <div class="agent-legend" id="agent-legend"></div>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <h2>キャッシュヒット率 <span class="hint">表示範囲に連動</span></h2>
+          <div class="chart"><canvas id="chart-cache-hit"></canvas></div>
+        </div>
+      </section>
+
+      <section class="card table-card">
+        <div class="table-head">
+          <h2>データ（期間別 × エージェント別）</h2>
+          <span class="hint"><span class="count-badge" id="table-count">期間 0件</span> ・ 期間のボタンをクリックでエージェント内訳が開きます（スクロール可能）</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>期間</th>
+                <th>エージェント</th>
+                <th>モデル</th>
+                <th>入力</th>
+                <th>出力</th>
+                <th>キャッシュヒット率</th>
+                <th>コスト (USD)</th>
+              </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
     <script src="/public/vendor/chart.umd.min.js"></script>
     <script src="/dist/bundle.js"></script>

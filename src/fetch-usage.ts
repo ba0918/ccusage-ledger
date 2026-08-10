@@ -20,7 +20,7 @@ export interface FetchUsageResult {
   source: "fresh" | "cache";
 }
 
-export const DEFAULT_COMMAND = ["bunx", "ccusage", "--json", "--sections", "daily,monthly"];
+export const DEFAULT_COMMAND = ["bunx", "ccusage", "--json", "--sections", "daily,monthly", "--by-agent"];
 
 function defaultSpawn(command: string[]): SpawnResult {
   const result = Bun.spawnSync(command);

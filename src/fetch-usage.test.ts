@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, type SpawnResult } from "./fetch-usage";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
 
@@ -15,6 +15,12 @@ function writeCacheFixture(cachePath: string): void {
   mkdirSync(dirname(cachePath), { recursive: true });
   writeFileSync(cachePath, JSON.stringify(FIXTURE));
 }
+
+describe("DEFAULT_COMMAND", () => {
+  test("--by-agent でエージェント内訳を取得する", () => {
+    expect(DEFAULT_COMMAND).toEqual(["bunx", "ccusage", "--json", "--sections", "daily,monthly", "--by-agent"]);
+  });
+});
 
 describe("fetchUsage", () => {
   test("取得成功時に stdout の JSON をキャッシュファイルへ保存して返す", () => {

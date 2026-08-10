@@ -20,10 +20,33 @@ import {
   buildCacheHitRateSeries,
   selectSectionEntries,
   buildDashboardSeries,
+  buildKpiSummary,
+  buildAgentShare,
   modelColor,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
+
+function entryWithModels(period: string, costs: [string, number][]): PeriodEntry {
+  return {
+    period,
+    totalCost: costs.reduce((sum, [, cost]) => sum + cost, 0),
+    totalTokens: costs.length * 1000,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    modelsUsed: costs.map(([name]) => name),
+    modelBreakdowns: costs.map(([name, cost]) => ({
+      modelName: name,
+      cost,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    })),
+  };
+}
 
 describe("buildYearly", () => {
   test("monthly を年でグループ化してコスト・トークンを集計する", () => {
@@ -58,6 +81,17 @@ describe("buildYearly", () => {
   test("年順にソートして返す", () => {
     const yearly = buildYearly(getSection(DATA, "monthly"));
     expect(yearly[0]!.period).toBe("2025");
+  });
+
+  test("yearly の agents をエージェント別に合算する", () => {
+    const yearly = buildYearly(getSection(DATA, "monthly"));
+    const y2026 = yearly.find((e) => e.period === "2026")!;
+
+    const claude = y2026.agents?.find((a) => a.agent === "claude");
+    expect(claude?.totalCost).toBeCloseTo(1.4);
+    expect(claude?.totalTokens).toBe(2500);
+    const codex = y2026.agents?.find((a) => a.agent === "codex");
+    expect(codex?.totalCost).toBeCloseTo(0.7);
   });
 
   test("device フィールドを引き継いでマージする", () => {
@@ -122,14 +156,71 @@ describe("filterByModel", () => {
     const daily = getSection(DATA, "daily");
     expect(filterByModel(daily, null)).toEqual(daily);
   });
+
+  test("各エージェントの breakdown もモデルで絞り込み、エージェント合計を再集計する", () => {
+    const daily = getSection(DATA, "daily");
+    const filtered = filterByModel(daily, "model-a");
+    const feb = filtered[1]!;
+
+    const claude = feb.agents?.find((a) => a.agent === "claude");
+    expect(claude?.totalCost).toBeCloseTo(0.9);
+    expect(claude?.totalTokens).toBe(1500);
+    expect(claude?.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
+
+    const codex = feb.agents?.find((a) => a.agent === "codex");
+    expect(codex).toBeUndefined();
+  });
+
+  test("エージェントのトークン合計も breakdown から再計算する", () => {
+    const daily = getSection(DATA, "daily");
+    const filtered = filterByModel(daily, "model-b");
+
+    const claude = filtered[0]!.agents?.[0]!;
+    expect(claude.totalCost).toBeCloseTo(0.2);
+    expect(claude.totalTokens).toBe(400);
+  });
+
+  test("対象モデルを使わないエージェントは agents から除外される", () => {
+    const daily = getSection(DATA, "daily");
+    const filtered = filterByModel(daily, "model-b");
+
+    expect(filtered[0]!.agents?.map((a) => a.agent)).toEqual(["claude"]);
+    expect(filtered[1]!.agents).toEqual([]);
+    expect(filtered[2]!.agents?.map((a) => a.agent)).toEqual(["codex"]);
+  });
 });
 
 describe("filterByAgent", () => {
-  test("metadata.agents を含む期間だけに絞り込む", () => {
+  test("エージェントの breakdown から期間を再構築して絞り込む", () => {
     const daily = getSection(DATA, "daily");
     const filtered = filterByAgent(daily, "claude");
 
     expect(filtered.map((e) => e.period)).toEqual(["2026-01-10", "2026-02-03"]);
+    expect(filtered[0]!.totalCost).toBeCloseTo(0.5);
+    expect(filtered[0]!.totalTokens).toBe(1000);
+    expect(filtered[0]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a", "model-b"]);
+    expect(filtered[0]!.agents?.map((a) => a.agent)).toEqual(["claude"]);
+    expect(filtered[1]!.totalCost).toBeCloseTo(0.9);
+    expect(filtered[1]!.totalTokens).toBe(1500);
+    expect(filtered[1]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
+  });
+
+  test("対象エージェントの期間合計がエージェント内訳の合計と一致する", () => {
+    const monthly = getSection(DATA, "monthly");
+    const filtered = filterByAgent(monthly, "codex");
+
+    expect(filtered.map((e) => e.period)).toEqual(["2026-02", "2026-03"]);
+    expect(filtered[0]!.totalCost).toBeCloseTo(0.3);
+    expect(filtered[1]!.totalCost).toBeCloseTo(0.4);
+  });
+
+  test("エージェントが存在しない期間は除外する", () => {
+    const daily = getSection(DATA, "daily");
+    const filtered = filterByAgent(daily, "codex");
+
+    expect(filtered.map((e) => e.period)).toEqual(["2026-02-03", "2026-03-15"]);
+    expect(filtered[0]!.totalCost).toBeCloseTo(0.3);
+    expect(filtered[1]!.totalCost).toBeCloseTo(0.4);
   });
 
   test("agent 指定なしは元の配列を返す", () => {
@@ -203,6 +294,98 @@ describe("modelUnitPrice / cacheHitRate", () => {
   });
 });
 
+describe("buildKpiSummary", () => {
+  test("対象期間の合計コスト・総トークン・アクティブモデル数を返す", () => {
+    const daily = getSection(DATA, "daily");
+    const kpi = buildKpiSummary(daily, new Date("2026-03-20"));
+
+    expect(kpi.totalCost).toBeCloseTo(2.1);
+    expect(kpi.totalTokens).toBe(3500);
+    expect(kpi.activeModelCount).toBe(3);
+  });
+
+  test("today の属する月のコストを currentMonthCost として返す", () => {
+    const daily = getSection(DATA, "daily");
+
+    expect(buildKpiSummary(daily, new Date("2026-03-20")).currentMonthCost).toBeCloseTo(0.4);
+    expect(buildKpiSummary(daily, new Date("2026-02-15")).currentMonthCost).toBeCloseTo(1.2);
+    expect(buildKpiSummary(daily, new Date("2026-01-01")).currentMonthCost).toBeCloseTo(0.5);
+  });
+
+  test("monthly 粒度でも当月の判定ができる", () => {
+    const monthly = getSection(DATA, "monthly");
+
+    expect(buildKpiSummary(monthly, new Date("2026-03-20")).currentMonthCost).toBeCloseTo(0.4);
+    expect(buildKpiSummary(monthly, new Date("2025-12-05")).currentMonthCost).toBeCloseTo(2.0);
+  });
+
+  test("yearly 粒度でも daily/monthly の期間から当月コストを算出する", () => {
+    const yearly = buildYearly(getSection(DATA, "monthly"));
+    const monthly = getSection(DATA, "monthly");
+
+    const kpi = buildKpiSummary(yearly, new Date("2026-03-20"), monthly);
+    expect(kpi.currentMonthCost).toBeCloseTo(0.4);
+    expect(kpi.totalCost).toBeCloseTo(4.1);
+  });
+
+  test("monthEntries 未指定の場合は entries から当月コストを算出する", () => {
+    const daily = getSection(DATA, "daily");
+    expect(buildKpiSummary(daily, new Date("2026-03-20")).currentMonthCost).toBeCloseTo(0.4);
+  });
+});
+
+describe("buildAgentShare", () => {
+  test("entry.agents からエージェント別のコスト・トークンを集計する", () => {
+    const daily = getSection(DATA, "daily");
+    const share = buildAgentShare(daily);
+
+    expect(share.agents).toEqual(["claude", "codex"]);
+    expect(share.cost[0]).toBeCloseTo(1.4);
+    expect(share.cost[1]).toBeCloseTo(0.7);
+    expect(share.tokens[0]).toBe(2500);
+    expect(share.tokens[1]).toBe(1000);
+    expect(share.totalCost).toBeCloseTo(2.1);
+    expect(share.totalTokens).toBe(3500);
+    expect(share.hasDetail).toBe(true);
+  });
+
+  test("コスト配分とトークン配分の比率を返す", () => {
+    const daily = getSection(DATA, "daily");
+    const share = buildAgentShare(daily);
+
+    expect(share.costShare[0]).toBeCloseTo(0.6667, 3);
+    expect(share.costShare[1]).toBeCloseTo(0.3333, 3);
+    expect(share.tokenShare[0]).toBeCloseTo(0.7143, 3);
+    expect(share.tokenShare[1]).toBeCloseTo(0.2857, 3);
+  });
+
+  test("agents が無い場合は metadata.agents の名前だけを listing として返す", () => {
+    const entries: PeriodEntry[] = [
+      {
+        period: "2026-01-10",
+        totalCost: 1,
+        totalTokens: 1000,
+        inputTokens: 400,
+        outputTokens: 100,
+        cacheReadTokens: 400,
+        cacheCreationTokens: 100,
+        modelsUsed: ["model-a"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 1, inputTokens: 400, outputTokens: 100, cacheReadTokens: 400, cacheCreationTokens: 100 },
+        ],
+        metadata: { agents: ["claude", "codex"] },
+      },
+    ];
+
+    const share = buildAgentShare(entries);
+
+    expect(share.hasDetail).toBe(false);
+    expect(share.agents.sort()).toEqual(["claude", "codex"]);
+    expect(share.cost).toEqual([0, 0]);
+    expect(share.costShare).toEqual([0, 0]);
+  });
+});
+
 describe("selectSectionEntries", () => {
   test("yearly を選ぶと monthly を年集計した結果を返す", () => {
     const entries = selectSectionEntries(DATA, "yearly", { model: null, agent: null });
@@ -258,26 +441,97 @@ describe("rangeStartDate / filterByRange", () => {
 });
 
 describe("buildDashboardSeries", () => {
-  test("期間切替で全てのチャートデータを生成する", () => {
+  test("期間切替で全系列がフィルタの期間粒度に連動する", () => {
     const daily = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "all" });
-    expect(daily.dailyCost.labels).toHaveLength(3);
-    expect(daily.monthlyCost.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
+    expect(daily.costStacked.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
+    expect(daily.modelMix.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
+    expect(daily.cacheHitRate.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
+    expect(daily.unitPrice.labels).toEqual(["model-b", "model-c", "model-a"]);
 
     const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" });
-    expect(yearly.dailyCost.labels).toHaveLength(3);
-    expect(yearly.monthlyCost.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
+    expect(yearly.costStacked.labels).toEqual(["2025", "2026"]);
     expect(yearly.modelMix.labels).toEqual(["2025", "2026"]);
-    expect(yearly.unitPrice.labels).toEqual(["2025", "2026"]);
     expect(yearly.cacheHitRate.labels).toEqual(["2025", "2026"]);
   });
 
-  test("range を指定すると全チャート系列が期間で絞られる", () => {
+  test("range を指定すると全系列が期間で絞られる", () => {
     const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "7d" }, new Date("2026-03-20"));
-    expect(series.dailyCost.labels).toEqual(["2026-03-15"]);
-    expect(series.monthlyCost.labels).toEqual(["2026-03"]);
+    expect(series.costStacked.labels).toEqual(["2026-03-15"]);
     expect(series.modelMix.labels).toEqual(["2026-03-15"]);
-    expect(series.unitPrice.labels).toEqual(["2026-03-15"]);
     expect(series.cacheHitRate.labels).toEqual(["2026-03-15"]);
+    expect(series.unitPrice.labels).toEqual(["model-b"]);
+  });
+
+  test("エージェント配分と KPI を系列とあわせて返す", () => {
+    const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "all" }, new Date("2026-03-20"));
+
+    expect(series.agentShare.hasDetail).toBe(true);
+    expect(series.agentShare.agents).toEqual(["claude", "codex"]);
+    expect(series.kpi.totalCost).toBeCloseTo(2.1);
+    expect(series.kpi.currentMonthCost).toBeCloseTo(0.4);
+    expect(series.kpi.totalTokens).toBe(3500);
+    expect(series.kpi.activeModelCount).toBe(3);
+  });
+
+  test("モデルフィルタで全系列がそのモデルのデータだけになる", () => {
+    const series = buildDashboardSeries(DATA, { section: "daily", model: "model-a", agent: null, range: "all" });
+
+    expect(series.costStacked.datasets.map((d) => d.label)).toEqual(["model-a"]);
+    expect(series.modelMix.datasets.map((d) => d.label)).toEqual(["model-a"]);
+    expect(series.unitPrice.labels).toEqual(["model-a"]);
+    expect(series.kpi.totalCost).toBeCloseTo(1.2);
+  });
+
+  test("yearly 表示でも今月のコストは daily/monthly から算出される", () => {
+    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" }, new Date("2026-03-20"));
+
+    expect(yearly.kpi.currentMonthCost).toBeCloseTo(0.4);
+    expect(yearly.kpi.totalCost).toBeCloseTo(4.1);
+  });
+
+  test("今月のコストはモデル・エージェント・範囲フィルタに連動する", () => {
+    const codex = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: "codex", range: "all" }, new Date("2026-03-20"));
+    expect(codex.kpi.currentMonthCost).toBeCloseTo(0.4);
+
+    const claude = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: "claude", range: "all" }, new Date("2026-03-20"));
+    expect(claude.kpi.currentMonthCost).toBe(0);
+
+    const modelA = buildDashboardSeries(DATA, { section: "yearly", model: "model-a", agent: null, range: "all" }, new Date("2026-03-20"));
+    expect(modelA.kpi.currentMonthCost).toBe(0);
+
+    const ranged = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "7d" }, new Date("2026-01-25"));
+    expect(ranged.kpi.currentMonthCost).toBe(0);
+    const all = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" }, new Date("2026-01-25"));
+    expect(all.kpi.currentMonthCost).toBeCloseTo(0.5);
+  });
+
+  test("モデル＋エージェントの複合フィルタで KPI・ドーナツ・テーブル集計が一致する", () => {
+    const filters = { section: "daily" as const, model: "model-a", agent: "claude", range: "all" as const };
+    const series = buildDashboardSeries(DATA, filters, new Date("2026-03-20"));
+    const entries = selectSectionEntries(DATA, "daily", filters, new Date("2026-03-20"));
+
+    const tableTotalCost = entries.reduce((sum, e) => sum + e.totalCost, 0);
+    const tableTotalTokens = entries.reduce((sum, e) => sum + e.totalTokens, 0);
+
+    expect(series.kpi.totalCost).toBeCloseTo(tableTotalCost);
+    expect(series.kpi.totalCost).toBeCloseTo(1.2);
+    expect(series.kpi.totalTokens).toBe(tableTotalTokens);
+    expect(series.kpi.totalTokens).toBe(2100);
+
+    expect(series.agentShare.totalCost).toBeCloseTo(series.kpi.totalCost);
+    expect(series.agentShare.totalTokens).toBe(series.kpi.totalTokens);
+    expect(series.agentShare.agents).toEqual(["claude"]);
+    expect(series.agentShare.cost[0]).toBeCloseTo(1.2);
+    expect(series.agentShare.costShare[0]).toBeCloseTo(1.0);
+
+    for (const entry of entries) {
+      const agentTotal = (entry.agents ?? []).reduce((sum, a) => sum + a.totalCost, 0);
+      expect(entry.totalCost).toBeCloseTo(agentTotal);
+      for (const agent of entry.agents ?? []) {
+        const modelTotal = agent.modelBreakdowns.reduce((sum, b) => sum + b.cost, 0);
+        expect(agent.totalCost).toBeCloseTo(modelTotal);
+      }
+    }
   });
 });
 
@@ -291,6 +545,26 @@ describe("buildModelCostSeries", () => {
     expect(modelA.data).toEqual([0.3, 0.9, 0]);
     const modelB = series.datasets.find((d) => d.label === "model-b")!;
     expect(modelB.data).toEqual([0.2, 0, 0.4]);
+  });
+
+  test("上位5モデルを残し、残りのモデルを「その他」に集約する", () => {
+    const entries = [
+      entryWithModels("2026-01", [["m1", 5], ["m2", 4], ["m3", 3], ["m4", 2], ["m5", 1], ["m6", 0.1]]),
+      entryWithModels("2026-02", [["m1", 5], ["m6", 0.5]]),
+    ];
+    const series = buildModelCostSeries(entries, 5);
+
+    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "その他"]);
+    const other = series.datasets.find((d) => d.label === "その他")!;
+    expect(other.data[0]).toBeCloseTo(0.1);
+    expect(other.data[1]).toBeCloseTo(0.5);
+  });
+
+  test("モデルが5件以下なら「その他」を作らない", () => {
+    const entries = [entryWithModels("2026-01", [["m3", 3], ["m1", 1], ["m2", 2]])];
+    const series = buildModelCostSeries(entries);
+
+    expect(series.datasets.map((d) => d.label)).toEqual(["m3", "m2", "m1"]);
   });
 });
 
@@ -316,17 +590,119 @@ describe("buildModelMixSeries", () => {
     const modelB = series.datasets.find((d) => d.label === "model-b")!;
     expect(modelB.data[2]).toBeCloseTo(100);
   });
+
+  test("比率トレンドでも上位5モデルと「その他」に集約する", () => {
+    const entries = [
+      entryWithModels("2026-01", [["m1", 50], ["m2", 30], ["m3", 10], ["m4", 5], ["m5", 3], ["m6", 2]]),
+    ];
+    const series = buildModelMixSeries(entries, 5);
+
+    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "その他"]);
+    const m1 = series.datasets.find((d) => d.label === "m1")!;
+    expect(m1.data[0]).toBeCloseTo(50);
+    const other = series.datasets.find((d) => d.label === "その他")!;
+    expect(other.data[0]).toBeCloseTo(2);
+  });
+
+  test("比率トレンドの「その他」は期間ごとに計算する", () => {
+    const entries = [
+      entryWithModels("2026-01", [["m1", 50], ["m6", 50]]),
+      entryWithModels("2026-02", [["m1", 90], ["m6", 10]]),
+    ];
+    const series = buildModelMixSeries(entries, 1);
+
+    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "その他"]);
+    const other = series.datasets.find((d) => d.label === "その他")!;
+    expect(other.data[0]).toBeCloseTo(50);
+    expect(other.data[1]).toBeCloseTo(10);
+  });
 });
 
 describe("buildUnitPriceSeries", () => {
-  test("モデル別の単価推移を返し、不在期間は null にする", () => {
-    const daily = getSection(DATA, "daily");
-    const series = buildUnitPriceSeries(daily);
+  test("期間全体を集計したモデル別実効単価($/MTok)を価格降順で返す", () => {
+    const entries: PeriodEntry[] = [
+      {
+        period: "2026-01-10",
+        totalCost: 3.5,
+        totalTokens: 3_000_000,
+        inputTokens: 3_000_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        modelsUsed: ["model-a", "model-b", "model-c"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 2.0, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "model-b", cost: 1.0, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "model-c", cost: 0.5, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        ],
+      },
+    ];
 
-    const modelA = series.datasets.find((d) => d.label === "model-a")!;
-    expect(modelA.data[0]).toBeCloseTo(500);
-    expect(modelA.data[1]).toBeCloseTo(600);
-    expect(modelA.data[2]).toBeNull();
+    const series = buildUnitPriceSeries(entries);
+
+    expect(series.labels).toEqual(["model-a", "model-b", "model-c"]);
+    expect(series.datasets[0]!.label).toBe("実効単価 ($/MTok)");
+    expect(series.datasets[0]!.data).toEqual([2.0, 1.0, 0.5]);
+  });
+
+  test("複数期間にまたがってモデルごとにコスト・トークンを合算する", () => {
+    const entries: PeriodEntry[] = [
+      {
+        period: "2026-01-10",
+        totalCost: 1.0,
+        totalTokens: 1_000_000,
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        modelsUsed: ["model-a"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 1.0, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        ],
+      },
+      {
+        period: "2026-01-11",
+        totalCost: 2.5,
+        totalTokens: 1_500_000,
+        inputTokens: 1_500_000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        modelsUsed: ["model-a", "model-b"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 0.5, inputTokens: 500_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "model-b", cost: 2.0, inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        ],
+      },
+    ];
+
+    const series = buildUnitPriceSeries(entries);
+
+    expect(series.labels).toEqual(["model-b", "model-a"]);
+    expect(series.datasets[0]!.data).toEqual([2.0, 1.0]);
+  });
+
+  test("トークン 0 のモデルは単価 0 として返す", () => {
+    const entries: PeriodEntry[] = [
+      {
+        period: "2026-01-10",
+        totalCost: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        modelsUsed: ["model-x"],
+        modelBreakdowns: [
+          { modelName: "model-x", cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        ],
+      },
+    ];
+
+    const series = buildUnitPriceSeries(entries);
+
+    expect(series.labels).toEqual(["model-x"]);
+    expect(series.datasets[0]!.data).toEqual([0]);
   });
 });
 
