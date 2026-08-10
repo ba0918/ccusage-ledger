@@ -18,6 +18,7 @@ interface ChartOptions {
   responsive?: boolean;
   maintainAspectRatio?: boolean;
   indexAxis?: "x" | "y";
+  interaction?: Record<string, unknown>;
   scales?: Record<string, unknown>;
   plugins?: Record<string, unknown>;
 }

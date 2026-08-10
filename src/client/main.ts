@@ -161,6 +161,7 @@ function renderCostStacked(series: ChartSeries, models: string[]): void {
     "bar",
     colorize(series, (label) => datasetColor(label, models)),
     {
+      interaction: { mode: "index", intersect: false },
       scales: {
         x: { stacked: true, ticks: { maxRotation: 45 }, title: { display: true, text: "期間" } },
         y: {
@@ -184,6 +185,7 @@ function renderModelMix(series: ChartSeries, models: string[]): void {
     "bar",
     colorize(series, (label) => datasetColor(label, models)),
     {
+      interaction: { mode: "index", intersect: false },
       scales: {
         x: { stacked: true, ticks: { maxRotation: 45 } },
         y: {
@@ -344,8 +346,9 @@ function renderTable(entries: PeriodEntry[]): void {
   let totalCacheRead = 0;
   let totalTokenFields = 0;
 
+  const orderedEntries = [...entries].reverse();
   const rows: string[] = [];
-  entries.forEach((entry, periodIndex) => {
+  orderedEntries.forEach((entry, periodIndex) => {
     const isFirstOpen = periodIndex === 0;
     const agents = entry.agents ?? [];
     const hasDetail = agents.length > 0;
