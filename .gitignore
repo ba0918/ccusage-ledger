@@ -1,3 +1,12 @@
-
 # Agent Artifact Store
 /.agents/artifacts/
+/.agents/runtime/
+
+# Build output
+/dist/
+
+# ccusage cache
+/data/
+
+# Dependencies
+/node_modules/

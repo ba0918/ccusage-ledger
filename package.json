@@ -1,0 +1,16 @@
+{
+  "name": "ccusage-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "build": "bun build src/client/main.ts --outdir dist",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "@types/bun": "^1.1.14"
+  }
+}
