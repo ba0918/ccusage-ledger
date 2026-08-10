@@ -118,10 +118,11 @@ async function main(): Promise<void> {
   setStatus("読み込み中...");
   try {
     await loadData();
-    fillSelect("model", allModels(collectAllEntries()));
-    fillSelect("agent", allAgents(collectAllEntries()));
+    const entries = collectAllEntries();
+    fillSelect("model", allModels(entries));
+    fillSelect("agent", allAgents(entries));
     bindControls();
-    if (collectAllEntries().length === 0) {
+    if (entries.length === 0) {
       setStatus("データがありません");
       return;
     }

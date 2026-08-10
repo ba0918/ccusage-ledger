@@ -132,6 +132,7 @@ export function rangeStartDate(range: RangePreset, today: Date = new Date()): st
 export function filterByRange(entries: PeriodEntry[], range: RangePreset | undefined, today: Date = new Date()): PeriodEntry[] {
   const start = rangeStartDate(range ?? "all", today);
   if (start === null) return entries;
+  // period の長さで粒度を判別する: yearly=4 (YYYY) / monthly=7 (YYYY-MM) / daily=10 (YYYY-MM-DD)
   const prefixLength = entries[0]?.period.length ?? 10;
   const key =
     prefixLength === 4 ? start.slice(0, 4) : prefixLength === 7 ? start.slice(0, 7) : start;
