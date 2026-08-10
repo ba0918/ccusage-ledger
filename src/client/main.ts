@@ -3,22 +3,10 @@ import {
   allAgents,
   allModels,
   buildDashboardSeries,
+  modelColor,
   type DashboardFilters,
   type ChartSeries,
 } from "../aggregate";
-
-const PALETTE = [
-  "#4e79a7",
-  "#f28e2b",
-  "#e15759",
-  "#76b7b2",
-  "#59a14f",
-  "#edc948",
-  "#b07aa1",
-  "#ff9da7",
-  "#9c755f",
-  "#bab0ac",
-];
 
 const state: DashboardFilters = { section: "daily", model: null, agent: null };
 let usageData: UsageData | null = null;
@@ -42,25 +30,19 @@ function fillSelect(id: string, values: string[]): void {
   }
 }
 
-function modelColors(modelName: string): string {
-  const all = allModels(collectAllEntries());
-  const index = all.indexOf(modelName);
-  return PALETTE[index % PALETTE.length] ?? PALETTE[0]!;
-}
-
 function collectAllEntries() {
   const sections: ("daily" | "monthly")[] = ["daily", "monthly"];
   return sections.flatMap((section) => usageData?.[section] ?? []);
 }
 
-function withColors(series: ChartSeries, fill: boolean | "origin" = false): ChartSeries {
+function withColors(series: ChartSeries, models: string[], fill: boolean | "origin" = false): ChartSeries {
   return {
     ...series,
     datasets: series.datasets.map((dataset) => ({
       ...dataset,
       fill,
-      backgroundColor: modelColors(dataset.label),
-      borderColor: modelColors(dataset.label),
+      backgroundColor: modelColor(dataset.label, models),
+      borderColor: modelColor(dataset.label, models),
     })),
   };
 }
@@ -81,22 +63,23 @@ function render(): void {
   if (!usageData) return;
 
   const series = buildDashboardSeries(usageData, state);
+  const models = allModels(collectAllEntries());
 
-  createChart("chart-daily-cost", "bar", withColors(series.dailyCost), {
+  createChart("chart-daily-cost", "bar", withColors(series.dailyCost, models), {
     scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
     plugins: { legend: { display: false } },
   });
-  createChart("chart-monthly-cost", "bar", withColors(series.monthlyCost), {
+  createChart("chart-monthly-cost", "bar", withColors(series.monthlyCost, models), {
     scales: { y: { beginAtZero: true } },
   });
-  createChart("chart-model-mix", "line", withColors(series.modelMix, "origin"), {
+  createChart("chart-model-mix", "line", withColors(series.modelMix, models, "origin"), {
     scales: { y: { min: 0, max: 100, stacked: true }, x: { stacked: true } },
     plugins: { legend: { display: false } },
   });
-  createChart("chart-unit-price", "line", withColors(series.unitPrice), {
+  createChart("chart-unit-price", "line", withColors(series.unitPrice, models), {
     scales: { y: { beginAtZero: true } },
   });
-  createChart("chart-cache-hit", "line", withColors(series.cacheHitRate), {
+  createChart("chart-cache-hit", "line", withColors(series.cacheHitRate, models), {
     scales: { y: { min: 0, max: 1, ticks: { callback: (value: number | string) => `${Math.round(Number(value) * 100)}%` } } },
   });
 }
@@ -127,11 +110,16 @@ function setStatus(message: string, isError = false): void {
 }
 
 async function main(): Promise<void> {
+  setStatus("読み込み中...");
   try {
     await loadData();
     fillSelect("model", allModels(collectAllEntries()));
     fillSelect("agent", allAgents(collectAllEntries()));
     bindControls();
+    if (collectAllEntries().length === 0) {
+      setStatus("データがありません");
+      return;
+    }
     render();
     setStatus("読み込み完了");
   } catch (error) {

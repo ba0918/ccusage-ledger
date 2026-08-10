@@ -4,8 +4,6 @@ interface ChartDatasetConfig {
   backgroundColor?: string | string[];
   borderColor?: string;
   fill?: boolean | "origin";
-  tension?: number;
-  stack?: string;
 }
 
 interface ChartData {

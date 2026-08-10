@@ -13,25 +13,42 @@ const CONTENT_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
+const COMMON_HEADERS: Record<string, string> = {
+  "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
+  "x-content-type-options": "nosniff",
+};
+
+function withCommonHeaders(headers: Record<string, string>): Headers {
+  return new Headers({ ...COMMON_HEADERS, ...headers });
+}
+
 export function createApp(options: { rootDir: string }) {
   const { rootDir } = options;
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    const pathname = decodeURIComponent(url.pathname);
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      return new Response(JSON.stringify({ error: "bad request" }), {
+        status: 400,
+        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
+      });
+    }
 
     if (pathname === "/api/usage") {
       const usagePath = join(rootDir, "data", "usage.json");
       if (!existsSync(usagePath)) {
         return new Response(JSON.stringify({ error: "usage data not available" }), {
           status: 404,
-          headers: { "content-type": "application/json; charset=utf-8" },
+          headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
         });
       }
       const body = await Bun.file(usagePath).arrayBuffer();
       return new Response(body, {
         status: 200,
-        headers: { "content-type": "application/json; charset=utf-8" },
+        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
       });
     }
 
@@ -55,7 +72,7 @@ async function serveStatic(rootDir: string, pathname: string): Promise<Response>
   const body = await file.arrayBuffer();
   return new Response(body, {
     status: 200,
-    headers: { "content-type": contentType ?? "application/octet-stream" },
+    headers: withCommonHeaders({ "content-type": contentType ?? "application/octet-stream" }),
   });
 }
 

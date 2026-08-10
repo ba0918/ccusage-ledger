@@ -27,6 +27,12 @@ function defaultSpawn(command: string[]): SpawnResult {
   return { stdout: result.stdout.toString(), exitCode: result.exitCode };
 }
 
+function isUsageData(data: unknown): data is UsageData {
+  if (typeof data !== "object" || data === null) return false;
+  const sections = ["daily", "monthly"];
+  return sections.every((section) => Array.isArray((data as Record<string, unknown>)[section]));
+}
+
 export function fetchUsage(options: FetchUsageOptions = {}): FetchUsageResult | null {
   const command = options.command ?? DEFAULT_COMMAND;
   const cachePath = options.cachePath ?? "data/usage.json";
@@ -35,9 +41,11 @@ export function fetchUsage(options: FetchUsageOptions = {}): FetchUsageResult | 
   try {
     const result = spawn(command);
     if (result.exitCode === 0) {
-      const data = JSON.parse(result.stdout) as UsageData;
-      writeCache(cachePath, data);
-      return { data, source: "fresh" };
+      const parsed: unknown = JSON.parse(result.stdout);
+      if (isUsageData(parsed)) {
+        writeCache(cachePath, parsed);
+        return { data: parsed, source: "fresh" };
+      }
     }
   } catch {
     // コマンド実行・パース失敗はキャッシュフォールバックへ
@@ -53,8 +61,9 @@ function writeCache(cachePath: string, data: UsageData): void {
 
 function readCache(cachePath: string): FetchUsageResult | null {
   try {
-    const data = JSON.parse(readFileSync(cachePath, "utf-8")) as UsageData;
-    return { data, source: "cache" };
+    const parsed: unknown = JSON.parse(readFileSync(cachePath, "utf-8"));
+    if (!isUsageData(parsed)) throw new Error("invalid usage data shape");
+    return { data: parsed, source: "cache" };
   } catch {
     return null;
   }

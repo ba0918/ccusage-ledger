@@ -62,6 +62,50 @@ describe("fetchUsage", () => {
     expect(result).toBeNull();
   });
 
+  test("スキーマ不一致の stdout は無効としてキャッシュへフォールバックする", () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    writeCacheFixture(cachePath);
+    const spawn = (_command: string[]): SpawnResult => ({
+      stdout: JSON.stringify({ error: "invalid output" }),
+      exitCode: 0,
+    });
+
+    const result = fetchUsage({ cachePath, spawn });
+
+    expect(result).not.toBeNull();
+    expect(result!.source).toBe("cache");
+    expect(result!.data).toEqual(FIXTURE);
+  });
+
+  test("スキーマ不一致の stdout かつキャッシュが無い場合は null を返す", () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    const spawn = (_command: string[]): SpawnResult => ({
+      stdout: JSON.stringify({ daily: "not-an-array" }),
+      exitCode: 0,
+    });
+
+    const result = fetchUsage({ cachePath, spawn });
+
+    expect(result).toBeNull();
+  });
+
+  test("スキーマ不一致のキャッシュは無効として扱う", () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(cachePath, JSON.stringify({ daily: 1, monthly: 2 }));
+    const spawn = (_command: string[]): SpawnResult => ({
+      stdout: "",
+      exitCode: 1,
+    });
+
+    const result = fetchUsage({ cachePath, spawn });
+
+    expect(result).toBeNull();
+  });
+
   test("spawn が例外を投げてもキャッシュがあればフォールバックする", () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");

@@ -19,7 +19,6 @@ export interface PeriodEntry {
   modelBreakdowns: ModelBreakdown[];
   metadata?: { agents?: string[] };
   device?: string;
-  agent?: string;
 }
 
 export interface Totals {

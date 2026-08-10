@@ -35,6 +35,19 @@ describe("server /api/usage", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(await res.text()).toBe(FIXTURE);
   });
+
+  test("data/usage.json が無い場合は 404 を返す", async () => {
+    rmSync(join(rootDir, "data", "usage.json"));
+    const res = await get("/api/usage");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ error: "usage data not available" });
+  });
+
+  test("/api/usage は cache-control: no-store を返す", async () => {
+    const res = await get("/api/usage");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
 });
 
 describe("server 静的配信", () => {
@@ -62,11 +75,21 @@ describe("server 静的配信", () => {
     const res = await get("/nope");
     expect(res.status).toBe(404);
   });
+
+  test("静的レスポンスに CSP ヘッダを付与する", async () => {
+    const res = await get("/");
+    expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
+  });
 });
 
 describe("server セキュリティ", () => {
   test("パストラバーサルは 404 を返す", async () => {
     const res = await get("/../../etc/passwd");
     expect(res.status).toBe(404);
+  });
+
+  test("壊れたパーセントエンコーディングは 400 を返す", async () => {
+    const res = await get("/%%");
+    expect(res.status).toBe(400);
   });
 });

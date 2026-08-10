@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run src/server.ts",
+    "dev": "bun run build && bun run src/server.ts",
     "build": "bun build src/client/main.ts --outfile dist/bundle.js",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"

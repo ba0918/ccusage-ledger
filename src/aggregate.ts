@@ -1,6 +1,6 @@
 import type { ModelBreakdown, PeriodEntry, UsageData } from "./types";
 
-export type Section = "daily" | "weekly" | "monthly";
+export type Section = "daily" | "monthly";
 
 const TOKEN_FIELDS = [
   "inputTokens",
@@ -19,7 +19,7 @@ export function getSection(data: UsageData, section: Section): PeriodEntry[] {
 
 export function selectSectionEntries(
   data: UsageData,
-  section: "daily" | "weekly" | "monthly" | "yearly",
+  section: "daily" | "monthly" | "yearly",
   filters: { model: string | null; agent: string | null },
 ): PeriodEntry[] {
   const entries = section === "yearly" ? buildYearly(getSection(data, "monthly")) : getSection(data, section);
@@ -124,6 +124,24 @@ export function allAgents(entries: PeriodEntry[]): string[] {
   return [...agents].sort();
 }
 
+export const MODEL_PALETTE = [
+  "#4e79a7",
+  "#f28e2b",
+  "#e15759",
+  "#76b7b2",
+  "#59a14f",
+  "#edc948",
+  "#b07aa1",
+  "#ff9da7",
+  "#9c755f",
+  "#bab0ac",
+] as const;
+
+export function modelColor(modelName: string, models: string[]): string {
+  const index = models.indexOf(modelName);
+  return MODEL_PALETTE[index % MODEL_PALETTE.length] ?? MODEL_PALETTE[0]!;
+}
+
 export function modelUnitPrice(breakdown: ModelBreakdown): number {
   const tokens = totalTokensOf(breakdown);
   if (tokens === 0) return 0;
@@ -156,7 +174,7 @@ function orderedModels(entries: PeriodEntry[]): string[] {
 }
 
 export interface DashboardFilters {
-  section: "daily" | "weekly" | "monthly" | "yearly";
+  section: "daily" | "monthly" | "yearly";
   model: string | null;
   agent: string | null;
 }

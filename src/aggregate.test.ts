@@ -18,6 +18,7 @@ import {
   buildCacheHitRateSeries,
   selectSectionEntries,
   buildDashboardSeries,
+  modelColor,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -55,6 +56,43 @@ describe("buildYearly", () => {
   test("年順にソートして返す", () => {
     const yearly = buildYearly(getSection(DATA, "monthly"));
     expect(yearly[0]!.period).toBe("2025");
+  });
+
+  test("device フィールドを引き継いでマージする", () => {
+    const monthly: PeriodEntry[] = [
+      {
+        period: "2026-01",
+        totalCost: 1,
+        totalTokens: 100,
+        inputTokens: 40,
+        outputTokens: 10,
+        cacheReadTokens: 40,
+        cacheCreationTokens: 10,
+        modelsUsed: ["model-a"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 1, inputTokens: 40, outputTokens: 10, cacheReadTokens: 40, cacheCreationTokens: 10 },
+        ],
+        device: "desktop",
+      },
+      {
+        period: "2026-02",
+        totalCost: 2,
+        totalTokens: 200,
+        inputTokens: 80,
+        outputTokens: 20,
+        cacheReadTokens: 80,
+        cacheCreationTokens: 20,
+        modelsUsed: ["model-a"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 2, inputTokens: 80, outputTokens: 20, cacheReadTokens: 80, cacheCreationTokens: 20 },
+        ],
+      },
+    ];
+
+    const yearly = buildYearly(monthly);
+    expect(yearly).toHaveLength(1);
+    expect(yearly[0]!.device).toBe("desktop");
+    expect(yearly[0]!.totalCost).toBeCloseTo(3);
   });
 });
 
@@ -107,6 +145,19 @@ describe("allModels / allAgents", () => {
   test("全エージェントの和集合を返す", () => {
     const daily = getSection(DATA, "daily");
     expect(allAgents(daily)).toEqual(["claude", "codex"]);
+  });
+});
+
+describe("modelColor", () => {
+  test("モデル順にパレットの色を割り当てる", () => {
+    const models = ["model-a", "model-b", "model-c"];
+    expect(modelColor("model-a", models)).toBe("#4e79a7");
+    expect(modelColor("model-b", models)).toBe("#f28e2b");
+    expect(modelColor("model-c", models)).toBe("#e15759");
+  });
+
+  test("未知のモデルは先頭の色にフォールバックする", () => {
+    expect(modelColor("unknown", ["model-a"])).toBe("#4e79a7");
   });
 });
 
