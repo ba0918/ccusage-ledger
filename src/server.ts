@@ -92,7 +92,7 @@ export async function main(): Promise<void> {
   const app = createApp({ rootDir });
   const server = Bun.serve({ hostname, port, fetch: app });
 
-  console.log(`ccusage dashboard: http://${hostname}:${server.port}`);
+  console.log(`ccusage ledger: http://${hostname}:${server.port}`);
   if (result === null) {
     console.warn("WARN: ccusage データを取得できず、キャッシュもありません。/api/usage は 404 を返します。");
   } else {

@@ -1,4 +1,4 @@
-# ccusage Dashboard
+# ccusage Ledger
 
 ## 概要
 

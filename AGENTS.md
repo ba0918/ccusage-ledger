@@ -1,4 +1,4 @@
-# ccusage Dashboard
+# ccusage Ledger
 
 `bunx ccusage` が出力する JSON を元に、エージェント CLI (Claude Code / Codex / OpenCode 等) の使用量・トークン量・金額を可視化する個人用ダッシュボード。
 
