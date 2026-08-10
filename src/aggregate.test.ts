@@ -22,6 +22,7 @@ import {
   buildKpiSummary,
   buildAgentShare,
   modelColor,
+  otherBreakdown,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -250,6 +251,31 @@ describe("modelColor", () => {
 
   test("未知のモデルは先頭の色にフォールバックする", () => {
     expect(modelColor("unknown", ["model-a"])).toBe("#4e79a7");
+  });
+});
+
+describe("otherBreakdown", () => {
+  test("上位モデル以外の内訳とコスト・構成比を返す", () => {
+    const entry = getSection(DATA, "daily")[0]!;
+    const breakdown = otherBreakdown(entry, new Set(["model-a"]));
+    expect(breakdown).toHaveLength(1);
+    expect(breakdown[0]!.modelName).toBe("model-b");
+    expect(breakdown[0]!.cost).toBeCloseTo(0.2);
+    expect(breakdown[0]!.ratio).toBeCloseTo(40);
+  });
+
+  test("top に含まれるモデルは除外される", () => {
+    const entry = getSection(DATA, "daily")[0]!;
+    expect(otherBreakdown(entry, new Set(["model-a", "model-b"]))).toHaveLength(0);
+  });
+
+  test("コスト 0 のモデルは除外される", () => {
+    const daily = getSection(DATA, "daily");
+    for (const entry of daily) {
+      for (const item of otherBreakdown(entry, new Set(["model-a", "model-b"]))) {
+        expect(item.cost).toBeGreaterThan(0);
+      }
+    }
   });
 });
 

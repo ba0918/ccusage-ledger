@@ -250,7 +250,7 @@ export interface ChartSeries {
   datasets: { label: string; data: (number | null)[] }[];
 }
 
-function topModelsByCost(entries: PeriodEntry[], topN: number): string[] {
+export function topModelsByCost(entries: PeriodEntry[], topN: number): string[] {
   const costByModel = new Map<string, number>();
   for (const entry of entries) {
     for (const breakdown of entry.modelBreakdowns) {
@@ -261,6 +261,24 @@ function topModelsByCost(entries: PeriodEntry[], topN: number): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, topN)
     .map(([modelName]) => modelName);
+}
+
+export interface OtherBreakdownItem {
+  modelName: string;
+  cost: number;
+  ratio: number;
+}
+
+export function otherBreakdown(entry: PeriodEntry, top: ReadonlySet<string>): OtherBreakdownItem[] {
+  return entry.modelBreakdowns
+    .filter((b) => !top.has(b.modelName))
+    .map((b) => ({
+      modelName: b.modelName,
+      cost: b.cost,
+      ratio: entry.totalCost === 0 ? 0 : (b.cost / entry.totalCost) * 100,
+    }))
+    .filter((b) => b.cost > 0)
+    .sort((a, b) => b.cost - a.cost);
 }
 
 function distinctModelCount(entries: PeriodEntry[]): number {

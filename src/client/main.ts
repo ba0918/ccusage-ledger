@@ -4,11 +4,17 @@ import {
   allModels,
   buildDashboardSeries,
   modelColor,
+  otherBreakdown,
   selectSectionEntries,
+  topModelsByCost,
+  TOP_N,
   type ChartSeries,
   type DashboardFilters,
   type KpiSummary,
+  type OtherBreakdownItem,
 } from "../aggregate";
+
+type TooltipContext = { entries: PeriodEntry[]; top: ReadonlySet<string>; excludeZero?: boolean };
 
 const state: DashboardFilters = { section: "daily", model: null, agent: null, range: { kind: "all" } };
 let usageData: UsageData | null = null;
@@ -98,11 +104,29 @@ function colorize(series: ChartSeries, colorFor: (label: string) => string, fill
   };
 }
 
-function tooltipLabel(fmt: (value: number, datasetLabel: string) => string): (item: unknown) => string {
+function tooltipLabel(
+  fmt: (value: number, datasetLabel: string) => string,
+  opts?: { entries?: PeriodEntry[]; top?: ReadonlySet<string>; inner?: (item: OtherBreakdownItem) => string; excludeZero?: boolean },
+): (item: unknown) => string | string[] {
   return (item: unknown) => {
-    const { parsed, dataset } = item as { parsed: { x?: number; y?: number }; dataset: { label?: string } };
+    const { parsed, dataset, dataIndex } = item as {
+      parsed: { x?: number; y?: number };
+      dataset: { label?: string };
+      dataIndex: number;
+    };
     const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
-    return fmt(value, dataset.label ?? "");
+    if (opts?.excludeZero && value === 0) return "";
+    const lines: string[] = [fmt(value, dataset.label ?? "")];
+    if (dataset.label === "その他" && opts?.entries && opts.top) {
+      const entry = opts.entries[dataIndex];
+      if (entry) {
+        const inner = opts.inner ?? ((item: OtherBreakdownItem) => `${item.modelName}: ${Math.round(item.ratio)}%`);
+        for (const item of otherBreakdown(entry, opts.top)) {
+          lines.push(`  ${inner(item)}`);
+        }
+      }
+    }
+    return lines;
   };
 }
 
@@ -236,7 +260,7 @@ function renderKpis(kpi: KpiSummary, entries: PeriodEntry[]): void {
   el("kpi-agents-sub").textContent = `${countAgents(entries)} エージェント`;
 }
 
-function renderCostStacked(series: ChartSeries, models: string[]): void {
+function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext): void {
   createChart(
     "chart-cost-stacked",
     "bar",
@@ -254,13 +278,20 @@ function renderCostStacked(series: ChartSeries, models: string[]): void {
       },
       plugins: {
         legend: { position: "bottom" },
-        tooltip: { callbacks: { label: tooltipLabel((value, label) => `${label}: ${formatAxisCurrency(value)}`) } },
+        tooltip: {
+          callbacks: {
+            label: tooltipLabel(
+              (value, label) => `${label}: ${formatAxisCurrency(value)}`,
+              { ...tooltipCtx, inner: (item) => `${item.modelName}: ${formatAxisCurrency(item.cost)}` },
+            ),
+          },
+        },
       },
     },
   );
 }
 
-function renderModelMix(series: ChartSeries, models: string[]): void {
+function renderModelMix(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext): void {
   createChart(
     "chart-model-mix",
     "bar",
@@ -279,7 +310,11 @@ function renderModelMix(series: ChartSeries, models: string[]): void {
       },
       plugins: {
         legend: { position: "bottom" },
-        tooltip: { callbacks: { label: tooltipLabel((value, label) => `${label}: ${Math.round(value)}%`) } },
+        tooltip: {
+          callbacks: {
+            label: tooltipLabel((value, label) => `${label}: ${Math.round(value)}%`, tooltipCtx),
+          },
+        },
       },
     },
   );
@@ -489,10 +524,12 @@ function render(): void {
   const series = buildDashboardSeries(usageData, state);
   const entries = selectSectionEntries(usageData, state.section, state);
   const models = allModels(collectAllEntries());
+  const top = new Set(topModelsByCost(entries, TOP_N));
+  const tooltipCtx: TooltipContext = { entries, top, excludeZero: true };
 
   renderKpis(series.kpi, entries);
-  renderCostStacked(series.costStacked, models);
-  renderModelMix(series.modelMix, models);
+  renderCostStacked(series.costStacked, models, tooltipCtx);
+  renderModelMix(series.modelMix, models, tooltipCtx);
   renderUnitPrice(series.unitPrice);
   renderAgentDonut(series.agentShare);
   renderCacheHit(series.cacheHitRate);
