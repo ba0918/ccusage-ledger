@@ -47,10 +47,14 @@
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 16px;
+        display: flex;
+        flex-direction: column;
+        height: 300px;
       }
       .chart-card h2 { font-size: 15px; margin: 0 0 12px; color: var(--text); }
       .chart-card.wide { grid-column: 1 / -1; }
-      canvas { width: 100%; height: 260px; }
+      .chart-card .chart-wrap { flex: 1; min-height: 0; }
+      canvas { width: 100%; height: 100%; }
       #status { color: var(--muted); font-size: 13px; }
       #status.error { color: #ff8b8b; }
     </style>
@@ -78,23 +82,23 @@
     <main>
       <div class="chart-card">
         <h2>日別コスト積み上げ（モデル別）</h2>
-        <canvas id="chart-daily-cost"></canvas>
+        <div class="chart-wrap"><canvas id="chart-daily-cost"></canvas></div>
       </div>
       <div class="chart-card">
         <h2>月別コスト</h2>
-        <canvas id="chart-monthly-cost"></canvas>
+        <div class="chart-wrap"><canvas id="chart-monthly-cost"></canvas></div>
       </div>
       <div class="chart-card">
         <h2>モデル構成比率トレンド</h2>
-        <canvas id="chart-model-mix"></canvas>
+        <div class="chart-wrap"><canvas id="chart-model-mix"></canvas></div>
       </div>
       <div class="chart-card">
         <h2>単価推移（$/MTok）</h2>
-        <canvas id="chart-unit-price"></canvas>
+        <div class="chart-wrap"><canvas id="chart-unit-price"></canvas></div>
       </div>
       <div class="chart-card wide">
         <h2>キャッシュヒット率推移</h2>
-        <canvas id="chart-cache-hit"></canvas>
+        <div class="chart-wrap"><canvas id="chart-cache-hit"></canvas></div>
       </div>
     </main>
     <script src="/public/vendor/chart.umd.min.js"></script>
