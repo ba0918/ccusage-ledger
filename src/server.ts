@@ -87,7 +87,7 @@ export async function main(): Promise<void> {
   const result = fetchUsage({ command: DEFAULT_COMMAND, cachePath: usagePath });
 
   const port = Number(process.env.PORT ?? 3000);
-  const hostname = "127.0.0.1";
+  const hostname = process.env.HOST ?? "127.0.0.1";
 
   const app = createApp({ rootDir });
   const server = Bun.serve({ hostname, port, fetch: app });
