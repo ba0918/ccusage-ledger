@@ -1,4 +1,5 @@
 import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
+import { loadUsageData } from "./load-data";
 import {
   allAgents,
   allModels,
@@ -37,9 +38,14 @@ const OTHER_COLOR = "#8b92a7";
 const charts: Record<string, ChartInstance> = {};
 
 async function loadData(): Promise<void> {
-  const res = await fetch("/api/usage");
-  if (!res.ok) throw new Error(`/api/usage failed: ${res.status}`);
-  usageData = (await res.json()) as UsageData;
+  usageData = await loadUsageData(
+    (window as Window & { CCUSAGE_DATA?: unknown }).CCUSAGE_DATA,
+    async () => {
+      const res = await fetch("/api/usage");
+      if (!res.ok) throw new Error(`/api/usage failed: ${res.status}`);
+      return (await res.json()) as UsageData;
+    },
+  );
 }
 
 function el(id: string): HTMLElement {
