@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun run build && bun run src/server.ts",
     "build": "bun build src/client/main.ts --outfile dist/bundle.js",
+    "export": "bun run build && bun run src/export.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
