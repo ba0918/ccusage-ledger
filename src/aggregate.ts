@@ -22,12 +22,14 @@ export function getSection(data: UsageData, section: Section): PeriodEntry[] {
 export function selectSectionEntries(
   data: UsageData,
   section: "daily" | "monthly" | "yearly",
-  filters: { model: string | null; agent: string | null; range?: RangePreset },
-  today: Date = new Date(),
+  filters: { model: string | null; agent: string | null; range?: PeriodRange },
 ): PeriodEntry[] {
-  const entries = section === "yearly" ? buildYearly(getSection(data, "monthly")) : getSection(data, section);
-  const ranged = filterByRange(entries, filters.range, today);
-  return filterByAgent(filterByModel(ranged, filters.model), filters.agent);
+  // range は集計前のソース（daily/monthly）に適用する。yearly は月次を年集計してから
+  // モデル・エージェントで絞る（yearly 集計後に range を適用すると固定月が年と一致しない）。
+  const source = section === "yearly" ? getSection(data, "monthly") : getSection(data, section);
+  const ranged = filterByRange(source, filters.range);
+  const entries = section === "yearly" ? buildYearly(ranged) : ranged;
+  return filterByAgent(filterByModel(entries, filters.model), filters.agent);
 }
 
 export function buildYearly(monthly: PeriodEntry[]): PeriodEntry[] {
@@ -183,33 +185,18 @@ export function filterByAgent(entries: PeriodEntry[], agent: string | null): Per
   });
 }
 
-export type RangePreset = "7d" | "30d" | "90d" | "all";
+export type PeriodRange =
+  | { kind: "all" }
+  | { kind: "fixed"; year: number; month?: number };
 
-const RANGE_DAYS: Record<Exclude<RangePreset, "all">, number> = {
-  "7d": 6,
-  "30d": 29,
-  "90d": 89,
-};
-
-export function rangeStartDate(range: RangePreset, today: Date = new Date()): string | null {
-  if (range === "all") return null;
-  const days = RANGE_DAYS[range];
-  const start = new Date(today);
-  start.setDate(start.getDate() - days);
-  const y = start.getFullYear();
-  const m = String(start.getMonth() + 1).padStart(2, "0");
-  const d = String(start.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-export function filterByRange(entries: PeriodEntry[], range: RangePreset | undefined, today: Date = new Date()): PeriodEntry[] {
-  const start = rangeStartDate(range ?? "all", today);
-  if (start === null) return entries;
-  // period の長さで粒度を判別する: yearly=4 (YYYY) / monthly=7 (YYYY-MM) / daily=10 (YYYY-MM-DD)
-  const prefixLength = entries[0]?.period.length ?? 10;
-  const key =
-    prefixLength === 4 ? start.slice(0, 4) : prefixLength === 7 ? start.slice(0, 7) : start;
-  return entries.filter((entry) => entry.period >= key);
+export function filterByRange(entries: PeriodEntry[], range: PeriodRange | undefined): PeriodEntry[] {
+  const target = range ?? { kind: "all" };
+  if (target.kind === "all") return entries;
+  const prefix =
+    target.month === undefined
+      ? `${target.year}`
+      : `${target.year}-${String(target.month).padStart(2, "0")}`;
+  return entries.filter((entry) => entry.period.startsWith(prefix));
 }
 
 export function allModels(entries: PeriodEntry[]): string[] {
@@ -288,28 +275,19 @@ export interface DashboardFilters {
   section: "daily" | "monthly" | "yearly";
   model: string | null;
   agent: string | null;
-  range: RangePreset;
+  range: PeriodRange;
 }
 
 export interface KpiSummary {
   totalCost: number;
-  currentMonthCost: number;
   totalTokens: number;
   activeModelCount: number;
 }
 
-export function buildKpiSummary(entries: PeriodEntry[], today: Date = new Date(), monthEntries?: PeriodEntry[]): KpiSummary {
-  const monthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+export function buildKpiSummary(entries: PeriodEntry[]): KpiSummary {
   const models = new Set<string>();
   let totalCost = 0;
-  let currentMonthCost = 0;
   let totalTokens = 0;
-
-  // 当月コストは表示中の期間粒度（yearly 等）に依存せず、daily/monthly の期間から算出する。
-  const currentMonthSource = monthEntries ?? entries;
-  for (const entry of currentMonthSource) {
-    if (entry.period.slice(0, 7) === monthKey) currentMonthCost += entry.totalCost;
-  }
 
   for (const entry of entries) {
     totalCost += entry.totalCost;
@@ -317,12 +295,7 @@ export function buildKpiSummary(entries: PeriodEntry[], today: Date = new Date()
     for (const breakdown of entry.modelBreakdowns) models.add(breakdown.modelName);
   }
 
-  return { totalCost, currentMonthCost, totalTokens, activeModelCount: models.size };
-}
-
-function currentMonthEntries(data: UsageData, filters: DashboardFilters, today: Date): PeriodEntry[] {
-  const hasDaily = (data.daily?.length ?? 0) > 0;
-  return selectSectionEntries(data, hasDaily ? "daily" : "monthly", filters, today);
+  return { totalCost, totalTokens, activeModelCount: models.size };
 }
 
 export interface AgentShareData {
@@ -383,8 +356,8 @@ export interface DashboardSeries {
   kpi: KpiSummary;
 }
 
-export function buildDashboardSeries(data: UsageData, filters: DashboardFilters, today: Date = new Date()): DashboardSeries {
-  const entries = selectSectionEntries(data, filters.section, filters, today);
+export function buildDashboardSeries(data: UsageData, filters: DashboardFilters): DashboardSeries {
+  const entries = selectSectionEntries(data, filters.section, filters);
 
   return {
     costStacked: buildModelCostSeries(entries, TOP_N),
@@ -392,7 +365,7 @@ export function buildDashboardSeries(data: UsageData, filters: DashboardFilters,
     unitPrice: buildUnitPriceSeries(entries),
     agentShare: buildAgentShare(entries),
     cacheHitRate: buildCacheHitRateSeries(entries),
-    kpi: buildKpiSummary(entries, today, currentMonthEntries(data, filters, today)),
+    kpi: buildKpiSummary(entries),
   };
 }
 

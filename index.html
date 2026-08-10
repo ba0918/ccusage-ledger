@@ -55,6 +55,41 @@
         padding: 7px 10px;
         font-size: 13px;
       }
+      .control-group {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        padding: 0 14px;
+      }
+      .control-group + .control-group { border-left: 1px solid var(--border); }
+      .group-label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em; }
+      .period-nav {
+        display: flex; align-items: center; gap: 2px;
+        background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 3px;
+      }
+      .period-nav .nav-btn {
+        background: transparent; border: none; color: var(--muted); font-size: 13px;
+        padding: 4px 8px; border-radius: 6px; cursor: pointer;
+      }
+      .period-nav .nav-btn:hover { background: var(--border); color: var(--text); }
+      .period-nav .nav-label {
+        width: 96px; text-align: center; font-size: 13px; font-weight: 600; color: var(--text);
+        font-variant-numeric: tabular-nums; cursor: pointer; padding: 4px 6px; border-radius: 6px;
+        white-space: nowrap; overflow: hidden;
+      }
+      .period-nav .nav-label:hover { background: var(--border); }
+      .btn-all {
+        background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; white-space: nowrap;
+      }
+      .btn-all:hover { border-color: var(--accent); color: var(--accent); }
+      .btn-all.active { border-color: var(--accent); color: var(--accent); }
+      .context-bar {
+        display: flex; align-items: center; gap: 8px;
+        margin: 0 0 16px; padding: 8px 14px;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+        font-size: 13px; color: var(--muted);
+      }
+      .context-bar .ctx-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+      .context-bar b { color: var(--text); font-weight: 600; }
       main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
       #status { color: var(--muted); font-size: 12px; }
       #status.error { color: #ff8b8b; }
@@ -155,46 +190,51 @@
         <h1>ccusage Dashboard</h1>
       </div>
       <div class="controls">
-        <label title="すべてのグラフの期間粒度を切り替える">期間
-          <select id="section">
+        <div class="control-group">
+          <span class="group-label">期間</span>
+          <select id="section" title="すべてのグラフの期間粒度を切り替える">
             <option value="daily">日次</option>
             <option value="monthly">月次</option>
             <option value="yearly">年次</option>
           </select>
-        </label>
-        <label title="表示する期間の範囲。全グラフに適用">表示範囲
-          <select id="range">
-            <option value="all">全期間</option>
-            <option value="90d">直近90日</option>
-            <option value="30d">直近30日</option>
-            <option value="7d">直近7日</option>
-          </select>
-        </label>
-        <label>モデル
-          <select id="model"><option value="">すべて</option></select>
-        </label>
-        <label>エージェント
-          <select id="agent"><option value="">すべて</option></select>
-        </label>
+          <div class="period-nav">
+            <button type="button" class="nav-btn" id="nav-prev" title="前の期間">◀</button>
+            <span class="nav-label" id="nav-label" title="現在表示中の期間">全期間</span>
+            <button type="button" class="nav-btn" id="nav-next" title="次の期間">▶</button>
+          </div>
+          <button type="button" class="btn-all active" id="nav-all" title="全期間に戻す">全期間表示</button>
+        </div>
+        <div class="control-group">
+          <label>モデル
+            <select id="model"><option value="">すべて</option></select>
+          </label>
+          <label>エージェント
+            <select id="agent"><option value="">すべて</option></select>
+          </label>
+        </div>
         <span id="status">読み込み中...</span>
       </div>
     </header>
     <main>
+      <div class="context-bar" id="context-bar" style="display:none">
+        <span class="ctx-dot"></span>
+        <span><b id="context-bar-text"></b> のデータを表示中</span>
+      </div>
       <section class="kpis">
         <div class="kpi">
-          <div class="label">合計コスト</div>
+          <div class="label">選択期間のコスト</div>
           <div class="value" id="kpi-total-cost">–</div>
-          <div class="sub">対象期間の合計</div>
+          <div class="sub" id="kpi-total-sub">–</div>
         </div>
         <div class="kpi">
-          <div class="label">今月のコスト</div>
-          <div class="value" id="kpi-month-cost">–</div>
-          <div class="sub" id="kpi-month-sub">当月</div>
+          <div class="label">キャッシュヒット率</div>
+          <div class="value" id="kpi-cache-rate">–</div>
+          <div class="sub">対象期間のキャッシュ読み割合</div>
         </div>
         <div class="kpi">
           <div class="label">総トークン</div>
           <div class="value" id="kpi-total-tokens">–</div>
-          <div class="sub" id="kpi-cache-sub">キャッシュヒット率 –</div>
+          <div class="sub">対象期間の合計</div>
         </div>
         <div class="kpi">
           <div class="label">アクティブモデル</div>
@@ -236,7 +276,7 @@
         </div>
 
         <div class="card wide">
-          <h2>キャッシュヒット率 <span class="hint">表示範囲に連動</span></h2>
+          <h2>キャッシュヒット率 <span class="hint">期間ナビに連動</span></h2>
           <div class="chart"><canvas id="chart-cache-hit"></canvas></div>
         </div>
       </section>

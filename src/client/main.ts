@@ -10,8 +10,11 @@ import {
   type KpiSummary,
 } from "../aggregate";
 
-const state: DashboardFilters = { section: "daily", model: null, agent: null, range: "all" };
+const state: DashboardFilters = { section: "daily", model: null, agent: null, range: { kind: "all" } };
 let usageData: UsageData | null = null;
+let navYear = 0;
+let navMonth = 1;
+let viewingAll = true;
 let donutSeg: "cost" | "token" = "cost";
 let lastAgentShare: ReturnType<typeof buildDashboardSeries>["agentShare"] | null = null;
 
@@ -144,13 +147,91 @@ function countAgents(entries: PeriodEntry[]): number {
   return agents.size;
 }
 
+function latestPeriodAnchor(): void {
+  let maxYear = 0;
+  let maxMonth = 0;
+  const sections: ("daily" | "monthly")[] = ["daily", "monthly"];
+  for (const section of sections) {
+    for (const entry of usageData?.[section] ?? []) {
+      const match = /^(\d{4})-(\d{2})/.exec(entry.period);
+      if (!match) continue;
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      if (year > maxYear || (year === maxYear && month > maxMonth)) {
+        maxYear = year;
+        maxMonth = month;
+      }
+    }
+  }
+  if (maxYear === 0) {
+    const now = new Date();
+    navYear = now.getFullYear();
+    navMonth = now.getMonth() + 1;
+  } else {
+    navYear = maxYear;
+    navMonth = maxMonth;
+  }
+}
+
+function navLabel(): string {
+  if (state.section === "yearly") return `${navYear}`;
+  return `${navYear}/${String(navMonth).padStart(2, "0")}`;
+}
+
+function stepNav(direction: 1 | -1): void {
+  if (state.section === "yearly") {
+    navYear += direction;
+  } else {
+    navMonth += direction;
+    if (navMonth < 1) {
+      navMonth = 12;
+      navYear -= 1;
+    } else if (navMonth > 12) {
+      navMonth = 1;
+      navYear += 1;
+    }
+  }
+}
+
+function applyNavRange(): void {
+  state.range = viewingAll
+    ? { kind: "all" }
+    : state.section === "yearly"
+      ? { kind: "fixed", year: navYear }
+      : { kind: "fixed", year: navYear, month: navMonth };
+}
+
+function renderNav(): void {
+  const label = el("nav-label");
+  const contextBar = el("context-bar");
+  const contextText = el("context-bar-text");
+  const allBtn = el("nav-all");
+  if (viewingAll) {
+    label.textContent = "全期間";
+    contextBar.style.display = "none";
+    allBtn.classList.add("active");
+  } else {
+    const text = navLabel();
+    label.textContent = text;
+    contextText.textContent = text;
+    contextBar.style.display = "";
+    allBtn.classList.remove("active");
+  }
+}
+
+function rangeDescription(): string {
+  const range = state.range;
+  if (range.kind === "all") return "全期間の累計";
+  return range.month !== undefined
+    ? `${range.year}/${String(range.month).padStart(2, "0")} の合計`
+    : `${range.year} の合計`;
+}
+
 function renderKpis(kpi: KpiSummary, entries: PeriodEntry[]): void {
-  const today = new Date();
   el("kpi-total-cost").textContent = formatCurrency(kpi.totalCost);
-  el("kpi-month-cost").textContent = formatCurrency(kpi.currentMonthCost);
-  el("kpi-month-sub").textContent = `${today.getFullYear()}年${today.getMonth() + 1}月〜今日`;
+  el("kpi-total-sub").textContent = rangeDescription();
+  el("kpi-cache-rate").textContent = formatPercent(overallCacheHitRate(entries));
   el("kpi-total-tokens").textContent = formatTokens(kpi.totalTokens);
-  el("kpi-cache-sub").textContent = `キャッシュヒット率 ${formatPercent(overallCacheHitRate(entries))}`;
   el("kpi-models").textContent = String(kpi.activeModelCount);
   el("kpi-agents-sub").textContent = `${countAgents(entries)} エージェント`;
 }
@@ -402,6 +483,9 @@ function renderTable(entries: PeriodEntry[]): void {
 function render(): void {
   if (!usageData) return;
 
+  applyNavRange();
+  renderNav();
+
   const series = buildDashboardSeries(usageData, state);
   const entries = selectSectionEntries(usageData, state.section, state);
   const models = allModels(collectAllEntries());
@@ -419,10 +503,13 @@ function bindControls(): void {
   const section = document.getElementById("section") as HTMLSelectElement;
   const model = document.getElementById("model") as HTMLSelectElement;
   const agent = document.getElementById("agent") as HTMLSelectElement;
-  const range = document.getElementById("range") as HTMLSelectElement;
+  const navPrev = document.getElementById("nav-prev") as HTMLButtonElement;
+  const navNext = document.getElementById("nav-next") as HTMLButtonElement;
+  const navAll = document.getElementById("nav-all") as HTMLButtonElement;
 
   section.addEventListener("change", () => {
     state.section = section.value as DashboardFilters["section"];
+    viewingAll = true;
     render();
   });
   model.addEventListener("change", () => {
@@ -433,8 +520,20 @@ function bindControls(): void {
     state.agent = agent.value === "" ? null : agent.value;
     render();
   });
-  range.addEventListener("change", () => {
-    state.range = range.value as DashboardFilters["range"];
+  navPrev.addEventListener("click", () => {
+    if (viewingAll) latestPeriodAnchor();
+    viewingAll = false;
+    stepNav(-1);
+    render();
+  });
+  navNext.addEventListener("click", () => {
+    if (viewingAll) latestPeriodAnchor();
+    viewingAll = false;
+    stepNav(1);
+    render();
+  });
+  navAll.addEventListener("click", () => {
+    viewingAll = true;
     render();
   });
 

@@ -8,7 +8,6 @@ import {
   filterByAgent,
   filterByModel,
   filterByRange,
-  rangeStartDate,
   getSection,
   allModels,
   allAgents,
@@ -297,40 +296,18 @@ describe("modelUnitPrice / cacheHitRate", () => {
 describe("buildKpiSummary", () => {
   test("対象期間の合計コスト・総トークン・アクティブモデル数を返す", () => {
     const daily = getSection(DATA, "daily");
-    const kpi = buildKpiSummary(daily, new Date("2026-03-20"));
+    const kpi = buildKpiSummary(daily);
 
     expect(kpi.totalCost).toBeCloseTo(2.1);
     expect(kpi.totalTokens).toBe(3500);
     expect(kpi.activeModelCount).toBe(3);
   });
 
-  test("today の属する月のコストを currentMonthCost として返す", () => {
-    const daily = getSection(DATA, "daily");
-
-    expect(buildKpiSummary(daily, new Date("2026-03-20")).currentMonthCost).toBeCloseTo(0.4);
-    expect(buildKpiSummary(daily, new Date("2026-02-15")).currentMonthCost).toBeCloseTo(1.2);
-    expect(buildKpiSummary(daily, new Date("2026-01-01")).currentMonthCost).toBeCloseTo(0.5);
-  });
-
-  test("monthly 粒度でも当月の判定ができる", () => {
-    const monthly = getSection(DATA, "monthly");
-
-    expect(buildKpiSummary(monthly, new Date("2026-03-20")).currentMonthCost).toBeCloseTo(0.4);
-    expect(buildKpiSummary(monthly, new Date("2025-12-05")).currentMonthCost).toBeCloseTo(2.0);
-  });
-
-  test("yearly 粒度でも daily/monthly の期間から当月コストを算出する", () => {
+  test("yearly 集計結果からも合計を返す", () => {
     const yearly = buildYearly(getSection(DATA, "monthly"));
-    const monthly = getSection(DATA, "monthly");
-
-    const kpi = buildKpiSummary(yearly, new Date("2026-03-20"), monthly);
-    expect(kpi.currentMonthCost).toBeCloseTo(0.4);
+    const kpi = buildKpiSummary(yearly);
     expect(kpi.totalCost).toBeCloseTo(4.1);
-  });
-
-  test("monthEntries 未指定の場合は entries から当月コストを算出する", () => {
-    const daily = getSection(DATA, "daily");
-    expect(buildKpiSummary(daily, new Date("2026-03-20")).currentMonthCost).toBeCloseTo(0.4);
+    expect(kpi.activeModelCount).toBe(3);
   });
 });
 
@@ -399,63 +376,78 @@ describe("selectSectionEntries", () => {
     expect(entries[1]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
   });
 
-  test("range を適用すると開始日以降の期間だけに絞る", () => {
-    const daily = selectSectionEntries(DATA, "daily", { model: null, agent: null, range: "7d" }, new Date("2026-03-20"));
-    expect(daily.map((e) => e.period)).toEqual(["2026-03-15"]);
+  test("fixed の月指定は daily をその月の期間だけに絞る", () => {
+    const daily = selectSectionEntries(DATA, "daily", { model: null, agent: null, range: { kind: "fixed", year: 2026, month: 2 } });
+    expect(daily.map((e) => e.period)).toEqual(["2026-02-03"]);
+  });
 
-    const yearly = selectSectionEntries(DATA, "yearly", { model: null, agent: null, range: "30d" }, new Date("2026-03-20"));
+  test("fixed の年指定は yearly をその年の期間だけに絞る", () => {
+    const yearly = selectSectionEntries(DATA, "yearly", { model: null, agent: null, range: { kind: "fixed", year: 2026 } });
     expect(yearly.map((e) => e.period)).toEqual(["2026"]);
+  });
+
+  test("range 未指定は全期間を返す", () => {
+    const daily = selectSectionEntries(DATA, "daily", { model: null, agent: null });
+    expect(daily.map((e) => e.period)).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
   });
 });
 
-describe("rangeStartDate / filterByRange", () => {
-  test("直近7日の開始日は 6 日前の日付文字列", () => {
-    expect(rangeStartDate("7d", new Date("2026-03-20"))).toBe("2026-03-14");
-    expect(rangeStartDate("30d", new Date("2026-03-20"))).toBe("2026-02-19");
-    expect(rangeStartDate("90d", new Date("2026-03-20"))).toBe("2025-12-21");
-  });
-
-  test("all は開始日なし (null) を返す", () => {
-    expect(rangeStartDate("all", new Date("2026-03-20"))).toBeNull();
-  });
-
-  test("daily は日付単位で開始日以降に絞る", () => {
+describe("filterByRange", () => {
+  test("all は元の配列をそのまま返す", () => {
     const daily = getSection(DATA, "daily");
-    expect(filterByRange(daily, "7d", new Date("2026-03-20")).map((e) => e.period)).toEqual(["2026-03-15"]);
-  });
+    expect(filterByRange(daily, { kind: "all" })).toEqual(daily);
 
-  test("monthly は開始日を含む月以降に絞る", () => {
     const monthly = getSection(DATA, "monthly");
-    expect(filterByRange(monthly, "30d", new Date("2026-03-20")).map((e) => e.period)).toEqual(["2026-02", "2026-03"]);
+    expect(filterByRange(monthly, { kind: "all" })).toEqual(monthly);
   });
 
-  test("yearly は開始日を含む年以降に絞る", () => {
-    const monthly = getSection(DATA, "monthly");
-    expect(filterByRange(buildYearly(monthly), "30d", new Date("2026-03-20")).map((e) => e.period)).toEqual(["2026"]);
-  });
-
-  test("all は元の配列を返す", () => {
+  test("range 未指定は all として元の配列をそのまま返す", () => {
     const daily = getSection(DATA, "daily");
-    expect(filterByRange(daily, "all", new Date("2026-03-20"))).toEqual(daily);
+    expect(filterByRange(daily, undefined)).toEqual(daily);
+  });
+
+  test("fixed の月指定は daily をその月の期間だけに絞る", () => {
+    const daily = getSection(DATA, "daily");
+    expect(filterByRange(daily, { kind: "fixed", year: 2026, month: 2 }).map((e) => e.period)).toEqual(["2026-02-03"]);
+  });
+
+  test("fixed の月指定は monthly をその月の期間だけに絞る", () => {
+    const monthly = getSection(DATA, "monthly");
+    expect(filterByRange(monthly, { kind: "fixed", year: 2026, month: 2 }).map((e) => e.period)).toEqual(["2026-02"]);
+  });
+
+  test("fixed の年指定は daily をその年の期間だけに絞る", () => {
+    const daily = getSection(DATA, "daily");
+    expect(filterByRange(daily, { kind: "fixed", year: 2026 }).map((e) => e.period)).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
+  });
+
+  test("fixed の年指定は monthly をその年の期間だけに絞る", () => {
+    const monthly = getSection(DATA, "monthly");
+    expect(filterByRange(monthly, { kind: "fixed", year: 2026 }).map((e) => e.period)).toEqual(["2026-01", "2026-02", "2026-03"]);
+  });
+
+  test("fixed の年指定は yearly をその年の期間だけに絞る", () => {
+    const monthly = getSection(DATA, "monthly");
+    expect(filterByRange(buildYearly(monthly), { kind: "fixed", year: 2026 }).map((e) => e.period)).toEqual(["2026"]);
   });
 });
 
 describe("buildDashboardSeries", () => {
   test("期間切替で全系列がフィルタの期間粒度に連動する", () => {
-    const daily = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "all" });
+    const daily = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: { kind: "all" } });
     expect(daily.costStacked.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
     expect(daily.modelMix.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
     expect(daily.cacheHitRate.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
     expect(daily.unitPrice.labels).toEqual(["model-b", "model-c", "model-a"]);
 
-    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" });
+    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: { kind: "all" } });
     expect(yearly.costStacked.labels).toEqual(["2025", "2026"]);
     expect(yearly.modelMix.labels).toEqual(["2025", "2026"]);
     expect(yearly.cacheHitRate.labels).toEqual(["2025", "2026"]);
   });
 
-  test("range を指定すると全系列が期間で絞られる", () => {
-    const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "7d" }, new Date("2026-03-20"));
+  test("fixed 期間を指定すると全系列がその期間に絞られる", () => {
+    const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: { kind: "fixed", year: 2026, month: 3 } });
     expect(series.costStacked.labels).toEqual(["2026-03-15"]);
     expect(series.modelMix.labels).toEqual(["2026-03-15"]);
     expect(series.cacheHitRate.labels).toEqual(["2026-03-15"]);
@@ -463,18 +455,17 @@ describe("buildDashboardSeries", () => {
   });
 
   test("エージェント配分と KPI を系列とあわせて返す", () => {
-    const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "all" }, new Date("2026-03-20"));
+    const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: { kind: "all" } });
 
     expect(series.agentShare.hasDetail).toBe(true);
     expect(series.agentShare.agents).toEqual(["claude", "codex"]);
     expect(series.kpi.totalCost).toBeCloseTo(2.1);
-    expect(series.kpi.currentMonthCost).toBeCloseTo(0.4);
     expect(series.kpi.totalTokens).toBe(3500);
     expect(series.kpi.activeModelCount).toBe(3);
   });
 
   test("モデルフィルタで全系列がそのモデルのデータだけになる", () => {
-    const series = buildDashboardSeries(DATA, { section: "daily", model: "model-a", agent: null, range: "all" });
+    const series = buildDashboardSeries(DATA, { section: "daily", model: "model-a", agent: null, range: { kind: "all" } });
 
     expect(series.costStacked.datasets.map((d) => d.label)).toEqual(["model-a"]);
     expect(series.modelMix.datasets.map((d) => d.label)).toEqual(["model-a"]);
@@ -482,33 +473,24 @@ describe("buildDashboardSeries", () => {
     expect(series.kpi.totalCost).toBeCloseTo(1.2);
   });
 
-  test("yearly 表示でも今月のコストは daily/monthly から算出される", () => {
-    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" }, new Date("2026-03-20"));
+  test("yearly 表示でも選択期間の合計を返す", () => {
+    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: { kind: "all" } });
 
-    expect(yearly.kpi.currentMonthCost).toBeCloseTo(0.4);
     expect(yearly.kpi.totalCost).toBeCloseTo(4.1);
   });
 
-  test("今月のコストはモデル・エージェント・範囲フィルタに連動する", () => {
-    const codex = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: "codex", range: "all" }, new Date("2026-03-20"));
-    expect(codex.kpi.currentMonthCost).toBeCloseTo(0.4);
+  test("エージェント・範囲フィルタで KPI が連動する", () => {
+    const codex = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: "codex", range: { kind: "all" } });
+    expect(codex.kpi.totalCost).toBeCloseTo(0.7);
 
-    const claude = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: "claude", range: "all" }, new Date("2026-03-20"));
-    expect(claude.kpi.currentMonthCost).toBe(0);
-
-    const modelA = buildDashboardSeries(DATA, { section: "yearly", model: "model-a", agent: null, range: "all" }, new Date("2026-03-20"));
-    expect(modelA.kpi.currentMonthCost).toBe(0);
-
-    const ranged = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "7d" }, new Date("2026-01-25"));
-    expect(ranged.kpi.currentMonthCost).toBe(0);
-    const all = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" }, new Date("2026-01-25"));
-    expect(all.kpi.currentMonthCost).toBeCloseTo(0.5);
+    const ranged = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: { kind: "fixed", year: 2026, month: 1 } });
+    expect(ranged.kpi.totalCost).toBeCloseTo(0.5);
   });
 
   test("モデル＋エージェントの複合フィルタで KPI・ドーナツ・テーブル集計が一致する", () => {
-    const filters = { section: "daily" as const, model: "model-a", agent: "claude", range: "all" as const };
-    const series = buildDashboardSeries(DATA, filters, new Date("2026-03-20"));
-    const entries = selectSectionEntries(DATA, "daily", filters, new Date("2026-03-20"));
+    const filters = { section: "daily" as const, model: "model-a", agent: "claude", range: { kind: "all" } as const };
+    const series = buildDashboardSeries(DATA, filters);
+    const entries = selectSectionEntries(DATA, "daily", filters);
 
     const tableTotalCost = entries.reduce((sum, e) => sum + e.totalCost, 0);
     const tableTotalTokens = entries.reduce((sum, e) => sum + e.totalTokens, 0);
