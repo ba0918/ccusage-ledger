@@ -473,6 +473,30 @@ export interface ModelUnitPrice {
   hitRate: number;
 }
 
+export interface ModelCostRank {
+  modelName: string;
+  cost: number;
+  ratio: number;
+}
+
+export function buildModelCostRanking(entries: PeriodEntry[]): ModelCostRank[] {
+  const costByModel = new Map<string, number>();
+  let totalCost = 0;
+  for (const entry of entries) {
+    totalCost += entry.totalCost;
+    for (const breakdown of entry.modelBreakdowns) {
+      costByModel.set(breakdown.modelName, (costByModel.get(breakdown.modelName) ?? 0) + breakdown.cost);
+    }
+  }
+  return [...costByModel.entries()]
+    .map(([modelName, cost]) => ({
+      modelName,
+      cost,
+      ratio: totalCost === 0 ? 0 : (cost / totalCost) * 100,
+    }))
+    .sort((a, b) => b.cost - a.cost);
+}
+
 export function buildModelUnitPrices(entries: PeriodEntry[]): ModelUnitPrice[] {
   const byModel = new Map<string, { cost: number; tokens: number; cacheRead: number }>();
   for (const entry of entries) {

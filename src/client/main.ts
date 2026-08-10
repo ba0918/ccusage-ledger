@@ -4,6 +4,7 @@ import {
   allModels,
   buildAgentEfficiency,
   buildDashboardSeries,
+  buildModelCostRanking,
   buildModelUnitPrices,
   modelColor,
   otherBreakdown,
@@ -14,6 +15,7 @@ import {
   type ChartSeries,
   type DashboardFilters,
   type KpiSummary,
+  type ModelCostRank,
   type ModelUnitPrice,
   type OtherBreakdownItem,
 } from "../aggregate";
@@ -384,6 +386,22 @@ function renderCacheHit(series: ChartSeries): void {
   });
 }
 
+function renderCostRanking(ranking: ModelCostRank[], models: string[]): void {
+  const maxCost = Math.max(...ranking.map((r) => r.cost), 1);
+  const tbody = document.getElementById("cost-ranking-body") as HTMLElement;
+  tbody.innerHTML = ranking
+    .map((r) => {
+      const width = Math.max((r.cost / maxCost) * 100, 1);
+      return `<tr>
+        <td class="model" title="${escapeHtml(r.modelName)}">${escapeHtml(shortModelName(r.modelName))}</td>
+        <td class="bar-cell"><div class="bar" style="width:${width}%;background:${datasetColor(r.modelName, models)}"></div></td>
+        <td class="num">${formatCurrency(r.cost)}</td>
+        <td class="num">${Math.round(r.ratio)}%</td>
+      </tr>`;
+    })
+    .join("");
+}
+
 function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentShare"], efficiency: AgentEfficiency[]): void {
   lastAgentShare = share;
   lastAgentEfficiency = efficiency;
@@ -538,6 +556,7 @@ function render(): void {
   renderModelMix(series.modelMix, models, tooltipCtx);
   renderUnitPrice(buildModelUnitPrices(entries));
   renderAgentDonut(series.agentShare, buildAgentEfficiency(entries));
+  renderCostRanking(buildModelCostRanking(entries), models);
   renderCacheHit(series.cacheHitRate);
   renderTable(entries);
 }

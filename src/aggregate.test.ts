@@ -22,6 +22,7 @@ import {
   buildKpiSummary,
   buildAgentShare,
   buildAgentEfficiency,
+  buildModelCostRanking,
   modelColor,
   otherBreakdown,
   buildModelUnitPrices,
@@ -644,6 +645,18 @@ describe("buildModelMixSeries", () => {
     const other = series.datasets.find((d) => d.label === "その他")!;
     expect(other.data[0]).toBeCloseTo(50);
     expect(other.data[1]).toBeCloseTo(10);
+  });
+});
+
+describe("buildModelCostRanking", () => {
+  test("モデル別の累積コストを降順で返す", () => {
+    const daily = getSection(DATA, "daily");
+    const ranking = buildModelCostRanking(daily);
+
+    expect(ranking.map((r) => r.modelName)).toEqual(["model-a", "model-b", "model-c"]);
+    expect(ranking[0]!.cost).toBeCloseTo(1.2);
+    expect(ranking[0]!.ratio).toBeCloseTo(57.14);
+    expect(ranking[2]!.cost).toBeCloseTo(0.3);
   });
 });
 
