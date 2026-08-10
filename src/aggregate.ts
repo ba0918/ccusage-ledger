@@ -327,6 +327,36 @@ export interface AgentShareData {
   hasDetail: boolean;
 }
 
+export interface AgentEfficiency {
+  agent: string;
+  cost: number;
+  tokens: number;
+  unitPrice: number;
+  hitRate: number;
+}
+
+export function buildAgentEfficiency(entries: PeriodEntry[]): AgentEfficiency[] {
+  const byAgent = new Map<string, { cost: number; tokens: number; cacheRead: number }>();
+  for (const entry of entries) {
+    for (const breakdown of entry.agents ?? []) {
+      const agg = byAgent.get(breakdown.agent) ?? { cost: 0, tokens: 0, cacheRead: 0 };
+      agg.cost += breakdown.totalCost;
+      agg.tokens += breakdown.totalTokens;
+      agg.cacheRead += breakdown.cacheReadTokens;
+      byAgent.set(breakdown.agent, agg);
+    }
+  }
+  return [...byAgent.entries()]
+    .map(([agent, agg]) => ({
+      agent,
+      cost: agg.cost,
+      tokens: agg.tokens,
+      unitPrice: agg.tokens === 0 ? 0 : (agg.cost / agg.tokens) * 1_000_000,
+      hitRate: agg.tokens === 0 ? 0 : agg.cacheRead / agg.tokens,
+    }))
+    .sort((a, b) => b.cost - a.cost);
+}
+
 export function buildAgentShare(entries: PeriodEntry[]): AgentShareData {
   const costByAgent = new Map<string, number>();
   const tokensByAgent = new Map<string, number>();

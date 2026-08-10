@@ -150,12 +150,17 @@
       .donut-center .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
       .donut-center .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
       .donut-note { color: var(--muted); font-size: 13px; }
-      .agent-legend { display: flex; flex-direction: column; gap: 10px; font-size: 13px; flex: 1; min-width: 220px; }
-      .agent-legend .row { display: flex; align-items: center; gap: 10px; }
-      .agent-legend .swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
-      .agent-legend .name { width: 90px; color: #cbd2e0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .agent-legend .val { margin-left: auto; font-variant-numeric: tabular-nums; color: #cbd2e0; }
-      .agent-legend .pct { width: 52px; text-align: right; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .agent-efficiency { flex: 1; min-width: 280px; overflow-x: auto; }
+      .agent-efficiency table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .agent-efficiency thead th {
+        text-align: right; color: var(--muted); font-weight: 500; font-size: 11px;
+        padding: 4px 6px; border-bottom: 1px solid var(--border); white-space: nowrap;
+      }
+      .agent-efficiency thead th:first-child { text-align: left; }
+      .agent-efficiency tbody td { padding: 5px 6px; border-bottom: 1px solid #1b2030; white-space: nowrap; }
+      .agent-efficiency .a-name { display: flex; align-items: center; gap: 6px; color: #cbd2e0; }
+      .agent-efficiency .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+      .agent-efficiency .num { text-align: right; font-variant-numeric: tabular-nums; color: #cbd2e0; }
 
       .table-card { margin-top: 20px; }
       .table-head { display: flex; justify-content: space-between; align-items: baseline; padding: 18px 18px 12px; gap: 12px; flex-wrap: wrap; }
@@ -291,7 +296,14 @@
                 </div>
               </div>
             </div>
-            <div class="agent-legend" id="agent-legend"></div>
+            <div class="agent-efficiency">
+              <table>
+                <thead>
+                  <tr><th>エージェント</th><th>コスト</th><th>トークン</th><th>実効単価</th><th>ヒット率</th></tr>
+                </thead>
+                <tbody id="agent-efficiency-body"></tbody>
+              </table>
+            </div>
           </div>
         </div>
 

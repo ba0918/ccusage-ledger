@@ -21,6 +21,7 @@ import {
   buildDashboardSeries,
   buildKpiSummary,
   buildAgentShare,
+  buildAgentEfficiency,
   modelColor,
   otherBreakdown,
   buildModelUnitPrices,
@@ -335,6 +336,25 @@ describe("buildKpiSummary", () => {
     const kpi = buildKpiSummary(yearly);
     expect(kpi.totalCost).toBeCloseTo(4.1);
     expect(kpi.activeModelCount).toBe(3);
+  });
+});
+
+describe("buildAgentEfficiency", () => {
+  test("エージェント別のコスト・トークン・実効単価・ヒット率を返す", () => {
+    const daily = getSection(DATA, "daily");
+    const eff = buildAgentEfficiency(daily);
+
+    const claude = eff.find((e) => e.agent === "claude")!;
+    expect(claude.cost).toBeCloseTo(1.4);
+    expect(claude.tokens).toBe(2500);
+    expect(claude.unitPrice).toBeCloseTo(560);
+    expect(claude.hitRate).toBeCloseTo(0.4);
+
+    const codex = eff.find((e) => e.agent === "codex")!;
+    expect(codex.cost).toBeCloseTo(0.7);
+    expect(codex.tokens).toBe(1000);
+    expect(codex.unitPrice).toBeCloseTo(700);
+    expect(codex.hitRate).toBeCloseTo(0.2);
   });
 });
 

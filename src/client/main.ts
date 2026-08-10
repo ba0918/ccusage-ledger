@@ -2,6 +2,7 @@ import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
 import {
   allAgents,
   allModels,
+  buildAgentEfficiency,
   buildDashboardSeries,
   buildModelUnitPrices,
   modelColor,
@@ -9,6 +10,7 @@ import {
   selectSectionEntries,
   topModelsByCost,
   TOP_N,
+  type AgentEfficiency,
   type ChartSeries,
   type DashboardFilters,
   type KpiSummary,
@@ -25,6 +27,7 @@ let navMonth = 1;
 let viewingAll = true;
 let donutSeg: "cost" | "token" = "cost";
 let lastAgentShare: ReturnType<typeof buildDashboardSeries>["agentShare"] | null = null;
+let lastAgentEfficiency: AgentEfficiency[] = [];
 
 const AGENT_PALETTE = ["#7aa7ff", "#4cd6a0", "#f5b34d", "#c084fc", "#76b7b2", "#e15759"];
 const OTHER_COLOR = "#8b92a7";
@@ -381,28 +384,29 @@ function renderCacheHit(series: ChartSeries): void {
   });
 }
 
-function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentShare"]): void {
+function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentShare"], efficiency: AgentEfficiency[]): void {
   lastAgentShare = share;
-  const legend = document.getElementById("agent-legend")!;
+  lastAgentEfficiency = efficiency;
+  const effBody = document.getElementById("agent-efficiency-body")!;
   el("donut-value").textContent = "–";
   el("donut-label").textContent = donutSeg === "cost" ? "合計コスト" : "合計トークン";
 
   if (!share.hasDetail || share.agents.length === 0) {
     charts["chart-agent-donut"]?.destroy();
     delete charts["chart-agent-donut"];
-    legend.innerHTML = '<div class="donut-note">エージェント別内訳データがありません</div>';
+    effBody.innerHTML = '<tr><td colspan="5" class="donut-note">エージェント別内訳データがありません</td></tr>';
     return;
   }
 
   const data = donutSeg === "cost" ? share.cost : share.tokens;
-  const colors = share.agents.map((_, index) => AGENT_PALETTE[index % AGENT_PALETTE.length]!);
+  const colors = efficiency.map((_, index) => AGENT_PALETTE[index % AGENT_PALETTE.length]!);
 
   createChart(
     "chart-agent-donut",
     "doughnut",
     {
-      labels: share.agents,
-      datasets: [{ data, backgroundColor: colors, borderColor: "#141824", borderWidth: 2, cutout: "62%" }],
+      labels: efficiency.map((e) => e.agent),
+      datasets: [{ data: efficiency.map((e) => e.cost), backgroundColor: colors, borderColor: "#141824", borderWidth: 2, cutout: "62%" }],
     },
     { plugins: { legend: { display: false } } },
   );
@@ -411,17 +415,18 @@ function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentS
   el("donut-value").textContent = donutSeg === "cost" ? formatCurrency(total) : formatTokens(total);
   el("donut-label").textContent = donutSeg === "cost" ? "合計コスト" : "合計トークン";
 
-  legend.innerHTML = share.agents
-    .map((agent, index) => {
-      const value = donutSeg === "cost" ? share.cost[index] ?? 0 : share.tokens[index] ?? 0;
-      const ratio = donutSeg === "cost" ? share.costShare[index] ?? 0 : share.tokenShare[index] ?? 0;
+  effBody.innerHTML = efficiency
+    .map((e, index) => {
+      const value = donutSeg === "cost" ? e.cost : e.tokens;
       const formatted = donutSeg === "cost" ? formatCurrency(value) : formatTokens(value);
-      return `<div class="row">
-        <span class="swatch" style="background:${colors[index] ?? AGENT_PALETTE[0]}"></span>
-        <span class="name">${escapeHtml(agent)}</span>
-        <span class="val">${formatted}</span>
-        <span class="pct">${formatPercent(ratio)}</span>
-      </div>`;
+      const ratio = donutSeg === "cost" ? (share.totalCost === 0 ? 0 : e.cost / share.totalCost) : (share.totalTokens === 0 ? 0 : e.tokens / share.totalTokens);
+      return `<tr>
+        <td><span class="a-name"><span class="swatch" style="background:${colors[index] ?? AGENT_PALETTE[0]}"></span>${escapeHtml(e.agent)}</span></td>
+        <td class="num">${formatted} <span style="color:var(--muted);font-size:11px">${formatPercent(ratio)}</span></td>
+        <td class="num">${formatTokens(e.tokens)}</td>
+        <td class="num">$${e.unitPrice.toFixed(2)}</td>
+        <td class="num">${Math.round(e.hitRate * 100)}%</td>
+      </tr>`;
     })
     .join("");
 }
@@ -532,7 +537,7 @@ function render(): void {
   renderCostStacked(series.costStacked, models, tooltipCtx);
   renderModelMix(series.modelMix, models, tooltipCtx);
   renderUnitPrice(buildModelUnitPrices(entries));
-  renderAgentDonut(series.agentShare);
+  renderAgentDonut(series.agentShare, buildAgentEfficiency(entries));
   renderCacheHit(series.cacheHitRate);
   renderTable(entries);
 }
@@ -580,7 +585,7 @@ function bindControls(): void {
       document.querySelectorAll(".seg-toggle button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       donutSeg = (btn as HTMLElement).dataset.seg === "token" ? "token" : "cost";
-      if (lastAgentShare) renderAgentDonut(lastAgentShare);
+      if (lastAgentShare) renderAgentDonut(lastAgentShare, lastAgentEfficiency);
     });
   });
 }
