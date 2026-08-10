@@ -53,11 +53,12 @@ function collectAllEntries() {
   return sections.flatMap((section) => usageData?.[section] ?? []);
 }
 
-function withColors(series: ChartSeries): ChartSeries {
+function withColors(series: ChartSeries, fill: boolean | "origin" = false): ChartSeries {
   return {
     ...series,
     datasets: series.datasets.map((dataset) => ({
       ...dataset,
+      fill,
       backgroundColor: modelColors(dataset.label),
       borderColor: modelColors(dataset.label),
     })),
@@ -88,7 +89,7 @@ function render(): void {
   createChart("chart-monthly-cost", "bar", withColors(series.monthlyCost), {
     scales: { y: { beginAtZero: true } },
   });
-  createChart("chart-model-mix", "line", withColors(series.modelMix), {
+  createChart("chart-model-mix", "line", withColors(series.modelMix, "origin"), {
     scales: { y: { min: 0, max: 100, stacked: true }, x: { stacked: true } },
     plugins: { legend: { display: false } },
   });
