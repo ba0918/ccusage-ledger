@@ -19,7 +19,7 @@
 ## アーキテクチャ
 
 ```
-bunx ccusage --json  （サーバ起動時に1回実行）
+bunx ccusage --json --sections daily,monthly  （サーバ起動時に1回実行）
         │
         ▼
 data/usage.json      （最新1ファイルキャッシュ）
@@ -37,13 +37,13 @@ Bun.serve            （ローカルサーバ）
 
 ## データ取得
 
-1. サーバ起動時に `bunx ccusage --json` を子プロセスとして実行
+1. サーバ起動時に `bunx ccusage --json --sections daily,monthly` を子プロセスとして実行
 2. 標準出力の JSON を `data/usage.json` に上書き保存
 3. サーバはこのキャッシュファイルを API 経由で配信
 
 ## データ構造（ccusage JSON）
 
-ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` のセクションを持つ。`yearly` は無いため、monthly をクライアントで集計して生成する。
+ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` などのセクションを持つ。本ダッシュボードは `--sections daily,monthly` で daily と monthly のみ取得する。`yearly` は無いため、monthly をクライアントで集計して生成する。
 
 各 period エントリ:
 

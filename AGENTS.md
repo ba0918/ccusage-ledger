@@ -5,12 +5,12 @@
 ## 技術スタック
 
 - **サーバ**: Bun + TypeScript (`Bun.serve`)。外部フレームワークなし
-- **データ取得**: `bunx ccusage --json` を spawn して全履歴を取得
-- **フロント**: 素の TypeScript + Chart.js (vendored)。`bun build` でバンドル
+- **データ取得**: `bunx ccusage --json --sections daily,monthly` を spawn して全履歴を取得
+- **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
 ## データフロー
 
-1. サーバ起動時に `bunx ccusage --json` を実行し、そのマシンの全履歴を取得
+1. サーバ起動時に `bunx ccusage --json --sections daily,monthly` を実行し、そのマシンの全履歴を取得
 2. 結果を `data/usage.json` に上書き保存（最新1ファイルキャッシュ方式）
 3. サーバが JSON を配信し、フロントがクライアント側で集計して描画
 
@@ -22,7 +22,15 @@
 - yearly は monthly をクライアントで集計して生成
 - スキーマには将来の複数デバイス対応のため `device` フィールドを最初から含める
 
-## 主要コマンド（実装時に確定）
+## フィルタ
 
-- サーバ起動: `bun run src/server.ts`
-- フロントビルド: `bun build`
+- 期間単位: daily / monthly / yearly
+- 表示範囲: 全期間 / 直近90日 / 直近30日 / 直近7日（すべてのグラフに適用）
+- モデル別 / エージェント別
+
+## 主要コマンド
+
+- サーバ起動: `bun run dev`（フロントのビルド後に起動。`bun run src/server.ts` のみの起動でも可）
+- フロントビルド: `bun run build`
+- テスト: `bun test`
+- 型チェック: `bunx tsc --noEmit`
