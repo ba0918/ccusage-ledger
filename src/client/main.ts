@@ -1,0 +1,141 @@
+import type { UsageData } from "../types";
+import {
+  allAgents,
+  allModels,
+  buildDashboardSeries,
+  type DashboardFilters,
+  type ChartSeries,
+} from "../aggregate";
+
+const PALETTE = [
+  "#4e79a7",
+  "#f28e2b",
+  "#e15759",
+  "#76b7b2",
+  "#59a14f",
+  "#edc948",
+  "#b07aa1",
+  "#ff9da7",
+  "#9c755f",
+  "#bab0ac",
+];
+
+const state: DashboardFilters = { section: "daily", model: null, agent: null };
+let usageData: UsageData | null = null;
+
+const charts: Record<string, ChartInstance> = {};
+
+async function loadData(): Promise<void> {
+  const res = await fetch("/api/usage");
+  if (!res.ok) throw new Error(`/api/usage failed: ${res.status}`);
+  usageData = (await res.json()) as UsageData;
+}
+
+function fillSelect(id: string, values: string[]): void {
+  const select = document.getElementById(id) as HTMLSelectElement;
+  select.innerHTML = '<option value="">すべて</option>';
+  for (const value of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  }
+}
+
+function modelColors(modelName: string): string {
+  const all = allModels(collectAllEntries());
+  const index = all.indexOf(modelName);
+  return PALETTE[index % PALETTE.length] ?? PALETTE[0]!;
+}
+
+function collectAllEntries() {
+  const sections: ("daily" | "monthly")[] = ["daily", "monthly"];
+  return sections.flatMap((section) => usageData?.[section] ?? []);
+}
+
+function withColors(series: ChartSeries): ChartSeries {
+  return {
+    ...series,
+    datasets: series.datasets.map((dataset) => ({
+      ...dataset,
+      backgroundColor: modelColors(dataset.label),
+      borderColor: modelColors(dataset.label),
+    })),
+  };
+}
+
+function createChart(id: string, type: string, series: ChartSeries, options: ChartOptions = {}): void {
+  const canvas = document.getElementById(id) as HTMLCanvasElement;
+  charts[id]?.destroy();
+
+  const chartOptions: ChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    ...options,
+  };
+  charts[id] = new Chart(canvas, { type, data: { labels: series.labels, datasets: series.datasets }, options: chartOptions });
+}
+
+function render(): void {
+  if (!usageData) return;
+
+  const series = buildDashboardSeries(usageData, state);
+
+  createChart("chart-daily-cost", "bar", withColors(series.dailyCost), {
+    scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } },
+    plugins: { legend: { display: false } },
+  });
+  createChart("chart-monthly-cost", "bar", withColors(series.monthlyCost), {
+    scales: { y: { beginAtZero: true } },
+  });
+  createChart("chart-model-mix", "line", withColors(series.modelMix), {
+    scales: { y: { min: 0, max: 100, stacked: true }, x: { stacked: true } },
+    plugins: { legend: { display: false } },
+  });
+  createChart("chart-unit-price", "line", withColors(series.unitPrice), {
+    scales: { y: { beginAtZero: true } },
+  });
+  createChart("chart-cache-hit", "line", withColors(series.cacheHitRate), {
+    scales: { y: { min: 0, max: 1, ticks: { callback: (value: number | string) => `${Math.round(Number(value) * 100)}%` } } },
+  });
+}
+
+function bindControls(): void {
+  const section = document.getElementById("section") as HTMLSelectElement;
+  const model = document.getElementById("model") as HTMLSelectElement;
+  const agent = document.getElementById("agent") as HTMLSelectElement;
+
+  section.addEventListener("change", () => {
+    state.section = section.value as DashboardFilters["section"];
+    render();
+  });
+  model.addEventListener("change", () => {
+    state.model = model.value === "" ? null : model.value;
+    render();
+  });
+  agent.addEventListener("change", () => {
+    state.agent = agent.value === "" ? null : agent.value;
+    render();
+  });
+}
+
+function setStatus(message: string, isError = false): void {
+  const status = document.getElementById("status") as HTMLSpanElement;
+  status.textContent = message;
+  status.classList.toggle("error", isError);
+}
+
+async function main(): Promise<void> {
+  try {
+    await loadData();
+    fillSelect("model", allModels(collectAllEntries()));
+    fillSelect("agent", allAgents(collectAllEntries()));
+    bindControls();
+    render();
+    setStatus("読み込み完了");
+  } catch (error) {
+    setStatus(`データ取得エラー: ${error instanceof Error ? error.message : String(error)}`, true);
+  }
+}
+
+void main();

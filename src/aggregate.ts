@@ -17,6 +17,15 @@ export function getSection(data: UsageData, section: Section): PeriodEntry[] {
   return data[section] ?? [];
 }
 
+export function selectSectionEntries(
+  data: UsageData,
+  section: "daily" | "weekly" | "monthly" | "yearly",
+  filters: { model: string | null; agent: string | null },
+): PeriodEntry[] {
+  const entries = section === "yearly" ? buildYearly(getSection(data, "monthly")) : getSection(data, section);
+  return filterByAgent(filterByModel(entries, filters.model), filters.agent);
+}
+
 export function buildYearly(monthly: PeriodEntry[]): PeriodEntry[] {
   const byYear = new Map<string, PeriodEntry[]>();
   for (const entry of monthly) {
@@ -146,6 +155,34 @@ function orderedModels(entries: PeriodEntry[]): string[] {
   return order;
 }
 
+export interface DashboardFilters {
+  section: "daily" | "weekly" | "monthly" | "yearly";
+  model: string | null;
+  agent: string | null;
+}
+
+export interface DashboardSeries {
+  dailyCost: ChartSeries;
+  monthlyCost: ChartSeries;
+  modelMix: ChartSeries;
+  unitPrice: ChartSeries;
+  cacheHitRate: ChartSeries;
+}
+
+export function buildDashboardSeries(data: UsageData, filters: DashboardFilters): DashboardSeries {
+  const daily = selectSectionEntries(data, "daily", filters);
+  const monthly = selectSectionEntries(data, "monthly", filters);
+  const section = selectSectionEntries(data, filters.section, filters);
+
+  return {
+    dailyCost: buildModelCostSeries(daily),
+    monthlyCost: buildCostBarSeries(monthly),
+    modelMix: buildModelMixSeries(section),
+    unitPrice: buildUnitPriceSeries(section),
+    cacheHitRate: buildCacheHitRateSeries(section),
+  };
+}
+
 export function buildModelCostSeries(entries: PeriodEntry[]): ChartSeries {
   const labels = entries.map((e) => e.period);
   const models = orderedModels(entries);
@@ -157,6 +194,14 @@ export function buildModelCostSeries(entries: PeriodEntry[]): ChartSeries {
     }),
   }));
   return { labels, datasets };
+}
+
+export function buildCostBarSeries(entries: PeriodEntry[]): ChartSeries {
+  const labels = entries.map((e) => e.period);
+  return {
+    labels,
+    datasets: [{ label: "コスト", data: entries.map((e) => e.totalCost) }],
+  };
 }
 
 export function buildModelMixSeries(entries: PeriodEntry[]): ChartSeries {

@@ -12,9 +12,12 @@ import {
   allAgents,
   modelUnitPrice,
   buildModelCostSeries,
+  buildCostBarSeries,
   buildModelMixSeries,
   buildUnitPriceSeries,
   buildCacheHitRateSeries,
+  selectSectionEntries,
+  buildDashboardSeries,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -147,6 +150,35 @@ describe("modelUnitPrice / cacheHitRate", () => {
   });
 });
 
+describe("selectSectionEntries", () => {
+  test("yearly を選ぶと monthly を年集計した結果を返す", () => {
+    const entries = selectSectionEntries(DATA, "yearly", { model: null, agent: null });
+    expect(entries.map((e) => e.period)).toEqual(["2025", "2026"]);
+  });
+
+  test("モデルフィルタとエージェントフィルタを同時に適用する", () => {
+    const entries = selectSectionEntries(DATA, "daily", { model: "model-a", agent: "claude" });
+    expect(entries.map((e) => e.period)).toEqual(["2026-01-10", "2026-02-03"]);
+    expect(entries[0]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
+    expect(entries[1]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
+  });
+});
+
+describe("buildDashboardSeries", () => {
+  test("期間切替で全てのチャートデータを生成する", () => {
+    const daily = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null });
+    expect(daily.dailyCost.labels).toHaveLength(3);
+    expect(daily.monthlyCost.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
+
+    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null });
+    expect(yearly.dailyCost.labels).toHaveLength(3);
+    expect(yearly.monthlyCost.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
+    expect(yearly.modelMix.labels).toEqual(["2025", "2026"]);
+    expect(yearly.unitPrice.labels).toEqual(["2025", "2026"]);
+    expect(yearly.cacheHitRate.labels).toEqual(["2025", "2026"]);
+  });
+});
+
 describe("buildModelCostSeries", () => {
   test("期間をラベルに、モデル別コストを dataset に持つ", () => {
     const daily = getSection(DATA, "daily");
@@ -157,6 +189,16 @@ describe("buildModelCostSeries", () => {
     expect(modelA.data).toEqual([0.3, 0.9, 0]);
     const modelB = series.datasets.find((d) => d.label === "model-b")!;
     expect(modelB.data).toEqual([0.2, 0, 0.4]);
+  });
+});
+
+describe("buildCostBarSeries", () => {
+  test("期間と合計コストを dataset に持つ", () => {
+    const monthly = getSection(DATA, "monthly");
+    const series = buildCostBarSeries(monthly);
+
+    expect(series.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
+    expect(series.datasets[0]!.data).toEqual([2.0, 0.5, 1.2, 0.4]);
   });
 });
 

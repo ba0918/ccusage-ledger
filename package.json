@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/server.ts",
-    "build": "bun build src/client/main.ts --outdir dist",
+    "build": "bun build src/client/main.ts --outfile dist/bundle.js",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
