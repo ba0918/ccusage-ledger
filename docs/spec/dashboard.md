@@ -19,7 +19,7 @@
 ## アーキテクチャ
 
 ```
-bunx ccusage --json --sections daily,monthly  （サーバ起動時に1回実行）
+bunx ccusage --json --sections daily,monthly --by-agent  （サーバ起動時に1回実行）
         │
         ▼
 data/usage.json      （最新1ファイルキャッシュ）
@@ -37,13 +37,13 @@ Bun.serve            （ローカルサーバ）
 
 ## データ取得
 
-1. サーバ起動時に `bunx ccusage --json --sections daily,monthly` を子プロセスとして実行
+1. サーバ起動時に `bunx ccusage --json --sections daily,monthly --by-agent` を子プロセスとして実行
 2. 標準出力の JSON を `data/usage.json` に上書き保存
 3. サーバはこのキャッシュファイルを API 経由で配信
 
 ## データ構造（ccusage JSON）
 
-ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` などのセクションを持つ。本ダッシュボードは `--sections daily,monthly` で daily と monthly のみ取得する。`yearly` は無いため、monthly をクライアントで集計して生成する。
+ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` などのセクションを持つ。本ダッシュボードは `--sections daily,monthly --by-agent` で daily と monthly を取得し、各 period エントリにエージェント別の内訳（`agents[]`）を含める。`yearly` は無いため、monthly をクライアントで集計して生成する。
 
 各 period エントリ:
 
@@ -55,25 +55,30 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 - `modelsUsed[]`: 使用モデル名のリスト
 - `modelBreakdowns[]`: モデル別の `modelName` / `cost` / 各トークン数
 - `metadata.agents[]`: エージェント名のリスト（claude, codex, opencode など）
+- `agents[]`: エージェント別の内訳（`agent` 名 / `totalCost` / 各トークン数 / `modelBreakdowns[]`）。`--by-agent` で取得
 
 スキーマには将来の複数デバイス対応のため `device` フィールドを最初から含める。
 
-## ビュー（グラフ）
+## UI 構成
 
-1 画面に複数のグラフを並べる:
+1 画面に KPI サマリー、グラフ群、データテーブルを並べる:
 
-- **日別コスト積み上げ（モデル別）**: daily をモデル別に積み上げた棒グラフ
-- **月別コスト**: monthly のコスト棒グラフ
-- **モデル構成（model-mix）比率トレンド**: 期間ごとのモデル別コスト比率。コスト増が単価上昇なのかモデル構成の変化なのかを判別できる
-- **単価（$/MTok）推移**: モデル別の 1M トークンあたりコスト
-- **キャッシュヒット率推移**: キャッシュ読み取りの割合（定義は実装時に確定）
+- **KPI サマリー**: 合計コスト / 今月のコスト / 総トークン / アクティブモデル数
+- **コスト積み上げ（モデル別）**: 期間フィルタで日別 / 月別 / 年別に切り替わる棒グラフ。モデルは上位数件 +「その他」に集約して識別性を確保
+- **モデル構成（model-mix）比率トレンド**: 期間ごとのモデル別コスト比率
+- **モデル別実効単価（バー）**: 対象期間の実効単価（$/MTok）をモデル別に比較。キャッシュヒット率込みの実効値
+- **エージェント別配分（ドーナツ）**: コスト / トークンの割合をトグルで切り替え表示
+- **キャッシュヒット率推移**: キャッシュ読み取りの割合（横軸は期間）
+- **データテーブル**: 期間行を開閉するとエージェント別内訳（モデル・入力・出力・キャッシュヒット率・コスト）を表示。最大高さで内部スクロールし、期間フィルタに連動
+
+すべてのグラフに縦軸・横軸のラベルを表示し、マウスホバーで詳細（tooltip）を出す。
 
 ## フィルタ
 
-- 期間単位: daily / monthly / yearly
+- 期間単位: daily / monthly / yearly（すべてのグラフに連動し、コスト積み上げの粒度も切り替わる）
 - 表示範囲: 全期間 / 直近90日 / 直近30日 / 直近7日（すべてのグラフに適用。daily は日付、monthly は月、yearly は年単位で絞る）
 - モデル別: 使用モデルで絞り込み
-- エージェント別: エージェントで絞り込み（データ出所は実装時に確定）
+- エージェント別: エージェントで絞り込み
 
 ## 将来拡張
 

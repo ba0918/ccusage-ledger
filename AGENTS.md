@@ -5,12 +5,12 @@
 ## 技術スタック
 
 - **サーバ**: Bun + TypeScript (`Bun.serve`)。外部フレームワークなし
-- **データ取得**: `bunx ccusage --json --sections daily,monthly` を spawn して全履歴を取得
+- **データ取得**: `bunx ccusage --json --sections daily,monthly --by-agent` を spawn して全履歴を取得
 - **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
 ## データフロー
 
-1. サーバ起動時に `bunx ccusage --json --sections daily,monthly` を実行し、そのマシンの全履歴を取得
+1. サーバ起動時に `bunx ccusage --json --sections daily,monthly --by-agent` を実行し、そのマシンの全履歴を取得
 2. 結果を `data/usage.json` に上書き保存（最新1ファイルキャッシュ方式）
 3. サーバが JSON を配信し、フロントがクライアント側で集計して描画
 
