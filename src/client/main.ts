@@ -8,7 +8,7 @@ import {
   type ChartSeries,
 } from "../aggregate";
 
-const state: DashboardFilters = { section: "daily", model: null, agent: null };
+const state: DashboardFilters = { section: "daily", model: null, agent: null, range: "all" };
 let usageData: UsageData | null = null;
 
 const charts: Record<string, ChartInstance> = {};
@@ -88,6 +88,7 @@ function bindControls(): void {
   const section = document.getElementById("section") as HTMLSelectElement;
   const model = document.getElementById("model") as HTMLSelectElement;
   const agent = document.getElementById("agent") as HTMLSelectElement;
+  const range = document.getElementById("range") as HTMLSelectElement;
 
   section.addEventListener("change", () => {
     state.section = section.value as DashboardFilters["section"];
@@ -99,6 +100,10 @@ function bindControls(): void {
   });
   agent.addEventListener("change", () => {
     state.agent = agent.value === "" ? null : agent.value;
+    render();
+  });
+  range.addEventListener("change", () => {
+    state.range = range.value as DashboardFilters["range"];
     render();
   });
 }

@@ -20,10 +20,12 @@ export function getSection(data: UsageData, section: Section): PeriodEntry[] {
 export function selectSectionEntries(
   data: UsageData,
   section: "daily" | "monthly" | "yearly",
-  filters: { model: string | null; agent: string | null },
+  filters: { model: string | null; agent: string | null; range?: RangePreset },
+  today: Date = new Date(),
 ): PeriodEntry[] {
   const entries = section === "yearly" ? buildYearly(getSection(data, "monthly")) : getSection(data, section);
-  return filterByAgent(filterByModel(entries, filters.model), filters.agent);
+  const ranged = filterByRange(entries, filters.range, today);
+  return filterByAgent(filterByModel(ranged, filters.model), filters.agent);
 }
 
 export function buildYearly(monthly: PeriodEntry[]): PeriodEntry[] {
@@ -108,6 +110,34 @@ export function filterByAgent(entries: PeriodEntry[], agent: string | null): Per
   return entries.filter((entry) => entry.metadata?.agents?.includes(agent) ?? false);
 }
 
+export type RangePreset = "7d" | "30d" | "90d" | "all";
+
+const RANGE_DAYS: Record<Exclude<RangePreset, "all">, number> = {
+  "7d": 6,
+  "30d": 29,
+  "90d": 89,
+};
+
+export function rangeStartDate(range: RangePreset, today: Date = new Date()): string | null {
+  if (range === "all") return null;
+  const days = RANGE_DAYS[range];
+  const start = new Date(today);
+  start.setDate(start.getDate() - days);
+  const y = start.getFullYear();
+  const m = String(start.getMonth() + 1).padStart(2, "0");
+  const d = String(start.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+export function filterByRange(entries: PeriodEntry[], range: RangePreset | undefined, today: Date = new Date()): PeriodEntry[] {
+  const start = rangeStartDate(range ?? "all", today);
+  if (start === null) return entries;
+  const prefixLength = entries[0]?.period.length ?? 10;
+  const key =
+    prefixLength === 4 ? start.slice(0, 4) : prefixLength === 7 ? start.slice(0, 7) : start;
+  return entries.filter((entry) => entry.period >= key);
+}
+
 export function allModels(entries: PeriodEntry[]): string[] {
   const models = new Set<string>();
   for (const entry of entries) {
@@ -177,6 +207,7 @@ export interface DashboardFilters {
   section: "daily" | "monthly" | "yearly";
   model: string | null;
   agent: string | null;
+  range: RangePreset;
 }
 
 export interface DashboardSeries {
@@ -187,10 +218,10 @@ export interface DashboardSeries {
   cacheHitRate: ChartSeries;
 }
 
-export function buildDashboardSeries(data: UsageData, filters: DashboardFilters): DashboardSeries {
-  const daily = selectSectionEntries(data, "daily", filters);
-  const monthly = selectSectionEntries(data, "monthly", filters);
-  const section = selectSectionEntries(data, filters.section, filters);
+export function buildDashboardSeries(data: UsageData, filters: DashboardFilters, today: Date = new Date()): DashboardSeries {
+  const daily = selectSectionEntries(data, "daily", filters, today);
+  const monthly = selectSectionEntries(data, "monthly", filters, today);
+  const section = selectSectionEntries(data, filters.section, filters, today);
 
   return {
     dailyCost: buildModelCostSeries(daily),

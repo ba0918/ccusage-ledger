@@ -7,6 +7,8 @@ import {
   cacheHitRate,
   filterByAgent,
   filterByModel,
+  filterByRange,
+  rangeStartDate,
   getSection,
   allModels,
   allAgents,
@@ -213,20 +215,69 @@ describe("selectSectionEntries", () => {
     expect(entries[0]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
     expect(entries[1]!.modelBreakdowns.map((b) => b.modelName)).toEqual(["model-a"]);
   });
+
+  test("range を適用すると開始日以降の期間だけに絞る", () => {
+    const daily = selectSectionEntries(DATA, "daily", { model: null, agent: null, range: "7d" }, new Date("2026-03-20"));
+    expect(daily.map((e) => e.period)).toEqual(["2026-03-15"]);
+
+    const yearly = selectSectionEntries(DATA, "yearly", { model: null, agent: null, range: "30d" }, new Date("2026-03-20"));
+    expect(yearly.map((e) => e.period)).toEqual(["2026"]);
+  });
+});
+
+describe("rangeStartDate / filterByRange", () => {
+  test("直近7日の開始日は 6 日前の日付文字列", () => {
+    expect(rangeStartDate("7d", new Date("2026-03-20"))).toBe("2026-03-14");
+    expect(rangeStartDate("30d", new Date("2026-03-20"))).toBe("2026-02-19");
+    expect(rangeStartDate("90d", new Date("2026-03-20"))).toBe("2025-12-21");
+  });
+
+  test("all は開始日なし (null) を返す", () => {
+    expect(rangeStartDate("all", new Date("2026-03-20"))).toBeNull();
+  });
+
+  test("daily は日付単位で開始日以降に絞る", () => {
+    const daily = getSection(DATA, "daily");
+    expect(filterByRange(daily, "7d", new Date("2026-03-20")).map((e) => e.period)).toEqual(["2026-03-15"]);
+  });
+
+  test("monthly は開始日を含む月以降に絞る", () => {
+    const monthly = getSection(DATA, "monthly");
+    expect(filterByRange(monthly, "30d", new Date("2026-03-20")).map((e) => e.period)).toEqual(["2026-02", "2026-03"]);
+  });
+
+  test("yearly は開始日を含む年以降に絞る", () => {
+    const monthly = getSection(DATA, "monthly");
+    expect(filterByRange(buildYearly(monthly), "30d", new Date("2026-03-20")).map((e) => e.period)).toEqual(["2026"]);
+  });
+
+  test("all は元の配列を返す", () => {
+    const daily = getSection(DATA, "daily");
+    expect(filterByRange(daily, "all", new Date("2026-03-20"))).toEqual(daily);
+  });
 });
 
 describe("buildDashboardSeries", () => {
   test("期間切替で全てのチャートデータを生成する", () => {
-    const daily = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null });
+    const daily = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "all" });
     expect(daily.dailyCost.labels).toHaveLength(3);
     expect(daily.monthlyCost.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
 
-    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null });
+    const yearly = buildDashboardSeries(DATA, { section: "yearly", model: null, agent: null, range: "all" });
     expect(yearly.dailyCost.labels).toHaveLength(3);
     expect(yearly.monthlyCost.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
     expect(yearly.modelMix.labels).toEqual(["2025", "2026"]);
     expect(yearly.unitPrice.labels).toEqual(["2025", "2026"]);
     expect(yearly.cacheHitRate.labels).toEqual(["2025", "2026"]);
+  });
+
+  test("range を指定すると全チャート系列が期間で絞られる", () => {
+    const series = buildDashboardSeries(DATA, { section: "daily", model: null, agent: null, range: "7d" }, new Date("2026-03-20"));
+    expect(series.dailyCost.labels).toEqual(["2026-03-15"]);
+    expect(series.monthlyCost.labels).toEqual(["2026-03"]);
+    expect(series.modelMix.labels).toEqual(["2026-03-15"]);
+    expect(series.unitPrice.labels).toEqual(["2026-03-15"]);
+    expect(series.cacheHitRate.labels).toEqual(["2026-03-15"]);
   });
 });
 
