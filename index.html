@@ -130,6 +130,19 @@
       .seg-toggle button.active { background: var(--accent); color: #0b0e14; font-weight: 600; }
 
       .donut-wrap { display: flex; gap: 28px; align-items: center; flex: 1; min-height: 0; flex-wrap: wrap; }
+      .unit-price-table { overflow-y: auto; max-height: 320px; }
+      .unit-price-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .unit-price-table thead th {
+        text-align: left; color: var(--muted); font-weight: 500; font-size: 11px;
+        padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+      }
+      .unit-price-table thead th:nth-child(3),
+      .unit-price-table thead th:nth-child(4) { text-align: right; }
+      .unit-price-table tbody td { padding: 5px 10px; border-bottom: 1px solid #1b2030; white-space: nowrap; }
+      .unit-price-table .model { color: var(--text); }
+      .unit-price-table .bar-cell { width: 38%; }
+      .unit-price-table .bar { height: 13px; border-radius: 3px; min-width: 2px; }
+      .unit-price-table .num { text-align: right; font-variant-numeric: tabular-nums; color: #cbd2e0; }
       .donut { width: 190px; height: 190px; position: relative; flex-shrink: 0; }
       .donut .donut-center {
         position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; text-align: center; pointer-events: none;
@@ -256,7 +269,14 @@
 
         <div class="card">
           <h2>モデル別実効単価 <span class="hint">$/MTok（キャッシュヒット率込み）</span></h2>
-          <div class="chart"><canvas id="chart-unit-price"></canvas></div>
+          <div class="unit-price-table">
+            <table>
+              <thead>
+                <tr><th>モデル</th><th>実効単価</th><th>ヒット率</th><th>単価</th></tr>
+              </thead>
+              <tbody id="unit-price-body"></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="card">

@@ -3,6 +3,7 @@ import {
   allAgents,
   allModels,
   buildDashboardSeries,
+  buildModelUnitPrices,
   modelColor,
   otherBreakdown,
   selectSectionEntries,
@@ -11,6 +12,7 @@ import {
   type ChartSeries,
   type DashboardFilters,
   type KpiSummary,
+  type ModelUnitPrice,
   type OtherBreakdownItem,
 } from "../aggregate";
 
@@ -320,33 +322,32 @@ function renderModelMix(series: ChartSeries, models: string[], tooltipCtx?: Tool
   );
 }
 
-function renderUnitPrice(series: ChartSeries): void {
-  createChart(
-    "chart-unit-price",
-    "bar",
-    colorize(series, () => "#7aa7ff"),
-    {
-      indexAxis: "y",
-      scales: {
-        x: {
-          beginAtZero: true,
-          ticks: { callback: (value: unknown) => `$${Number(value)}` },
-          title: { display: true, text: "実効単価 (USD/MTok)" },
-        },
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (item: unknown) => {
-              const { parsed, label } = item as { parsed: { x?: number; y?: number }; label?: string };
-              return `${label ?? ""}: $${(parsed.x ?? parsed.y ?? 0).toFixed(2)}/MTok`;
-            },
-          },
-        },
-      },
-    },
-  );
+function shortModelName(modelName: string): string {
+  return modelName.startsWith("claude-") ? modelName.slice("claude-".length) : modelName;
+}
+
+function hitRateColor(hitRate: number): string {
+  if (hitRate >= 0.95) return "#34d399";
+  if (hitRate >= 0.85) return "#a3e635";
+  if (hitRate >= 0.75) return "#fbbf24";
+  if (hitRate >= 0.65) return "#fb923c";
+  return "#f87171";
+}
+
+function renderUnitPrice(prices: ModelUnitPrice[]): void {
+  const maxPrice = Math.max(...prices.map((p) => p.unitPrice), 1);
+  const tbody = document.getElementById("unit-price-body") as HTMLElement;
+  tbody.innerHTML = prices
+    .map((p) => {
+      const width = Math.max((p.unitPrice / maxPrice) * 100, 1);
+      return `<tr>
+        <td class="model" title="${escapeHtml(p.modelName)}">${escapeHtml(shortModelName(p.modelName))}</td>
+        <td class="bar-cell"><div class="bar" style="width:${width}%;background:${hitRateColor(p.hitRate)}"></div></td>
+        <td class="num">${Math.round(p.hitRate * 100)}%</td>
+        <td class="num">$${p.unitPrice.toFixed(2)}</td>
+      </tr>`;
+    })
+    .join("");
 }
 
 function renderCacheHit(series: ChartSeries): void {
@@ -530,7 +531,7 @@ function render(): void {
   renderKpis(series.kpi, entries);
   renderCostStacked(series.costStacked, models, tooltipCtx);
   renderModelMix(series.modelMix, models, tooltipCtx);
-  renderUnitPrice(series.unitPrice);
+  renderUnitPrice(buildModelUnitPrices(entries));
   renderAgentDonut(series.agentShare);
   renderCacheHit(series.cacheHitRate);
   renderTable(entries);

@@ -23,6 +23,7 @@ import {
   buildAgentShare,
   modelColor,
   otherBreakdown,
+  buildModelUnitPrices,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -623,6 +624,23 @@ describe("buildModelMixSeries", () => {
     const other = series.datasets.find((d) => d.label === "その他")!;
     expect(other.data[0]).toBeCloseTo(50);
     expect(other.data[1]).toBeCloseTo(10);
+  });
+});
+
+describe("buildModelUnitPrices", () => {
+  test("モデル別の実効単価とキャッシュヒット率を価格降順で返す", () => {
+    const daily = getSection(DATA, "daily");
+    const prices = buildModelUnitPrices(daily);
+
+    const modelA = prices.find((p) => p.modelName === "model-a")!;
+    expect(modelA.unitPrice).toBeCloseTo(571.43);
+    expect(modelA.hitRate).toBeCloseTo(0.4);
+
+    const modelB = prices.find((p) => p.modelName === "model-b")!;
+    expect(modelB.unitPrice).toBeCloseTo(666.67);
+    expect(modelB.hitRate).toBeCloseTo(0.178);
+
+    expect(prices.map((p) => p.modelName)).toEqual(["model-b", "model-c", "model-a"]);
   });
 });
 

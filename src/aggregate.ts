@@ -437,6 +437,32 @@ export function buildModelMixSeries(entries: PeriodEntry[], topN: number = TOP_N
   return { labels, datasets };
 }
 
+export interface ModelUnitPrice {
+  modelName: string;
+  unitPrice: number;
+  hitRate: number;
+}
+
+export function buildModelUnitPrices(entries: PeriodEntry[]): ModelUnitPrice[] {
+  const byModel = new Map<string, { cost: number; tokens: number; cacheRead: number }>();
+  for (const entry of entries) {
+    for (const breakdown of entry.modelBreakdowns) {
+      const agg = byModel.get(breakdown.modelName) ?? { cost: 0, tokens: 0, cacheRead: 0 };
+      agg.cost += breakdown.cost;
+      agg.tokens += totalTokensOf(breakdown);
+      agg.cacheRead += breakdown.cacheReadTokens;
+      byModel.set(breakdown.modelName, agg);
+    }
+  }
+  return [...byModel.entries()]
+    .map(([modelName, agg]) => ({
+      modelName,
+      unitPrice: agg.tokens === 0 ? 0 : (agg.cost / agg.tokens) * 1_000_000,
+      hitRate: agg.tokens === 0 ? 0 : agg.cacheRead / agg.tokens,
+    }))
+    .sort((a, b) => b.unitPrice - a.unitPrice);
+}
+
 export function buildUnitPriceSeries(entries: PeriodEntry[]): ChartSeries {
   const costByModel = new Map<string, number>();
   const tokensByModel = new Map<string, number>();
