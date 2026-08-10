@@ -178,30 +178,10 @@ function countAgents(entries: PeriodEntry[]): number {
   return agents.size;
 }
 
-function latestPeriodAnchor(): void {
-  let maxYear = 0;
-  let maxMonth = 0;
-  const sections: ("daily" | "monthly")[] = ["daily", "monthly"];
-  for (const section of sections) {
-    for (const entry of usageData?.[section] ?? []) {
-      const match = /^(\d{4})-(\d{2})/.exec(entry.period);
-      if (!match) continue;
-      const year = Number(match[1]);
-      const month = Number(match[2]);
-      if (year > maxYear || (year === maxYear && month > maxMonth)) {
-        maxYear = year;
-        maxMonth = month;
-      }
-    }
-  }
-  if (maxYear === 0) {
-    const now = new Date();
-    navYear = now.getFullYear();
-    navMonth = now.getMonth() + 1;
-  } else {
-    navYear = maxYear;
-    navMonth = maxMonth;
-  }
+function currentMonthAnchor(): void {
+  const now = new Date();
+  navYear = now.getFullYear();
+  navMonth = now.getMonth() + 1;
 }
 
 function navLabel(): string {
@@ -583,15 +563,21 @@ function bindControls(): void {
     render();
   });
   navPrev.addEventListener("click", () => {
-    if (viewingAll) latestPeriodAnchor();
-    viewingAll = false;
-    stepNav(-1);
+    if (viewingAll) {
+      currentMonthAnchor();
+      viewingAll = false;
+    } else {
+      stepNav(-1);
+    }
     render();
   });
   navNext.addEventListener("click", () => {
-    if (viewingAll) latestPeriodAnchor();
-    viewingAll = false;
-    stepNav(1);
+    if (viewingAll) {
+      currentMonthAnchor();
+      viewingAll = false;
+    } else {
+      stepNav(1);
+    }
     render();
   });
   navAll.addEventListener("click", () => {
