@@ -36,7 +36,9 @@ describe("server /api/usage", () => {
     const res = await get("/api/usage");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
-    expect(await res.text()).toBe(FIXTURE);
+    const expected = { ...JSON.parse(FIXTURE) };
+    delete expected.totals;
+    expect(await res.json()).toEqual(expected);
   });
 
   test("cachePath のファイルが無い場合は 200 で空データを返す（存在オラクルにしない）", async () => {
@@ -57,7 +59,36 @@ describe("server /api/usage", () => {
     rmSync(cachePath);
     const res = await app(new Request("http://127.0.0.1/api/usage"));
     expect(res.status).toBe(200);
-    expect(await res.text()).toBe(FIXTURE);
+    const expected = { ...JSON.parse(FIXTURE) };
+    delete expected.totals;
+    expect(await res.json()).toEqual(expected);
+  });
+
+  test("LAN bind（非ループバック）では /api/usage を配信しない（SSH トンネルを強制）", async () => {
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const res = await app(new Request("http://192.168.1.10/api/usage"));
+    expect(res.status).toBe(403);
+    expect(res.headers.get("content-type")).toContain("application/json");
+  });
+
+  test("スキーマ外のフィールドは /api/usage で配信しない（curated projection）", async () => {
+    const raw = JSON.parse(FIXTURE);
+    raw.daily[0].agent = "all";
+    raw.totals = { totalCost: 999 };
+    writeFileSync(cachePath, JSON.stringify(raw));
+    const app = createApp({ rootDir, cachePath });
+    const res = await app(new Request("http://127.0.0.1/api/usage"));
+    const body = await res.json();
+    expect(body.daily[0].agent).toBeUndefined();
+    expect(body.totals).toBeUndefined();
+  });
+
+  test("起動時に読み込んだキャッシュがスキーマ不一致なら空データを返す", async () => {
+    writeFileSync(cachePath, JSON.stringify({ daily: "not-array", monthly: [] }));
+    const app = createApp({ rootDir, cachePath });
+    const res = await app(new Request("http://127.0.0.1/api/usage"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ daily: [], monthly: [] });
   });
 });
 
@@ -91,6 +122,12 @@ describe("server 静的配信", () => {
     const res = await get("/");
     expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+
+  test("CSP に base-uri 'none' と form-action 'none' を含む", async () => {
+    const res = await get("/");
+    expect(res.headers.get("content-security-policy")).toContain("base-uri 'none'");
+    expect(res.headers.get("content-security-policy")).toContain("form-action 'none'");
   });
 
   test("静的レスポンスにクロスオリジン・プライバシーヘッダを付与する", async () => {
@@ -153,6 +190,14 @@ describe("server セキュリティ", () => {
     expect(res2.status).toBe(404);
   });
 
+  test("404 レスポンスにも共通セキュリティヘッダを付与する", async () => {
+    const res = await get("/nope");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+  });
+
   test("配信対象ディレクトリ内の .html（エクスポート成果物）は配信しない", async () => {
     writeFileSync(join(rootDir, "dist", "ccusage-ledger.html"), "<html>embedded data</html>");
     const res = await get("/dist/ccusage-ledger.html");
@@ -165,6 +210,14 @@ describe("server セキュリティ", () => {
     expect(res.status).toBe(404);
   });
 
+  test("末尾にドット・スペースの付いた .html は 404 を返す（Windows の trailing-dot 迂回対策）", async () => {
+    writeFileSync(join(rootDir, "dist", "ccusage-ledger.html"), "<html>embedded data</html>");
+    const resDot = await get("/dist/ccusage-ledger.html.");
+    expect(resDot.status).toBe(404);
+    const resSpace = await get("/dist/ccusage-ledger.html%20");
+    expect(resSpace.status).toBe(404);
+  });
+
   test("静的配信は一度読み込んだ内容をキャッシュし、ファイルを再読込しない", async () => {
     const app = createApp({ rootDir, cachePath });
     const first = await app(new Request("http://127.0.0.1/dist/bundle.js"));
@@ -173,6 +226,25 @@ describe("server セキュリティ", () => {
     const second = await app(new Request("http://127.0.0.1/dist/bundle.js"));
     expect(second.status).toBe(200);
     expect(await second.text()).toContain("console.log");
+  });
+
+  test("symlink が許可リスト外を指す場合、読む直前に差し替えても配信しない（TOCTOU 対策）", async () => {
+    const bundle = join(rootDir, "dist", "bundle.js");
+    const realTarget = join(rootDir, "dist", "bundle.js.real");
+    writeFileSync(realTarget, "console.log('bundle');");
+    rmSync(bundle);
+    symlinkSync(realTarget, bundle);
+    const app = createApp({ rootDir, cachePath });
+    const res = await app(new Request("http://127.0.0.1/dist/bundle.js"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("bundle");
+  });
+
+  test("symlink が許可リスト外（ルート直下の秘密ファイル）を指す場合は 404", async () => {
+    rmSync(join(rootDir, "dist", "bundle.js"));
+    symlinkSync(join(rootDir, "secret.txt"), join(rootDir, "dist", "bundle.js"));
+    const res = await get("/dist/bundle.js");
+    expect(res.status).toBe(404);
   });
 
   test("rate limiter を超えたリクエストは 429 を返す", async () => {
@@ -191,12 +263,30 @@ describe("server セキュリティ", () => {
     expect(r3.status).toBe(429);
   });
 
-  test("ループバック bind では rate limit を適用しない", async () => {
-    const app = createApp({ rootDir, cachePath });
+  test("ループバック bind でも rate limit を適用する（presence oracle の濫用防止）", async () => {
+    let count = 0;
+    const app = createApp({
+      rootDir,
+      cachePath,
+      rateLimit: () => ++count <= 2,
+    });
     const r1 = await app(new Request("http://127.0.0.1/"));
     const r2 = await app(new Request("http://127.0.0.1/"));
+    const r3 = await app(new Request("http://127.0.0.1/"));
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
+    expect(r3.status).toBe(429);
+  });
+
+  test("ループバック bind のデフォルト rate limit は寛大な上限（600/分）を使う", async () => {
+    const app = createApp({ rootDir, cachePath });
+    let statuses: number[] = [];
+    for (let i = 0; i < 601; i++) {
+      const res = await app(new Request("http://127.0.0.1/"));
+      statuses.push(res.status);
+    }
+    expect(statuses[599]).toBe(200);
+    expect(statuses[600]).toBe(429);
   });
 });
 
@@ -213,6 +303,16 @@ describe("server createRateLimiter", () => {
     expect(limiter("a", 1000)).toBe(true);
     expect(limiter("b", 1100)).toBe(true);
     expect(limiter("a", 3000)).toBe(true);
+  });
+
+  test("大量のキーを登録してもメモリが無制限に増えない（キー回収）", () => {
+    const limiter = createRateLimiter(1, 1000);
+    for (let i = 0; i < 10_000; i++) {
+      limiter(`key-${i}`, 1000);
+    }
+    // 上限（例: 4096 キー）を超えたら古いキーが回収される
+    const hits = (limiter as { size: () => number }).size();
+    expect(hits).toBeLessThanOrEqual(4096);
   });
 });
 
@@ -242,6 +342,12 @@ describe("server parseUrl", () => {
 describe("server isLoopbackHost", () => {
   test("ループバック IP と localhost は true", () => {
     for (const host of ["localhost", "127.0.0.1", "127.0.0.2", "127.255.255.255", "::1", "::ffff:127.0.0.1"]) {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+  });
+
+  test("IPv4-mapped IPv6 の canonical 形式（::ffff:7f00:1）もループバックとして判定する", () => {
+    for (const host of ["::ffff:7f00:1", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:7f00:1"]) {
       expect(isLoopbackHost(host)).toBe(true);
     }
   });
@@ -293,6 +399,15 @@ describe("server LAN bind 警告", () => {
       expect(lanBindWarning(host)).toContain("WARN");
     }
   });
+
+  test("非ループバック bind の警告に平文 HTTP の盗聴・改ざんリスクを明記する", () => {
+    for (const host of ["0.0.0.0", "192.168.1.10"]) {
+      const warning = lanBindWarning(host)!;
+      expect(warning.toLowerCase()).toContain("plaintext");
+      expect(warning.toLowerCase()).toContain("tamper");
+      expect(warning.toLowerCase()).toContain("ssh tunnel");
+    }
+  });
 });
 
 describe("server LAN bind 起動ポリシー", () => {
@@ -305,9 +420,13 @@ describe("server LAN bind 起動ポリシー", () => {
     expect(lanStartPolicy("0.0.0.0", true, false)).toBe("prompt");
   });
 
-  test("非ループバック bind + 非 TTY では警告のみ", () => {
-    expect(lanStartPolicy("0.0.0.0", false, false)).toBe("warn");
-    expect(lanStartPolicy("192.168.1.10", false, false)).toBe("warn");
+  test("非ループバック bind + 非 TTY + 非オプトインでは起動を拒否する（fail-closed）", () => {
+    expect(lanStartPolicy("0.0.0.0", false, false)).toBe("refuse");
+    expect(lanStartPolicy("192.168.1.10", false, false)).toBe("refuse");
+  });
+
+  test("非ループバック bind + 非 TTY + 明示オプトインでは警告のみ", () => {
+    expect(lanStartPolicy("0.0.0.0", false, true)).toBe("warn");
   });
 
   test("非ループバック bind + 明示オプトインでは警告のみ", () => {
