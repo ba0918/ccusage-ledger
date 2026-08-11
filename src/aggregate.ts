@@ -2,8 +2,24 @@ import type { AgentBreakdown, ModelBreakdown, PeriodEntry, UsageData } from "./t
 
 export const TOP_N = 5;
 
-// 上位 N モデル以外をまとめる「その他」バケットのラベル。client 側（datasetColor / tooltipLabel）と共有する
+// 上位 N モデル以外をまとめる「その他」バケットのラベル。表示層が t("other") で渡すため、
+// 純計算層は既定値（日本語）を持ち、言語に依存しない
 export const OTHER_LABEL = "その他";
+
+// 系列ビルダーが受け取る表示ラベル群。unitPrice は単価チャート、cacheHit はキャッシュヒット率チャートの
+// データセットラベル。main.ts が現在言語の t() 結果を渡す
+export interface SeriesLabels {
+  other: string;
+  unitPrice: string;
+  cacheHit: string;
+}
+
+// ラベル未指定（テスト互換・既存呼び出し）時の既定値。表示層は t() の現在言語ラベルを常に渡す
+export const DEFAULT_LABELS: SeriesLabels = {
+  other: OTHER_LABEL,
+  unitPrice: "実効単価 ($/MTok)",
+  cacheHit: "キャッシュヒット率",
+};
 
 // 末尾（最新）max 件を返す。描画行数のキャップに使う（Data 由来の巨大配列で DOM を固めない）
 export function sliceLatest<T>(values: readonly T[], max: number): readonly T[] {
@@ -488,25 +504,26 @@ export function buildDashboardSeries(data: UsageData, filters: DashboardFilters)
 
 // 事前に選択済み entries を受け取り、全系列を組み立てる。
 // render 側が selectSectionEntries を二重実行せず、選別結果と集計結果を共有できる
-export function buildDashboardSeriesFromEntries(entries: PeriodEntry[]): DashboardSeries {
+export function buildDashboardSeriesFromEntries(entries: PeriodEntry[], labels: SeriesLabels = DEFAULT_LABELS): DashboardSeries {
   const unitPrices = buildModelUnitPrices(entries);
   return {
-    costStacked: buildModelCostSeries(entries, TOP_N),
-    modelMix: buildModelMixSeries(entries, TOP_N),
-    unitPrice: unitPriceSeries(unitPrices),
+    costStacked: buildModelCostSeries(entries, TOP_N, labels.other),
+    modelMix: buildModelMixSeries(entries, TOP_N, labels.other),
+    unitPrice: unitPriceSeries(unitPrices, labels.unitPrice),
     unitPrices,
     agentShare: buildAgentShare(entries),
-    cacheHitRate: buildCacheHitRateSeries(entries),
+    cacheHitRate: buildCacheHitRateSeries(entries, labels.cacheHit),
     kpi: buildKpiSummary(entries),
     entries,
   };
 }
 
-// 上位トップNモデル + 「その他」バケットの期間系列を組み立てる共通ヘルパー。
+// 上位トップNモデル + otherLabel バケットの期間系列を組み立てる共通ヘルパー。
 // cost と ratio（構成比）の 2 系統が値の計算式だけ異なるため、valueFor で差し替える
 function buildTopModelSeries(
   entries: PeriodEntry[],
   topN: number,
+  otherLabel: string,
   valueFor: (entry: PeriodEntry, modelName: string | null, top: ReadonlySet<string>) => number,
 ): ChartSeries {
   const labels = entries.map((e) => e.period);
@@ -518,15 +535,15 @@ function buildTopModelSeries(
   }));
   if (top.length < distinctModelCount(entries)) {
     datasets.push({
-      label: OTHER_LABEL,
+      label: otherLabel,
       data: entries.map((entry) => valueFor(entry, null, topSet)),
     });
   }
   return { labels, datasets };
 }
 
-export function buildModelCostSeries(entries: PeriodEntry[], topN: number = TOP_N): ChartSeries {
-  return buildTopModelSeries(entries, topN, (entry, modelName, top) => {
+export function buildModelCostSeries(entries: PeriodEntry[], topN: number = TOP_N, otherLabel: string = OTHER_LABEL): ChartSeries {
+  return buildTopModelSeries(entries, topN, otherLabel, (entry, modelName, top) => {
     if (modelName === null) {
       return entry.modelBreakdowns.filter((b) => !top.has(b.modelName)).reduce((sum, b) => sum + b.cost, 0);
     }
@@ -534,8 +551,8 @@ export function buildModelCostSeries(entries: PeriodEntry[], topN: number = TOP_
   });
 }
 
-export function buildModelMixSeries(entries: PeriodEntry[], topN: number = TOP_N): ChartSeries {
-  return buildTopModelSeries(entries, topN, (entry, modelName, top) => {
+export function buildModelMixSeries(entries: PeriodEntry[], topN: number = TOP_N, otherLabel: string = OTHER_LABEL): ChartSeries {
+  return buildTopModelSeries(entries, topN, otherLabel, (entry, modelName, top) => {
     if (entry.totalCost === 0) { return 0; }
     if (modelName === null) {
       const rest = entry.modelBreakdowns.filter((b) => !top.has(b.modelName));
@@ -596,22 +613,22 @@ export function buildModelUnitPrices(entries: PeriodEntry[]): ModelUnitPrice[] {
     .sort((a, b) => b.unitPrice - a.unitPrice);
 }
 
-function unitPriceSeries(prices: ModelUnitPrice[]): ChartSeries {
+function unitPriceSeries(prices: ModelUnitPrice[], datasetLabel: string): ChartSeries {
   return {
     labels: prices.map((p) => p.modelName),
-    datasets: [{ label: "実効単価 ($/MTok)", data: prices.map((p) => p.unitPrice) }],
+    datasets: [{ label: datasetLabel, data: prices.map((p) => p.unitPrice) }],
   };
 }
 
-export function buildUnitPriceSeries(entries: PeriodEntry[]): ChartSeries {
+export function buildUnitPriceSeries(entries: PeriodEntry[], datasetLabel: string = DEFAULT_LABELS.unitPrice): ChartSeries {
   // 実効単価の集計は buildModelUnitPrices と共有する（同一ロジックの二重実装を避ける）
-  return unitPriceSeries(buildModelUnitPrices(entries));
+  return unitPriceSeries(buildModelUnitPrices(entries), datasetLabel);
 }
 
-export function buildCacheHitRateSeries(entries: PeriodEntry[]): ChartSeries {
+export function buildCacheHitRateSeries(entries: PeriodEntry[], datasetLabel: string = DEFAULT_LABELS.cacheHit): ChartSeries {
   const labels = entries.map((e) => e.period);
   return {
     labels,
-    datasets: [{ label: "キャッシュヒット率", data: entries.map((e) => cacheHitRate(e)) }],
+    datasets: [{ label: datasetLabel, data: entries.map((e) => cacheHitRate(e)) }],
   };
 }

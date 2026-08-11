@@ -17,6 +17,7 @@ import {
   buildCacheHitRateSeries,
   selectSectionEntries,
   buildDashboardSeries,
+  buildDashboardSeriesFromEntries,
   buildKpiSummary,
   buildAgentShare,
   buildAgentEfficiency,
@@ -548,6 +549,16 @@ describe("buildDashboardSeries", () => {
     expect(series.kpi.activeModelCount).toBe(3);
   });
 
+  test("buildDashboardSeriesFromEntries に渡したラベルを全系列のデータセットラベルに使う", () => {
+    const daily = getSection(DATA, "daily");
+    const labels = { other: "Others", unitPrice: "Price", cacheHit: "Hit" };
+    const series = buildDashboardSeriesFromEntries(daily, labels);
+
+    expect(series.costStacked.datasets[0]!.label).toBe("model-a");
+    expect(series.unitPrice.datasets[0]!.label).toBe("Price");
+    expect(series.cacheHitRate.datasets[0]!.label).toBe("Hit");
+  });
+
   test("モデルフィルタで全系列がそのモデルのデータだけになる", () => {
     const series = buildDashboardSeries(DATA, { section: "daily", model: "model-a", agent: null, range: { kind: "all" } });
 
@@ -613,15 +624,15 @@ describe("buildModelCostSeries", () => {
     expect(modelB.data).toEqual([0.2, 0, 0.4]);
   });
 
-  test("上位5モデルを残し、残りのモデルを「その他」に集約する", () => {
+  test("上位5モデルを残し、残りのモデルを渡した otherLabel に集約する", () => {
     const entries = [
       entryWithModels("2026-01", [["m1", 5], ["m2", 4], ["m3", 3], ["m4", 2], ["m5", 1], ["m6", 0.1]]),
       entryWithModels("2026-02", [["m1", 5], ["m6", 0.5]]),
     ];
-    const series = buildModelCostSeries(entries, 5);
+    const series = buildModelCostSeries(entries, 5, "Others");
 
-    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "その他"]);
-    const other = series.datasets.find((d) => d.label === "その他")!;
+    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "Others"]);
+    const other = series.datasets.find((d) => d.label === "Others")!;
     expect(other.data[0]).toBeCloseTo(0.1);
     expect(other.data[1]).toBeCloseTo(0.5);
   });
@@ -647,28 +658,28 @@ describe("buildModelMixSeries", () => {
     expect(modelB.data[2]).toBeCloseTo(100);
   });
 
-  test("比率トレンドでも上位5モデルと「その他」に集約する", () => {
+  test("比率トレンドでも上位5モデルと渡した otherLabel に集約する", () => {
     const entries = [
       entryWithModels("2026-01", [["m1", 50], ["m2", 30], ["m3", 10], ["m4", 5], ["m5", 3], ["m6", 2]]),
     ];
-    const series = buildModelMixSeries(entries, 5);
+    const series = buildModelMixSeries(entries, 5, "Others");
 
-    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "その他"]);
+    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "Others"]);
     const m1 = series.datasets.find((d) => d.label === "m1")!;
     expect(m1.data[0]).toBeCloseTo(50);
-    const other = series.datasets.find((d) => d.label === "その他")!;
+    const other = series.datasets.find((d) => d.label === "Others")!;
     expect(other.data[0]).toBeCloseTo(2);
   });
 
-  test("比率トレンドの「その他」は期間ごとに計算する", () => {
+  test("比率トレンドの otherLabel は期間ごとに計算する", () => {
     const entries = [
       entryWithModels("2026-01", [["m1", 50], ["m6", 50]]),
       entryWithModels("2026-02", [["m1", 90], ["m6", 10]]),
     ];
-    const series = buildModelMixSeries(entries, 1);
+    const series = buildModelMixSeries(entries, 1, "Others");
 
-    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "その他"]);
-    const other = series.datasets.find((d) => d.label === "その他")!;
+    expect(series.datasets.map((d) => d.label)).toEqual(["m1", "Others"]);
+    const other = series.datasets.find((d) => d.label === "Others")!;
     expect(other.data[0]).toBeCloseTo(50);
     expect(other.data[1]).toBeCloseTo(10);
   });
@@ -723,10 +734,10 @@ describe("buildUnitPriceSeries", () => {
       },
     ];
 
-    const series = buildUnitPriceSeries(entries);
+    const series = buildUnitPriceSeries(entries, "Effective unit price ($/MTok)");
 
     expect(series.labels).toEqual(["model-a", "model-b", "model-c"]);
-    expect(series.datasets[0]!.label).toBe("実効単価 ($/MTok)");
+    expect(series.datasets[0]!.label).toBe("Effective unit price ($/MTok)");
     expect(series.datasets[0]!.data).toEqual([2.0, 1.0, 0.5]);
   });
 
@@ -761,7 +772,7 @@ describe("buildUnitPriceSeries", () => {
       },
     ];
 
-    const series = buildUnitPriceSeries(entries);
+    const series = buildUnitPriceSeries(entries, "Price ($/MTok)");
 
     expect(series.labels).toEqual(["model-b", "model-a"]);
     expect(series.datasets[0]!.data).toEqual([2.0, 1.0]);
@@ -799,6 +810,13 @@ describe("buildCacheHitRateSeries", () => {
     expect(series.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
     expect(series.datasets[0]!.data[0]).toBeCloseTo(0.4);
     expect(series.datasets[0]!.data[2]).toBeCloseTo(0);
+  });
+
+  test("渡した datasetLabel をデータセットラベルに使う", () => {
+    const daily = getSection(DATA, "daily");
+    const series = buildCacheHitRateSeries(daily, "Cache hit rate");
+
+    expect(series.datasets[0]!.label).toBe("Cache hit rate");
   });
 });
 
