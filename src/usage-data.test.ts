@@ -34,4 +34,17 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: "claude" }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: {} }], monthly: [] })).toBe(false);
   });
+
+  test("文字列フィールドが文字列でないエントリは false（描画クラッシュ防止）", () => {
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, period: 20260811 }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: [42] }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: "x", cost: "y" }] }], monthly: [] })).toBe(false);
+  });
+
+  test("エージェント別内訳の文字列・数値フィールドも検証する", () => {
+    const withAgents = (agents: unknown) => ({ daily: [{ ...VALID_ENTRY, agents }], monthly: [] });
+    expect(isUsageData(withAgents([{ agent: "claude-code", totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }]))).toBe(true);
+    expect(isUsageData(withAgents([{ agent: 42, totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }]))).toBe(false);
+    expect(isUsageData(withAgents([{ agent: "claude-code", totalCost: "1", totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }]))).toBe(false);
+  });
 });
