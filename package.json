@@ -37,5 +37,8 @@
   "devDependencies": {
     "typescript": "^5.7.2",
     "@types/bun": "^1.1.14"
+  },
+  "dependencies": {
+    "ccusage": "20.0.19"
   }
 }

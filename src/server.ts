@@ -296,7 +296,7 @@ export async function main(): Promise<void> {
   if (result === null) {
     console.warn("WARN: failed to fetch ccusage data and no cache exists. /api/usage will return an empty dataset.");
   } else {
-    console.log(`Data source: ${result.source === "fresh" ? "bunx ccusage --json (fresh)" : "cache"}`);
+    console.log(`Data source: ${result.source === "fresh" ? "ccusage cli.js (fresh)" : "cache"}`);
   }
 
   const autoOpenEnv = {

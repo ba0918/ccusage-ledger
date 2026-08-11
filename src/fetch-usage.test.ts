@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, DEFAULT_COMMAND, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, ccusageCliPath, buildCcusageCommand, type SpawnResult } from "./fetch-usage";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
 
@@ -17,8 +17,51 @@ function writeCacheFixture(cachePath: string): void {
 }
 
 describe("DEFAULT_COMMAND", () => {
-  test("ccusage のバージョンを固定してエージェント内訳を取得する", () => {
-    expect(DEFAULT_COMMAND).toEqual(["bunx", "ccusage@20.0.19", "--json", "--sections", "daily,monthly", "--by-agent"]);
+  test("ccusage の引数（JSON・daily/monthly・エージェント内訳）を指定する", () => {
+    expect(DEFAULT_COMMAND).toEqual(["--json", "--sections", "daily,monthly", "--by-agent"]);
+  });
+});
+
+describe("ccusageCliPath", () => {
+  test("node_modules/ccusage/src/cli.js を指す", () => {
+    expect(ccusageCliPath("/pkg")).toBe(join("/pkg", "node_modules", "ccusage", "src", "cli.js"));
+  });
+});
+
+describe("buildCcusageCommand", () => {
+  test("bun run <cli.js> の後に引数を繋ぐ", () => {
+    expect(buildCcusageCommand("/pkg/node_modules/ccusage/src/cli.js", ["--json"])).toEqual([
+      "bun",
+      "run",
+      "/pkg/node_modules/ccusage/src/cli.js",
+      "--json",
+    ]);
+  });
+});
+
+describe("spawnEnv", () => {
+  test("許可リストのキーのみを残す", () => {
+    expect(spawnEnv({ PATH: "/usr/bin", HOME: "/home/u", XDG_CACHE_HOME: "/tmp/c" })).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      XDG_CACHE_HOME: "/tmp/c",
+    });
+  });
+
+  test("秘密系の環境変数を除外する", () => {
+    const env = spawnEnv({
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      ANTHROPIC_API_KEY: "secret",
+      OPENAI_API_KEY: "secret",
+      SSH_AUTH_SOCK: "/run/user/1000/ssh-agent.sock",
+      AWS_SECRET_ACCESS_KEY: "secret",
+    });
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.SSH_AUTH_SOCK).toBeUndefined();
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   });
 });
 
@@ -169,10 +212,10 @@ describe("fetchUsage", () => {
     expect(result!.source).toBe("cache");
   });
 
-  test("コマンドに --sections を渡し monthly セクションを含める", async () => {
+  test("ccusage の引数を spawn に渡す", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    const command = ["bunx", "ccusage", "--json", "--sections", "daily,monthly"];
+    const command = ["--json", "--sections", "daily,monthly", "--by-agent"];
     const spawn = async (cmd: string[]): Promise<SpawnResult> => {
       expect(cmd).toEqual(command);
       return { stdout: JSON.stringify(FIXTURE), exitCode: 0 };

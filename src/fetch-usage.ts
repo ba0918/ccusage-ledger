@@ -1,6 +1,6 @@
-import { mkdirSync, writeFileSync, readFileSync, renameSync } from "node:fs";
-import { dirname } from "node:path";
-import { defaultCachePath } from "./paths";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
 import { isUsageData } from "./usage-data";
 
@@ -22,11 +22,42 @@ export interface FetchUsageResult {
   source: "fresh" | "cache";
 }
 
-export const DEFAULT_COMMAND = ["bunx", "ccusage@20.0.19", "--json", "--sections", "daily,monthly", "--by-agent"];
+export const CCUSAGE_VERSION = "20.0.19";
+export const DEFAULT_COMMAND = ["--json", "--sections", "daily,monthly", "--by-agent"];
 
-async function defaultSpawn(command: string[]): Promise<SpawnResult> {
-  // ccusage 取得がハングしてもサーバーのイベントループを塞がないよう非同期 spawn + タイムアウトを使う
-  const proc = Bun.spawn(command, { stdout: "pipe", stderr: "ignore", timeout: 60_000 });
+// 子プロセスに渡す環境変数の許可リスト（API キー・トークン等の秘密は渡さない）
+const ALLOWED_ENV_KEYS = ["PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP", "TERM", "SHELL"] as const;
+
+export function spawnEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const key of ALLOWED_ENV_KEYS) {
+    const value = env[key];
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
+  return join(packageDir, "node_modules", "ccusage", "src", "cli.js");
+}
+
+export function buildCcusageCommand(cliPath: string, args: string[]): string[] {
+  return ["bun", "run", cliPath, ...args];
+}
+
+async function defaultSpawn(args: string[]): Promise<SpawnResult> {
+  const cliPath = ccusageCliPath();
+  if (!existsSync(cliPath)) {
+    throw new Error(`ccusage がインストールされていません: ${cliPath}（bun install を実行してください）`);
+  }
+  // bunx による毎回のレジストリ解決をやめ、依存として固定した cli.js を直接実行する。
+  // 子プロセスには許可リストの環境変数だけを渡し、RCE された場合に奪える秘密を無くす。
+  const proc = Bun.spawn(buildCcusageCommand(cliPath, args), {
+    env: spawnEnv(process.env),
+    stdout: "pipe",
+    stderr: "ignore",
+    timeout: 60_000,
+  });
   const stdout = await new Response(proc.stdout).text();
   const exitCode = await proc.exited;
   return { stdout, exitCode };

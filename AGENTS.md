@@ -1,16 +1,16 @@
 # ccusage Ledger
 
-`bunx ccusage` が出力する JSON を元に、エージェント CLI (Claude Code / Codex / OpenCode 等) の使用量・トークン量・金額を可視化する個人用ダッシュボード。
+`ccusage`（依存として固定した `ccusage@20.0.19`）が出力する JSON を元に、エージェント CLI (Claude Code / Codex / OpenCode 等) の使用量・トークン量・金額を可視化する個人用ダッシュボード。
 
 ## 技術スタック
 
 - **サーバ**: Bun + TypeScript (`Bun.serve`)。外部フレームワークなし
-- **データ取得**: `bunx ccusage@20.0.19 --json --sections daily,monthly --by-agent` を spawn して全履歴を取得（ccusage はバージョン固定で実行）
+- **データ取得**: dependencies で固定した `ccusage@20.0.19`（bun.lock で integrity 固定）を `bun run node_modules/ccusage/src/cli.js --json --sections daily,monthly --by-agent` で spawn して全履歴を取得
 - **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
 ## データフロー
 
-1. サーバ起動時に `bunx ccusage@20.0.19 --json --sections daily,monthly --by-agent` を実行し、そのマシンの全履歴を取得
+1. サーバ起動時に依存の `ccusage@20.0.19` を直接実行し、そのマシンの全履歴を取得（子プロセスには許可リストの環境変数のみ渡す。API キー等の秘密は渡さない）
 2. 結果を `~/.cache/ccusage-ledger/usage.json` に上書き保存（最新1ファイルキャッシュ方式。`XDG_CACHE_HOME` があればそれを基準）
 3. サーバが JSON を配信し、フロントがクライアント側で集計して描画
 
