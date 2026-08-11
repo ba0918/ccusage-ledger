@@ -14,6 +14,11 @@ export const EXPORT_CSP =
 export const EXPORT_WARNING_BANNER =
   '<div style="position:sticky;top:0;z-index:30;background:#3a1d1d;color:#ffb4b4;padding:8px 16px;font-size:12px;text-align:center">このファイルには ccusage の使用量データが含まれます。共有・取り扱いに注意してください。</div>';
 
+// ブラウザは <meta> CSP の frame-ancestors を無視するため、フレーム内での表示を JS で防ぐ
+// （サーバー配信時は X-Frame-Options: DENY を別途付与すること。AGENTS.md 参照）
+export const EXPORT_FRAME_BUSTER =
+  '<script>if (window.top !== window.self) { window.top.location = window.location; }</script>';
+
 export function exportOutputPath(cwd: string): string {
   return join(cwd, "dist", "ccusage-ledger.html");
 }
@@ -32,7 +37,7 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
   const dataJson = JSON.stringify(data).replace(/</g, "\\u003c");
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
   return html
-    .replace("</head>", `${cspMeta}</head>`)
+    .replace("</head>", `${cspMeta}${EXPORT_FRAME_BUSTER}</head>`)
     .replace("<body>", `<body>${EXPORT_WARNING_BANNER}`)
     .replace(CHART_TAG, `<script>${chartJs}</script>`)
     .replace(BUNDLE_TAG, `<script>${bundle}</script>`)

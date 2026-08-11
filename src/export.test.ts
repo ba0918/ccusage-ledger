@@ -107,6 +107,11 @@ describe("buildExportedHtml", () => {
     expect(out).toContain("このファイルには ccusage の使用量データが含まれます");
   });
 
+  test("エクスポート HTML にフレーム検出スクリプトを注入する（clickjacking 対策）", () => {
+    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
+    expect(out).toContain("window.top !== window.self");
+  });
+
   test("</head> が無い HTML では例外を投げる（CSP 注入が静かに失われない）", () => {
     expect(() => buildExportedHtml("<html><body></body></html>", "chart", "bundle", DATA)).toThrow();
   });
