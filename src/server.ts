@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { fetchUsage, DEFAULT_COMMAND } from "./fetch-usage";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
@@ -24,11 +24,29 @@ function withCommonHeaders(headers: Record<string, string>): Headers {
   return new Headers({ ...COMMON_HEADERS, ...headers });
 }
 
-export function createApp(options: { rootDir: string; cachePath: string }) {
-  const { rootDir, cachePath } = options;
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+export function hostAllowed(urlHostname: string, bindHostname: string): boolean {
+  // 非ループバック bind（HOST 指定による LAN 公開の明示オプトイン）では Host 検証を適用しない
+  if (!LOOPBACK_HOSTS.has(bindHostname)) return true;
+  const hostname = urlHostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return LOOPBACK_HOSTS.has(hostname);
+}
+
+export function createApp(options: { rootDir: string; cachePath: string; hostname?: string }) {
+  const { rootDir, cachePath, hostname = "127.0.0.1" } = options;
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
+
+    // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
+    if (!hostAllowed(url.hostname, hostname)) {
+      return new Response(JSON.stringify({ error: "bad request" }), {
+        status: 400,
+        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
+      });
+    }
+
     let pathname: string;
     try {
       pathname = decodeURIComponent(url.pathname);
@@ -60,27 +78,37 @@ export function createApp(options: { rootDir: string; cachePath: string }) {
 const STATIC_PREFIXES = ["/dist/", "/public/"];
 
 async function serveStatic(rootDir: string, pathname: string): Promise<Response> {
-  // LAN 公開時にプロジェクト全体（src/・package.json・.git 等）を配信しないよう許可リストで制限する
-  if (pathname !== "/" && !STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
-    return new Response("Not Found", { status: 404 });
-  }
-  const normalizedRoot = normalize(rootDir);
+  // 許可リストは「パス」ではなく「解決後のファイルが配信対象ディレクトリ内にあるか」で判定する
+  // （エンコード済み ..%2f で許可リストを迂回され、src/・package.json・.git 等が配信されるのを防ぐ）
   const relative = pathname === "/" ? "index.html" : pathname.slice(1);
   const resolved = normalize(join(rootDir, relative));
-  if (resolved !== normalizedRoot && !resolved.startsWith(normalizedRoot + "/")) {
-    return new Response("Not Found", { status: 404 });
-  }
-  if (!existsSync(resolved)) {
+
+  const allowedBases = STATIC_PREFIXES.map((prefix) => normalize(join(rootDir, prefix)).replace(/[\\/]+$/, ""));
+  const withinAllowed = allowedBases.some((base) => resolved === base || resolved.startsWith(base + "/"));
+  if (pathname !== "/" && !withinAllowed) {
     return new Response("Not Found", { status: 404 });
   }
 
-  const file = Bun.file(resolved);
+  let isFile: boolean;
+  try {
+    isFile = statSync(resolved).isFile();
+  } catch {
+    return new Response("Not Found", { status: 404 });
+  }
+  if (!isFile) {
+    return new Response("Not Found", { status: 404 });
+  }
+
   const contentType = CONTENT_TYPES[extensionName(resolved)];
-  const body = await file.arrayBuffer();
-  return new Response(body, {
-    status: 200,
-    headers: withCommonHeaders({ "content-type": contentType ?? "application/octet-stream" }),
-  });
+  try {
+    const body = await Bun.file(resolved).arrayBuffer();
+    return new Response(body, {
+      status: 200,
+      headers: withCommonHeaders({ "content-type": contentType ?? "application/octet-stream" }),
+    });
+  } catch {
+    return new Response("Internal Server Error", { status: 500 });
+  }
 }
 
 function extensionName(path: string): string {
@@ -96,7 +124,7 @@ export async function main(): Promise<void> {
   const port = Number(process.env.PORT ?? 3000);
   const hostname = process.env.HOST ?? "127.0.0.1";
 
-  const app = createApp({ rootDir, cachePath });
+  const app = createApp({ rootDir, cachePath, hostname });
   const server = Bun.serve({ hostname, port, fetch: app });
 
   const displayHost = hostname === "0.0.0.0" ? "127.0.0.1" : hostname;

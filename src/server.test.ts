@@ -18,6 +18,7 @@ beforeEach(() => {
   writeFileSync(join(rootDir, "index.html"), "<!doctype html><title>ccusage</title>");
   writeFileSync(join(rootDir, "dist", "bundle.js"), "console.log('bundle');");
   writeFileSync(join(rootDir, "public", "vendor", "chart.umd.min.js"), "// chart.js");
+  writeFileSync(join(rootDir, "secret.txt"), "TOP-SECRET");
   writeFileSync(cachePath, FIXTURE);
 });
 
@@ -104,6 +105,48 @@ describe("server セキュリティ", () => {
 
   test("静的配信は許可リスト内のみ 200 を返す", async () => {
     const res = await get("/dist/bundle.js");
+    expect(res.status).toBe(200);
+  });
+
+  test("エンコード済みパストラバーサル（..%2f）は許可リスト外のファイルを配信しない", async () => {
+    for (const path of [
+      "/dist/..%2fsecret.txt",
+      "/dist/..%2fsrc%2fserver.ts",
+      "/dist/..%2f.git%2fconfig",
+      "/dist/%2e%2e%2fsecret.txt",
+      "/dist%2f..%2fsecret.txt",
+    ]) {
+      const res = await get(path);
+      expect(res.status).toBe(404);
+    }
+  });
+
+  test("ディレクトリへの要求は 404 を返す（500 にしない）", async () => {
+    const res = await get("/dist");
+    expect(res.status).toBe(404);
+    const res2 = await get("/dist/..%2fpublic");
+    expect(res2.status).toBe(404);
+  });
+});
+
+describe("server Host 検証（DNS rebinding 対策）", () => {
+  test("ループバック bind 時に非ループバックのホストは 400 を返す", async () => {
+    const app = createApp({ rootDir, cachePath });
+    const res = await app(new Request("http://evil.example.com/"));
+    expect(res.status).toBe(400);
+  });
+
+  test("ループバック bind 時に localhost / 127.0.0.1 のホストは許可する", async () => {
+    const app = createApp({ rootDir, cachePath });
+    const localhost = await app(new Request("http://localhost/"));
+    expect(localhost.status).toBe(200);
+    const loopback = await app(new Request("http://127.0.0.1/"));
+    expect(loopback.status).toBe(200);
+  });
+
+  test("LAN bind（0.0.0.0）ではホスト検証を適用しない", async () => {
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const res = await app(new Request("http://192.168.1.10/"));
     expect(res.status).toBe(200);
   });
 });
