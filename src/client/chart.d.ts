@@ -31,6 +31,9 @@ interface ChartConfig {
 
 interface ChartInstance {
   destroy(): void;
+  update(): void;
+  data: ChartData;
+  options: ChartOptions;
 }
 
 declare const Chart: {

@@ -11,9 +11,7 @@ import {
   getSection,
   allModels,
   allAgents,
-  modelUnitPrice,
   buildModelCostSeries,
-  buildCostBarSeries,
   buildModelMixSeries,
   buildUnitPriceSeries,
   buildCacheHitRateSeries,
@@ -26,6 +24,7 @@ import {
   modelColor,
   otherBreakdown,
   buildModelUnitPrices,
+  agentDonutData,
   maxFinite,
   sliceLatest,
 } from "./aggregate";
@@ -70,7 +69,9 @@ describe("buildYearly", () => {
 
     expect(y2026.modelsUsed.sort()).toEqual(["model-a", "model-b", "model-c"]);
     const costs: Record<string, number> = {};
-    for (const b of y2026.modelBreakdowns) costs[b.modelName] = b.cost;
+    for (const b of y2026.modelBreakdowns) {
+      costs[b.modelName] = b.cost;
+    }
     expect(costs["model-a"]).toBeCloseTo(1.2);
     expect(costs["model-b"]).toBeCloseTo(0.6);
     expect(costs["model-c"]).toBeCloseTo(0.3);
@@ -180,7 +181,7 @@ describe("filterByModel", () => {
     const daily = getSection(DATA, "daily");
     const filtered = filterByModel(daily, "model-b");
 
-    const claude = filtered[0]!.agents?.[0]!;
+    const claude = filtered[0]!.agents![0]!;
     expect(claude.totalCost).toBeCloseTo(0.2);
     expect(claude.totalTokens).toBe(400);
   });
@@ -244,6 +245,46 @@ describe("allModels / allAgents", () => {
     const daily = getSection(DATA, "daily");
     expect(allAgents(daily)).toEqual(["claude", "codex"]);
   });
+
+  test("agents[] があるエントリは agents[] を優先し、metadata.agents はフォールバックとして使う", () => {
+    const onlyMetadata: PeriodEntry = {
+      period: "2026-01-10",
+      totalCost: 1,
+      totalTokens: 1000,
+      inputTokens: 400,
+      outputTokens: 100,
+      cacheReadTokens: 400,
+      cacheCreationTokens: 100,
+      modelsUsed: ["model-a"],
+      modelBreakdowns: [
+        { modelName: "model-a", cost: 1, inputTokens: 400, outputTokens: 100, cacheReadTokens: 400, cacheCreationTokens: 100 },
+      ],
+      metadata: { agents: ["claude", "codex"] },
+    };
+    expect(allAgents([onlyMetadata])).toEqual(["claude", "codex"]);
+
+    const withDetail: PeriodEntry = {
+      ...onlyMetadata,
+      metadata: { agents: ["stale-agent"] },
+      agents: [
+        {
+          agent: "claude",
+          totalCost: 1,
+          totalTokens: 1000,
+          inputTokens: 400,
+          outputTokens: 100,
+          cacheReadTokens: 400,
+          cacheCreationTokens: 100,
+          modelsUsed: ["model-a"],
+          modelBreakdowns: [
+            { modelName: "model-a", cost: 1, inputTokens: 400, outputTokens: 100, cacheReadTokens: 400, cacheCreationTokens: 100 },
+          ],
+        },
+      ],
+    };
+    // metadata.agents が古くても agents[] の内容を選択肢にする（ドーナツ・テーブルと一致させる）
+    expect(allAgents([withDetail])).toEqual(["claude"]);
+  });
 });
 
 describe("modelColor", () => {
@@ -284,25 +325,7 @@ describe("otherBreakdown", () => {
   });
 });
 
-describe("modelUnitPrice / cacheHitRate", () => {
-  test("単価は cost / totalTokens * 1e6 で計算する", () => {
-    const daily = getSection(DATA, "daily");
-    const bd = daily[0]!.modelBreakdowns.find((b) => b.modelName === "model-a")!;
-    expect(modelUnitPrice(bd)).toBeCloseTo(500);
-  });
-
-  test("トークン 0 の単価は 0 を返す", () => {
-    const bd = {
-      modelName: "model-x",
-      cost: 1,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-    };
-    expect(modelUnitPrice(bd)).toBe(0);
-  });
-
+describe("cacheHitRate", () => {
   test("キャッシュヒット率は cacheRead / 全トークンで計算する", () => {
     const daily = getSection(DATA, "daily");
     expect(cacheHitRate(daily[0]!)).toBeCloseTo(0.4);
@@ -358,6 +381,17 @@ describe("buildAgentEfficiency", () => {
     expect(codex.tokens).toBe(1000);
     expect(codex.unitPrice).toBeCloseTo(700);
     expect(codex.hitRate).toBeCloseTo(0.2);
+  });
+});
+
+describe("agentDonutData", () => {
+  test("cost 指定はコスト配列、token 指定はトークン配列を返す（図と表の値が一致する）", () => {
+    const eff = [
+      { agent: "claude", cost: 1.4, tokens: 2500, unitPrice: 560, hitRate: 0.4 },
+      { agent: "codex", cost: 0.7, tokens: 1000, unitPrice: 700, hitRate: 0.2 },
+    ];
+    expect(agentDonutData(eff, "cost")).toEqual([1.4, 0.7]);
+    expect(agentDonutData(eff, "token")).toEqual([2500, 1000]);
   });
 });
 
@@ -597,16 +631,6 @@ describe("buildModelCostSeries", () => {
     const series = buildModelCostSeries(entries);
 
     expect(series.datasets.map((d) => d.label)).toEqual(["m3", "m2", "m1"]);
-  });
-});
-
-describe("buildCostBarSeries", () => {
-  test("期間と合計コストを dataset に持つ", () => {
-    const monthly = getSection(DATA, "monthly");
-    const series = buildCostBarSeries(monthly);
-
-    expect(series.labels).toEqual(["2025-12", "2026-01", "2026-02", "2026-03"]);
-    expect(series.datasets[0]!.data).toEqual([2.0, 0.5, 1.2, 0.4]);
   });
 });
 

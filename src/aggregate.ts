@@ -2,10 +2,13 @@ import type { AgentBreakdown, ModelBreakdown, PeriodEntry, UsageData } from "./t
 
 export const TOP_N = 5;
 
+// 上位 N モデル以外をまとめる「その他」バケットのラベル。client 側（datasetColor / tooltipLabel）と共有する
+export const OTHER_LABEL = "その他";
+
 // 末尾（最新）max 件を返す。描画行数のキャップに使う（Data 由来の巨大配列で DOM を固めない）
-export function sliceLatest<T>(values: readonly T[], max: number): T[] {
-  if (values.length <= max) return values as T[];
-  return values.slice(values.length - max) as T[];
+export function sliceLatest<T>(values: readonly T[], max: number): readonly T[] {
+  if (values.length <= max) { return values; }
+  return values.slice(values.length - max);
 }
 
 // Math.max(...arr) は要素数が多いとスタック超過、NaN が混ざると結果が NaN になる。
@@ -13,7 +16,7 @@ export function sliceLatest<T>(values: readonly T[], max: number): T[] {
 export function maxFinite(values: number[], fallback: number): number {
   let max = fallback;
   for (const value of values) {
-    if (Number.isFinite(value) && value > max) max = value;
+    if (Number.isFinite(value) && value > max) { max = value; }
   }
   return max;
 }
@@ -27,7 +30,7 @@ const TOKEN_FIELDS = [
   "cacheCreationTokens",
 ] as const;
 
-function totalTokensOf(entry: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }): number {
+export function totalTokensOf(entry: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }): number {
   return TOKEN_FIELDS.reduce((sum, field) => sum + entry[field], 0);
 }
 
@@ -62,85 +65,99 @@ export function buildYearly(monthly: PeriodEntry[]): PeriodEntry[] {
     .sort((a, b) => a.period.localeCompare(b.period));
 }
 
+// モデル別 breakdown を Map へ累積する（get-or-create して 6 フィールドを加算する）
+function accumulateModelBreakdown(map: Map<string, ModelBreakdown>, breakdown: ModelBreakdown): void {
+  const merged = map.get(breakdown.modelName) ?? {
+    modelName: breakdown.modelName,
+    cost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+  };
+  merged.cost += breakdown.cost;
+  merged.inputTokens += breakdown.inputTokens;
+  merged.outputTokens += breakdown.outputTokens;
+  merged.cacheReadTokens += breakdown.cacheReadTokens;
+  merged.cacheCreationTokens += breakdown.cacheCreationTokens;
+  map.set(breakdown.modelName, merged);
+}
+
+// 数値 Map への累積（get-or-create）を 1 行で表す。topModelsByCost / buildAgentShare / buildModelCostRanking で共通
+function accumulateNumber(map: Map<string, number>, key: string, value: number): void {
+  map.set(key, (map.get(key) ?? 0) + value);
+}
+
+type AgentAccumulator = { merged: AgentBreakdown; modelsUsed: Set<string>; modelNames: Map<string, ModelBreakdown> };
+
+// エージェント別 breakdown を Map へ累積する（accumulateModelBreakdown と対称。accumulated エージェント同士の合算に使う）
+function accumulateAgentBreakdown(map: Map<string, AgentAccumulator>, agent: AgentBreakdown): void {
+  const acc = map.get(agent.agent) ?? {
+    merged: {
+      agent: agent.agent,
+      totalCost: 0,
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      modelsUsed: [],
+      modelBreakdowns: [],
+    },
+    modelsUsed: new Set<string>(),
+    modelNames: new Map<string, ModelBreakdown>(),
+  };
+  acc.merged.totalCost += agent.totalCost;
+  acc.merged.totalTokens += agent.totalTokens;
+  acc.merged.inputTokens += agent.inputTokens;
+  acc.merged.outputTokens += agent.outputTokens;
+  acc.merged.cacheReadTokens += agent.cacheReadTokens;
+  acc.merged.cacheCreationTokens += agent.cacheCreationTokens;
+  for (const model of agent.modelsUsed) { acc.modelsUsed.add(model); }
+  for (const breakdown of agent.modelBreakdowns) {
+    accumulateModelBreakdown(acc.modelNames, breakdown);
+  }
+  map.set(agent.agent, acc);
+}
+
 function mergeEntries(year: string, entries: PeriodEntry[]): PeriodEntry {
   const modelNames = new Map<string, ModelBreakdown>();
   const agents = new Set<string>();
   const modelsUsed = new Set<string>();
   // agent 別の合算は Map で持ち、最後に配列へ変換する（find()/includes() の O(n^2) を避ける）
-  const agentBreakdowns = new Map<string, { merged: AgentBreakdown; modelsUsed: Set<string>; modelNames: Map<string, ModelBreakdown> }>();
+  const agentBreakdowns = new Map<string, AgentAccumulator>();
   let totalCost = 0;
+  let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
 
   for (const entry of entries) {
     totalCost += entry.totalCost;
-    for (const model of entry.modelsUsed) modelsUsed.add(model);
-    for (const agent of entry.metadata?.agents ?? []) agents.add(agent);
+    totalTokens += entry.totalTokens;
+    inputTokens += entry.inputTokens;
+    outputTokens += entry.outputTokens;
+    cacheReadTokens += entry.cacheReadTokens;
+    cacheCreationTokens += entry.cacheCreationTokens;
+    for (const model of entry.modelsUsed) { modelsUsed.add(model); }
+    for (const agent of entry.metadata?.agents ?? []) { agents.add(agent); }
     for (const breakdown of entry.modelBreakdowns) {
-      const merged = modelNames.get(breakdown.modelName) ?? {
-        modelName: breakdown.modelName,
-        cost: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-      };
-      merged.cost += breakdown.cost;
-      merged.inputTokens += breakdown.inputTokens;
-      merged.outputTokens += breakdown.outputTokens;
-      merged.cacheReadTokens += breakdown.cacheReadTokens;
-      merged.cacheCreationTokens += breakdown.cacheCreationTokens;
-      modelNames.set(breakdown.modelName, merged);
+      accumulateModelBreakdown(modelNames, breakdown);
     }
     for (const agent of entry.agents ?? []) {
-      const acc = agentBreakdowns.get(agent.agent) ?? {
-        merged: {
-          agent: agent.agent,
-          totalCost: 0,
-          totalTokens: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
-          modelsUsed: [],
-          modelBreakdowns: [],
-        },
-        modelsUsed: new Set<string>(),
-        modelNames: new Map<string, ModelBreakdown>(),
-      };
-      acc.merged.totalCost += agent.totalCost;
-      acc.merged.totalTokens += agent.totalTokens;
-      acc.merged.inputTokens += agent.inputTokens;
-      acc.merged.outputTokens += agent.outputTokens;
-      acc.merged.cacheReadTokens += agent.cacheReadTokens;
-      acc.merged.cacheCreationTokens += agent.cacheCreationTokens;
-      for (const model of agent.modelsUsed) acc.modelsUsed.add(model);
-      for (const breakdown of agent.modelBreakdowns) {
-        const agentModel = acc.modelNames.get(breakdown.modelName) ?? {
-          modelName: breakdown.modelName,
-          cost: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
-        };
-        agentModel.cost += breakdown.cost;
-        agentModel.inputTokens += breakdown.inputTokens;
-        agentModel.outputTokens += breakdown.outputTokens;
-        agentModel.cacheReadTokens += breakdown.cacheReadTokens;
-        agentModel.cacheCreationTokens += breakdown.cacheCreationTokens;
-        acc.modelNames.set(breakdown.modelName, agentModel);
-      }
-      agentBreakdowns.set(agent.agent, acc);
+      accumulateAgentBreakdown(agentBreakdowns, agent);
     }
   }
 
   const merged: PeriodEntry = {
     period: year,
     totalCost,
-    totalTokens: entries.reduce((sumTokens, e) => sumTokens + e.totalTokens, 0),
-    inputTokens: entries.reduce((s, e) => s + e.inputTokens, 0),
-    outputTokens: entries.reduce((s, e) => s + e.outputTokens, 0),
-    cacheReadTokens: entries.reduce((s, e) => s + e.cacheReadTokens, 0),
-    cacheCreationTokens: entries.reduce((s, e) => s + e.cacheCreationTokens, 0),
+    totalTokens,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
     modelsUsed: [...modelsUsed],
     modelBreakdowns: [...modelNames.values()],
     metadata: { agents: [...agents] },
@@ -154,8 +171,34 @@ function mergeEntries(year: string, entries: PeriodEntry[]): PeriodEntry {
   return merged;
 }
 
+// breakdown 配列から 6 フィールドの合計を計算する（1 パスで累積する）
+function summarizeModelBreakdowns(breakdowns: readonly ModelBreakdown[]): {
+  totalCost: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+} {
+  let totalCost = 0;
+  let totalTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  for (const b of breakdowns) {
+    totalCost += b.cost;
+    totalTokens += b.inputTokens + b.outputTokens + b.cacheReadTokens + b.cacheCreationTokens;
+    inputTokens += b.inputTokens;
+    outputTokens += b.outputTokens;
+    cacheReadTokens += b.cacheReadTokens;
+    cacheCreationTokens += b.cacheCreationTokens;
+  }
+  return { totalCost, totalTokens, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens };
+}
+
 export function filterByModel(entries: PeriodEntry[], model: string | null): PeriodEntry[] {
-  if (model === null) return entries;
+  if (model === null) { return entries; }
   return entries.map((entry) => {
     const modelBreakdowns = entry.modelBreakdowns.filter((b) => b.modelName === model);
     const agents = (entry.agents ?? [])
@@ -163,12 +206,7 @@ export function filterByModel(entries: PeriodEntry[], model: string | null): Per
         const agentModelBreakdowns = agent.modelBreakdowns.filter((b) => b.modelName === model);
         return {
           ...agent,
-          totalCost: agentModelBreakdowns.reduce((s, b) => s + b.cost, 0),
-          totalTokens: agentModelBreakdowns.reduce((s, b) => s + totalTokensOf(b), 0),
-          inputTokens: agentModelBreakdowns.reduce((s, b) => s + b.inputTokens, 0),
-          outputTokens: agentModelBreakdowns.reduce((s, b) => s + b.outputTokens, 0),
-          cacheReadTokens: agentModelBreakdowns.reduce((s, b) => s + b.cacheReadTokens, 0),
-          cacheCreationTokens: agentModelBreakdowns.reduce((s, b) => s + b.cacheCreationTokens, 0),
+          ...summarizeModelBreakdowns(agentModelBreakdowns),
           modelsUsed: agentModelBreakdowns.map((b) => b.modelName),
           modelBreakdowns: agentModelBreakdowns,
         };
@@ -176,12 +214,7 @@ export function filterByModel(entries: PeriodEntry[], model: string | null): Per
       .filter((agent) => agent.modelBreakdowns.length > 0);
     return {
       ...entry,
-      totalCost: modelBreakdowns.reduce((s, b) => s + b.cost, 0),
-      totalTokens: modelBreakdowns.reduce((s, b) => s + totalTokensOf(b), 0),
-      inputTokens: modelBreakdowns.reduce((s, b) => s + b.inputTokens, 0),
-      outputTokens: modelBreakdowns.reduce((s, b) => s + b.outputTokens, 0),
-      cacheReadTokens: modelBreakdowns.reduce((s, b) => s + b.cacheReadTokens, 0),
-      cacheCreationTokens: modelBreakdowns.reduce((s, b) => s + b.cacheCreationTokens, 0),
+      ...summarizeModelBreakdowns(modelBreakdowns),
       modelsUsed: modelBreakdowns.map((b) => b.modelName),
       modelBreakdowns,
       agents,
@@ -190,10 +223,10 @@ export function filterByModel(entries: PeriodEntry[], model: string | null): Per
 }
 
 export function filterByAgent(entries: PeriodEntry[], agent: string | null): PeriodEntry[] {
-  if (agent === null) return entries;
+  if (agent === null) { return entries; }
   return entries.flatMap((entry) => {
     const breakdown = entry.agents?.find((a) => a.agent === agent);
-    if (!breakdown) return [];
+    if (!breakdown) { return []; }
     const filtered: PeriodEntry = {
       period: entry.period,
       totalCost: breakdown.totalCost,
@@ -218,7 +251,7 @@ export type PeriodRange =
 
 export function filterByRange(entries: PeriodEntry[], range: PeriodRange | undefined): PeriodEntry[] {
   const target = range ?? { kind: "all" };
-  if (target.kind === "all") return entries;
+  if (target.kind === "all") { return entries; }
   const prefix =
     target.month === undefined
       ? `${target.year}`
@@ -229,15 +262,24 @@ export function filterByRange(entries: PeriodEntry[], range: PeriodRange | undef
 export function allModels(entries: PeriodEntry[]): string[] {
   const models = new Set<string>();
   for (const entry of entries) {
-    for (const breakdown of entry.modelBreakdowns) models.add(breakdown.modelName);
+    for (const breakdown of entry.modelBreakdowns) { models.add(breakdown.modelName); }
   }
   return [...models].sort();
+}
+
+// エージェントの情報源は agents[] 優先、metadata.agents はフォールバック。
+// allAgents / buildAgentShare（経由で countAgents）がこの 1 箇所を使うことで、
+// フィルタの選択肢とドーナツ・テーブルに表示されるエージェントが乖離しない
+function agentNamesOf(entry: PeriodEntry): string[] {
+  return entry.agents && entry.agents.length > 0
+    ? entry.agents.map((agent) => agent.agent)
+    : entry.metadata?.agents ?? [];
 }
 
 export function allAgents(entries: PeriodEntry[]): string[] {
   const agents = new Set<string>();
   for (const entry of entries) {
-    for (const agent of entry.metadata?.agents ?? []) agents.add(agent);
+    for (const name of agentNamesOf(entry)) { agents.add(name); }
   }
   return [...agents].sort();
 }
@@ -260,16 +302,18 @@ export function modelColor(modelName: string, models: string[]): string {
   return MODEL_PALETTE[index % MODEL_PALETTE.length] ?? MODEL_PALETTE[0]!;
 }
 
-export function modelUnitPrice(breakdown: ModelBreakdown): number {
-  const tokens = totalTokensOf(breakdown);
-  if (tokens === 0) return 0;
-  return (breakdown.cost / tokens) * 1_000_000;
+// キャッシュヒット率 = cacheRead / 全トークン。全トークン 0 のときは 0 を返す
+export function hitRate(cacheReadTokens: number, totalTokens: number): number {
+  return totalTokens === 0 ? 0 : cacheReadTokens / totalTokens;
 }
 
 export function cacheHitRate(entry: PeriodEntry): number {
-  const tokens = totalTokensOf(entry);
-  if (tokens === 0) return 0;
-  return entry.cacheReadTokens / tokens;
+  return hitRate(entry.cacheReadTokens, totalTokensOf(entry));
+}
+
+// 実効単価（$/MTok）= cost / tokens × 1e6。トークン 0 は単価を計算できないため 0 を返す
+function effectiveUnitPrice(cost: number, tokens: number): number {
+  return tokens === 0 ? 0 : (cost / tokens) * 1_000_000;
 }
 
 export interface ChartSeries {
@@ -281,7 +325,7 @@ export function topModelsByCost(entries: PeriodEntry[], topN: number): string[] 
   const costByModel = new Map<string, number>();
   for (const entry of entries) {
     for (const breakdown of entry.modelBreakdowns) {
-      costByModel.set(breakdown.modelName, (costByModel.get(breakdown.modelName) ?? 0) + breakdown.cost);
+      accumulateNumber(costByModel, breakdown.modelName, breakdown.cost);
     }
   }
   return [...costByModel.entries()]
@@ -311,7 +355,7 @@ export function otherBreakdown(entry: PeriodEntry, top: ReadonlySet<string>): Ot
 function distinctModelCount(entries: PeriodEntry[]): number {
   const models = new Set<string>();
   for (const entry of entries) {
-    for (const breakdown of entry.modelBreakdowns) models.add(breakdown.modelName);
+    for (const breakdown of entry.modelBreakdowns) { models.add(breakdown.modelName); }
   }
   return models.size;
 }
@@ -337,7 +381,7 @@ export function buildKpiSummary(entries: PeriodEntry[]): KpiSummary {
   for (const entry of entries) {
     totalCost += entry.totalCost;
     totalTokens += entry.totalTokens;
-    for (const breakdown of entry.modelBreakdowns) models.add(breakdown.modelName);
+    for (const breakdown of entry.modelBreakdowns) { models.add(breakdown.modelName); }
   }
 
   return { totalCost, totalTokens, activeModelCount: models.size };
@@ -378,10 +422,15 @@ export function buildAgentEfficiency(entries: PeriodEntry[]): AgentEfficiency[] 
       agent,
       cost: agg.cost,
       tokens: agg.tokens,
-      unitPrice: agg.tokens === 0 ? 0 : (agg.cost / agg.tokens) * 1_000_000,
-      hitRate: agg.tokens === 0 ? 0 : agg.cacheRead / agg.tokens,
+      unitPrice: effectiveUnitPrice(agg.cost, agg.tokens),
+      hitRate: hitRate(agg.cacheRead, agg.tokens),
     }))
     .sort((a, b) => b.cost - a.cost);
+}
+
+// ドーナツの内訳値を cost / token で切り替える（図・中央値・表で同じ値を使うための単一経路）
+export function agentDonutData(efficiency: AgentEfficiency[], seg: "cost" | "token"): number[] {
+  return efficiency.map((e) => (seg === "cost" ? e.cost : e.tokens));
 }
 
 export function buildAgentShare(entries: PeriodEntry[]): AgentShareData {
@@ -393,13 +442,13 @@ export function buildAgentShare(entries: PeriodEntry[]): AgentShareData {
     if (entry.agents && entry.agents.length > 0) {
       hasDetail = true;
       for (const agent of entry.agents) {
-        costByAgent.set(agent.agent, (costByAgent.get(agent.agent) ?? 0) + agent.totalCost);
-        tokensByAgent.set(agent.agent, (tokensByAgent.get(agent.agent) ?? 0) + agent.totalTokens);
+        accumulateNumber(costByAgent, agent.agent, agent.totalCost);
+        accumulateNumber(tokensByAgent, agent.agent, agent.totalTokens);
       }
     } else {
-      for (const name of entry.metadata?.agents ?? []) {
-        if (!costByAgent.has(name)) costByAgent.set(name, 0);
-        if (!tokensByAgent.has(name)) tokensByAgent.set(name, 0);
+      for (const name of agentNamesOf(entry)) {
+        if (!costByAgent.has(name)) { costByAgent.set(name, 0); }
+        if (!tokensByAgent.has(name)) { tokensByAgent.set(name, 0); }
       }
     }
   }
@@ -426,72 +475,75 @@ export interface DashboardSeries {
   costStacked: ChartSeries;
   modelMix: ChartSeries;
   unitPrice: ChartSeries;
+  unitPrices: ModelUnitPrice[];
   agentShare: AgentShareData;
   cacheHitRate: ChartSeries;
   kpi: KpiSummary;
+  entries: PeriodEntry[];
 }
 
 export function buildDashboardSeries(data: UsageData, filters: DashboardFilters): DashboardSeries {
-  const entries = selectSectionEntries(data, filters.section, filters);
+  return buildDashboardSeriesFromEntries(selectSectionEntries(data, filters.section, filters));
+}
 
+// 事前に選択済み entries を受け取り、全系列を組み立てる。
+// render 側が selectSectionEntries を二重実行せず、選別結果と集計結果を共有できる
+export function buildDashboardSeriesFromEntries(entries: PeriodEntry[]): DashboardSeries {
+  const unitPrices = buildModelUnitPrices(entries);
   return {
     costStacked: buildModelCostSeries(entries, TOP_N),
     modelMix: buildModelMixSeries(entries, TOP_N),
-    unitPrice: buildUnitPriceSeries(entries),
+    unitPrice: unitPriceSeries(unitPrices),
+    unitPrices,
     agentShare: buildAgentShare(entries),
     cacheHitRate: buildCacheHitRateSeries(entries),
     kpi: buildKpiSummary(entries),
+    entries,
   };
+}
+
+// 上位トップNモデル + 「その他」バケットの期間系列を組み立てる共通ヘルパー。
+// cost と ratio（構成比）の 2 系統が値の計算式だけ異なるため、valueFor で差し替える
+function buildTopModelSeries(
+  entries: PeriodEntry[],
+  topN: number,
+  valueFor: (entry: PeriodEntry, modelName: string | null, top: ReadonlySet<string>) => number,
+): ChartSeries {
+  const labels = entries.map((e) => e.period);
+  const top = topModelsByCost(entries, topN);
+  const topSet = new Set(top);
+  const datasets = top.map((model) => ({
+    label: model,
+    data: entries.map((entry) => valueFor(entry, model, topSet)),
+  }));
+  if (top.length < distinctModelCount(entries)) {
+    datasets.push({
+      label: OTHER_LABEL,
+      data: entries.map((entry) => valueFor(entry, null, topSet)),
+    });
+  }
+  return { labels, datasets };
 }
 
 export function buildModelCostSeries(entries: PeriodEntry[], topN: number = TOP_N): ChartSeries {
-  const labels = entries.map((e) => e.period);
-  const top = topModelsByCost(entries, topN);
-  const datasets = top.map((model) => ({
-    label: model,
-    data: entries.map((entry) => entry.modelBreakdowns.find((b) => b.modelName === model)?.cost ?? 0),
-  }));
-  if (top.length < distinctModelCount(entries)) {
-    datasets.push({
-      label: "その他",
-      data: entries.map((entry) =>
-        entry.modelBreakdowns.filter((b) => !top.includes(b.modelName)).reduce((sum, b) => sum + b.cost, 0),
-      ),
-    });
-  }
-  return { labels, datasets };
-}
-
-export function buildCostBarSeries(entries: PeriodEntry[]): ChartSeries {
-  const labels = entries.map((e) => e.period);
-  return {
-    labels,
-    datasets: [{ label: "コスト", data: entries.map((e) => e.totalCost) }],
-  };
+  return buildTopModelSeries(entries, topN, (entry, modelName, top) => {
+    if (modelName === null) {
+      return entry.modelBreakdowns.filter((b) => !top.has(b.modelName)).reduce((sum, b) => sum + b.cost, 0);
+    }
+    return entry.modelBreakdowns.find((b) => b.modelName === modelName)?.cost ?? 0;
+  });
 }
 
 export function buildModelMixSeries(entries: PeriodEntry[], topN: number = TOP_N): ChartSeries {
-  const labels = entries.map((e) => e.period);
-  const top = topModelsByCost(entries, topN);
-  const datasets = top.map((model) => ({
-    label: model,
-    data: entries.map((entry) => {
-      if (entry.totalCost === 0) return 0;
-      const breakdown = entry.modelBreakdowns.find((b) => b.modelName === model);
-      return breakdown ? (breakdown.cost / entry.totalCost) * 100 : 0;
-    }),
-  }));
-  if (top.length < distinctModelCount(entries)) {
-    datasets.push({
-      label: "その他",
-      data: entries.map((entry) => {
-        if (entry.totalCost === 0) return 0;
-        const rest = entry.modelBreakdowns.filter((b) => !top.includes(b.modelName));
-        return (rest.reduce((sum, b) => sum + b.cost, 0) / entry.totalCost) * 100;
-      }),
-    });
-  }
-  return { labels, datasets };
+  return buildTopModelSeries(entries, topN, (entry, modelName, top) => {
+    if (entry.totalCost === 0) { return 0; }
+    if (modelName === null) {
+      const rest = entry.modelBreakdowns.filter((b) => !top.has(b.modelName));
+      return (rest.reduce((sum, b) => sum + b.cost, 0) / entry.totalCost) * 100;
+    }
+    const breakdown = entry.modelBreakdowns.find((b) => b.modelName === modelName);
+    return breakdown ? (breakdown.cost / entry.totalCost) * 100 : 0;
+  });
 }
 
 export interface ModelUnitPrice {
@@ -512,7 +564,7 @@ export function buildModelCostRanking(entries: PeriodEntry[]): ModelCostRank[] {
   for (const entry of entries) {
     totalCost += entry.totalCost;
     for (const breakdown of entry.modelBreakdowns) {
-      costByModel.set(breakdown.modelName, (costByModel.get(breakdown.modelName) ?? 0) + breakdown.cost);
+      accumulateNumber(costByModel, breakdown.modelName, breakdown.cost);
     }
   }
   return [...costByModel.entries()]
@@ -538,32 +590,22 @@ export function buildModelUnitPrices(entries: PeriodEntry[]): ModelUnitPrice[] {
   return [...byModel.entries()]
     .map(([modelName, agg]) => ({
       modelName,
-      unitPrice: agg.tokens === 0 ? 0 : (agg.cost / agg.tokens) * 1_000_000,
-      hitRate: agg.tokens === 0 ? 0 : agg.cacheRead / agg.tokens,
+      unitPrice: effectiveUnitPrice(agg.cost, agg.tokens),
+      hitRate: hitRate(agg.cacheRead, agg.tokens),
     }))
     .sort((a, b) => b.unitPrice - a.unitPrice);
 }
 
-export function buildUnitPriceSeries(entries: PeriodEntry[]): ChartSeries {
-  const costByModel = new Map<string, number>();
-  const tokensByModel = new Map<string, number>();
-  for (const entry of entries) {
-    for (const breakdown of entry.modelBreakdowns) {
-      costByModel.set(breakdown.modelName, (costByModel.get(breakdown.modelName) ?? 0) + breakdown.cost);
-      tokensByModel.set(breakdown.modelName, (tokensByModel.get(breakdown.modelName) ?? 0) + totalTokensOf(breakdown));
-    }
-  }
-  const rows = [...costByModel.entries()]
-    .map(([modelName, cost]) => {
-      const tokens = tokensByModel.get(modelName) ?? 0;
-      return { modelName, price: tokens === 0 ? 0 : (cost / tokens) * 1_000_000 };
-    })
-    .sort((a, b) => b.price - a.price);
-
+function unitPriceSeries(prices: ModelUnitPrice[]): ChartSeries {
   return {
-    labels: rows.map((row) => row.modelName),
-    datasets: [{ label: "実効単価 ($/MTok)", data: rows.map((row) => row.price) }],
+    labels: prices.map((p) => p.modelName),
+    datasets: [{ label: "実効単価 ($/MTok)", data: prices.map((p) => p.unitPrice) }],
   };
+}
+
+export function buildUnitPriceSeries(entries: PeriodEntry[]): ChartSeries {
+  // 実効単価の集計は buildModelUnitPrices と共有する（同一ロジックの二重実装を避ける）
+  return unitPriceSeries(buildModelUnitPrices(entries));
 }
 
 export function buildCacheHitRateSeries(entries: PeriodEntry[]): ChartSeries {

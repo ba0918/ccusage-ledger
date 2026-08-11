@@ -2,19 +2,22 @@ import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
 import { loadUsageData } from "./load-data";
 import { escapeHtml } from "./escape";
 import {
+  agentDonutData,
   allAgents,
   allModels,
   buildAgentEfficiency,
-  buildDashboardSeries,
+  buildDashboardSeriesFromEntries,
   buildModelCostRanking,
-  buildModelUnitPrices,
+  hitRate,
   maxFinite,
   modelColor,
   otherBreakdown,
   selectSectionEntries,
   sliceLatest,
   topModelsByCost,
+  totalTokensOf,
   TOP_N,
+  OTHER_LABEL,
   type AgentEfficiency,
   type ChartSeries,
   type DashboardFilters,
@@ -32,7 +35,7 @@ let navYear = 0;
 let navMonth = 1;
 let viewingAll = true;
 let donutSeg: "cost" | "token" = "cost";
-let lastAgentShare: ReturnType<typeof buildDashboardSeries>["agentShare"] | null = null;
+let lastAgentShare: ReturnType<typeof buildDashboardSeriesFromEntries>["agentShare"] | null = null;
 let lastAgentEfficiency: AgentEfficiency[] = [];
 
 const AGENT_PALETTE = ["#7aa7ff", "#4cd6a0", "#f5b34d", "#c084fc", "#76b7b2", "#e15759"];
@@ -45,7 +48,7 @@ async function loadData(): Promise<void> {
     (window as Window & { CCUSAGE_DATA?: unknown }).CCUSAGE_DATA,
     async () => {
       const res = await fetch("/api/usage");
-      if (!res.ok) throw new Error(`/api/usage failed: ${res.status}`);
+      if (!res.ok) { throw new Error(`/api/usage failed: ${res.status}`); }
       return (await res.json()) as unknown;
     },
   );
@@ -53,6 +56,15 @@ async function loadData(): Promise<void> {
 
 function el(id: string): HTMLElement {
   return document.getElementById(id) as HTMLElement;
+}
+
+// index.html と main.ts の ID 契約を検証する。ID がずれると el() は null に非 null キャストして
+// 静かに runtime 例外になるため、main() 冒頭で欠落を早期検出する
+function assertElements(ids: readonly string[]): void {
+  const missing = ids.filter((id) => document.getElementById(id) === null);
+  if (missing.length > 0) {
+    throw new Error(`index.html に要素がありません: ${missing.join(", ")}`);
+  }
 }
 
 function fillSelect(id: string, values: string[]): void {
@@ -76,8 +88,8 @@ function formatCurrency(cost: number): string {
 }
 
 function formatTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  if (tokens >= 1_000_000) { return `${(tokens / 1_000_000).toFixed(1)}M`; }
+  if (tokens >= 1_000) { return `${(tokens / 1_000).toFixed(1)}K`; }
   return `${Math.round(tokens)}`;
 }
 
@@ -91,13 +103,13 @@ function formatPercent(ratio: number): string {
 
 function formatAxisCurrency(value: number): string {
   const abs = Math.abs(value);
-  if (abs >= 1000) return `$${(value / 1000).toFixed(1)}K`;
-  if (abs >= 1) return `$${value.toFixed(1)}`;
+  if (abs >= 1000) { return `$${(value / 1000).toFixed(1)}K`; }
+  if (abs >= 1) { return `$${value.toFixed(1)}`; }
   return `$${value.toFixed(2)}`;
 }
 
 function datasetColor(label: string, models: string[]): string {
-  return label === "その他" ? OTHER_COLOR : modelColor(label, models);
+  return label === OTHER_LABEL ? OTHER_COLOR : modelColor(label, models);
 }
 
 function colorize(series: ChartSeries, colorFor: (label: string) => string, fill: boolean | "origin" = false): ChartData {
@@ -123,9 +135,9 @@ function tooltipLabel(
       dataIndex: number;
     };
     const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
-    if (opts?.excludeZero && value === 0) return "";
+    if (opts?.excludeZero && value === 0) { return ""; }
     const lines: string[] = [fmt(value, dataset.label ?? "")];
-    if (dataset.label === "その他" && opts?.entries && opts.top) {
+    if (dataset.label === OTHER_LABEL && opts?.entries && opts.top) {
       const entry = opts.entries[dataIndex];
       if (entry) {
         const inner = opts.inner ?? ((item: OtherBreakdownItem) => `${item.modelName}: ${Math.round(item.ratio)}%`);
@@ -140,16 +152,17 @@ function tooltipLabel(
 
 function createChart(id: string, type: string, data: ChartData, options: ChartOptions = {}): void {
   const canvas = document.getElementById(id) as HTMLCanvasElement;
-  charts[id]?.destroy();
-  charts[id] = new Chart(canvas, {
-    type,
-    data,
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      ...options,
-    },
-  });
+  const fullOptions: ChartOptions = { responsive: true, maintainAspectRatio: false, ...options };
+  const existing = charts[id];
+  if (existing) {
+    // フィルタ変更のたびに destroy → 再生成するのは無駄なので、data / options を差し替えて update する。
+    // チャート種別は id ごとに固定（donut の非表示時は renderAgentDonut 側で destroy + delete される）
+    existing.data = data;
+    existing.options = fullOptions;
+    existing.update();
+    return;
+  }
+  charts[id] = new Chart(canvas, { type, data, options: fullOptions });
 }
 
 function overallCacheHitRate(entries: PeriodEntry[]): number {
@@ -157,26 +170,17 @@ function overallCacheHitRate(entries: PeriodEntry[]): number {
   let total = 0;
   for (const entry of entries) {
     read += entry.cacheReadTokens;
-    total += entry.inputTokens + entry.outputTokens + entry.cacheReadTokens + entry.cacheCreationTokens;
+    total += totalTokensOf(entry);
   }
-  return total === 0 ? 0 : read / total;
+  return hitRate(read, total);
 }
 
 function cacheHitRateOf(fields: Pick<AgentBreakdown, "cacheReadTokens" | "inputTokens" | "outputTokens" | "cacheCreationTokens">): number {
-  const total = fields.inputTokens + fields.outputTokens + fields.cacheReadTokens + fields.cacheCreationTokens;
-  return total === 0 ? 0 : fields.cacheReadTokens / total;
+  return hitRate(fields.cacheReadTokens, totalTokensOf(fields));
 }
 
 function countAgents(entries: PeriodEntry[]): number {
-  const agents = new Set<string>();
-  for (const entry of entries) {
-    if (entry.agents && entry.agents.length > 0) {
-      for (const agent of entry.agents) agents.add(agent.agent);
-    } else {
-      for (const name of entry.metadata?.agents ?? []) agents.add(name);
-    }
-  }
-  return agents.size;
+  return allAgents(entries).length;
 }
 
 function currentMonthAnchor(): void {
@@ -186,7 +190,7 @@ function currentMonthAnchor(): void {
 }
 
 function navLabel(): string {
-  if (state.section === "yearly") return `${navYear}`;
+  if (state.section === "yearly") { return `${navYear}`; }
   return `${navYear}/${String(navMonth).padStart(2, "0")}`;
 }
 
@@ -206,11 +210,13 @@ function stepNav(direction: 1 | -1): void {
 }
 
 function applyNavRange(): void {
-  state.range = viewingAll
-    ? { kind: "all" }
-    : state.section === "yearly"
-      ? { kind: "fixed", year: navYear }
-      : { kind: "fixed", year: navYear, month: navMonth };
+  if (viewingAll) {
+    state.range = { kind: "all" };
+  } else if (state.section === "yearly") {
+    state.range = { kind: "fixed", year: navYear };
+  } else {
+    state.range = { kind: "fixed", year: navYear, month: navMonth };
+  }
 }
 
 function renderNav(): void {
@@ -233,7 +239,7 @@ function renderNav(): void {
 
 function rangeDescription(): string {
   const range = state.range;
-  if (range.kind === "all") return "全期間の累計";
+  if (range.kind === "all") { return "全期間の累計"; }
   return range.month !== undefined
     ? `${range.year}/${String(range.month).padStart(2, "0")} の合計`
     : `${range.year} の合計`;
@@ -313,11 +319,20 @@ function shortModelName(modelName: string): string {
 }
 
 function hitRateColor(hitRate: number): string {
-  if (hitRate >= 0.95) return "#34d399";
-  if (hitRate >= 0.85) return "#a3e635";
-  if (hitRate >= 0.75) return "#fbbf24";
-  if (hitRate >= 0.65) return "#fb923c";
+  if (hitRate >= 0.95) { return "#34d399"; }
+  if (hitRate >= 0.85) { return "#a3e635"; }
+  if (hitRate >= 0.75) { return "#fbbf24"; }
+  if (hitRate >= 0.65) { return "#fb923c"; }
   return "#f87171";
+}
+
+// 「モデル名 + 横棒 + 数値セル」の行を組み立てる（renderUnitPrice / renderCostRanking で共通）
+function modelBarRow(modelName: string, barWidth: number, barColor: string, cells: string[]): string {
+  return `<tr>
+    <td class="model" title="${escapeHtml(modelName)}">${escapeHtml(shortModelName(modelName))}</td>
+    <td class="bar-cell"><div class="bar" style="width:${barWidth}%;background:${barColor}"></div></td>
+    ${cells.map((cell) => `<td class="num">${cell}</td>`).join("")}
+  </tr>`;
 }
 
 function renderUnitPrice(prices: ModelUnitPrice[]): void {
@@ -326,12 +341,7 @@ function renderUnitPrice(prices: ModelUnitPrice[]): void {
   tbody.innerHTML = prices
     .map((p) => {
       const width = Math.max((p.unitPrice / maxPrice) * 100, 1);
-      return `<tr>
-        <td class="model" title="${escapeHtml(p.modelName)}">${escapeHtml(shortModelName(p.modelName))}</td>
-        <td class="bar-cell"><div class="bar" style="width:${width}%;background:${hitRateColor(p.hitRate)}"></div></td>
-        <td class="num">${Math.round(p.hitRate * 100)}%</td>
-        <td class="num">$${p.unitPrice.toFixed(2)}</td>
-      </tr>`;
+      return modelBarRow(p.modelName, width, hitRateColor(p.hitRate), [formatPercent(p.hitRate), formatCurrency(p.unitPrice)]);
     })
     .join("");
 }
@@ -373,22 +383,26 @@ function renderCostRanking(ranking: ModelCostRank[], models: string[]): void {
   tbody.innerHTML = ranking
     .map((r) => {
       const width = Math.max((r.cost / maxCost) * 100, 1);
-      return `<tr>
-        <td class="model" title="${escapeHtml(r.modelName)}">${escapeHtml(shortModelName(r.modelName))}</td>
-        <td class="bar-cell"><div class="bar" style="width:${width}%;background:${datasetColor(r.modelName, models)}"></div></td>
-        <td class="num">${formatCurrency(r.cost)}</td>
-        <td class="num">${Math.round(r.ratio)}%</td>
-      </tr>`;
+      return modelBarRow(r.modelName, width, datasetColor(r.modelName, models), [formatCurrency(r.cost), `${Math.round(r.ratio)}%`]);
     })
     .join("");
 }
 
-function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentShare"], efficiency: AgentEfficiency[]): void {
+function segValue(cost: number, tokens: number): number {
+  return donutSeg === "cost" ? cost : tokens;
+}
+
+function formatSegValue(value: number): string {
+  return donutSeg === "cost" ? formatCurrency(value) : formatTokens(value);
+}
+
+function renderAgentDonut(share: ReturnType<typeof buildDashboardSeriesFromEntries>["agentShare"], efficiency: AgentEfficiency[]): void {
   lastAgentShare = share;
   lastAgentEfficiency = efficiency;
   const effBody = document.getElementById("agent-efficiency-body")!;
+  const segLabel = donutSeg === "cost" ? "合計コスト" : "合計トークン";
   el("donut-value").textContent = "–";
-  el("donut-label").textContent = donutSeg === "cost" ? "合計コスト" : "合計トークン";
+  el("donut-label").textContent = segLabel;
 
   if (!share.hasDetail || share.agents.length === 0) {
     charts["chart-agent-donut"]?.destroy();
@@ -397,7 +411,9 @@ function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentS
     return;
   }
 
-  const data = donutSeg === "cost" ? share.cost : share.tokens;
+  // 図・中央値・表は同じ値（cost または tokens）を参照する。データとラベルの順序は
+  // どちらも efficiency（コスト降順）に合わせる（share.cost/tokens は share.agents 順でラベルとずれるため使わない）
+  const data = agentDonutData(efficiency, donutSeg);
   const colors = efficiency.map((_, index) => AGENT_PALETTE[index % AGENT_PALETTE.length]!);
 
   createChart(
@@ -405,26 +421,25 @@ function renderAgentDonut(share: ReturnType<typeof buildDashboardSeries>["agentS
     "doughnut",
     {
       labels: efficiency.map((e) => e.agent),
-      datasets: [{ data: efficiency.map((e) => e.cost), backgroundColor: colors, borderColor: "#141824", borderWidth: 2, cutout: "62%" }],
+      datasets: [{ data, backgroundColor: colors, borderColor: "#141824", borderWidth: 2, cutout: "62%" }],
     },
     { plugins: { legend: { display: false } } },
   );
 
-  const total = donutSeg === "cost" ? share.totalCost : share.totalTokens;
-  el("donut-value").textContent = donutSeg === "cost" ? formatCurrency(total) : formatTokens(total);
-  el("donut-label").textContent = donutSeg === "cost" ? "合計コスト" : "合計トークン";
+  const total = segValue(share.totalCost, share.totalTokens);
+  el("donut-value").textContent = formatSegValue(total);
 
   effBody.innerHTML = efficiency
     .map((e, index) => {
-      const value = donutSeg === "cost" ? e.cost : e.tokens;
-      const formatted = donutSeg === "cost" ? formatCurrency(value) : formatTokens(value);
-      const ratio = donutSeg === "cost" ? (share.totalCost === 0 ? 0 : e.cost / share.totalCost) : (share.totalTokens === 0 ? 0 : e.tokens / share.totalTokens);
+      const value = segValue(e.cost, e.tokens);
+      const formatted = formatSegValue(value);
+      const ratio = total === 0 ? 0 : value / total;
       return `<tr>
         <td><span class="a-name"><span class="swatch" style="background:${colors[index] ?? AGENT_PALETTE[0]}"></span>${escapeHtml(e.agent)}</span></td>
         <td class="num">${formatted} <span style="color:var(--muted);font-size:11px">${formatPercent(ratio)}</span></td>
         <td class="num">${formatTokens(e.tokens)}</td>
-        <td class="num">$${e.unitPrice.toFixed(2)}</td>
-        <td class="num">${Math.round(e.hitRate * 100)}%</td>
+        <td class="num">${formatCurrency(e.unitPrice)}</td>
+        <td class="num">${formatPercent(e.hitRate)}</td>
       </tr>`;
     })
     .join("");
@@ -434,21 +449,28 @@ function agentModelNames(agent: AgentBreakdown): string[] {
   return agent.modelsUsed.length > 0 ? agent.modelsUsed : agent.modelBreakdowns.map((b) => b.modelName);
 }
 
+let expandBound = false;
+
 function bindExpand(): void {
-  document.querySelectorAll("#table-body .period-row").forEach((row) => {
-    const button = row.querySelector<HTMLButtonElement>(".expand-btn");
-    if (!button) return;
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      row.classList.toggle("open");
-      const isOpen = row.classList.contains("open");
-      button.setAttribute("aria-expanded", String(isOpen));
-      let sibling = row.nextElementSibling;
-      while (sibling && sibling.classList.contains("agent-row")) {
-        sibling.classList.toggle("hidden");
-        sibling = sibling.nextElementSibling;
-      }
-    });
+  if (expandBound) { return; }
+  expandBound = true;
+  // tbody は render のたびに innerHTML が置き換わるが、要素自体は使い回されるため
+  // ここに 1 つのリスナーを張れば行ごとのリスナー張り直しが不要（event delegation）
+  const tbody = document.getElementById("table-body")!;
+  tbody.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    if (!target.classList.contains("expand-btn")) { return; }
+    event.stopPropagation();
+    const row = target.closest(".period-row");
+    if (!row) { return; }
+    row.classList.toggle("open");
+    const isOpen = row.classList.contains("open");
+    target.setAttribute("aria-expanded", String(isOpen));
+    let sibling = row.nextElementSibling;
+    while (sibling?.classList.contains("agent-row")) {
+      sibling.classList.toggle("hidden");
+      sibling = sibling.nextElementSibling;
+    }
   });
 }
 
@@ -475,7 +497,7 @@ function renderTable(entries: PeriodEntry[]): void {
     totalOutput += entry.outputTokens;
     totalCost += entry.totalCost;
     totalCacheRead += entry.cacheReadTokens;
-    totalTokenFields += entry.inputTokens + entry.outputTokens + entry.cacheReadTokens + entry.cacheCreationTokens;
+    totalTokenFields += totalTokensOf(entry);
   }
 
   const visible = sliceLatest(entries, MAX_TABLE_ROWS);
@@ -531,13 +553,14 @@ function renderTable(entries: PeriodEntry[]): void {
 }
 
 function render(): void {
-  if (!usageData) return;
+  if (!usageData) { return; }
 
   applyNavRange();
   renderNav();
 
-  const series = buildDashboardSeries(usageData, state);
-  const entries = selectSectionEntries(usageData, state.section, state);
+  // entries を一度だけ選別し、全系列と共有する（selectSectionEntries の二重実行を避ける）
+  const series = buildDashboardSeriesFromEntries(selectSectionEntries(usageData, state.section, state));
+  const entries = series.entries;
   const models = allModels(collectAllEntries());
   const top = new Set(topModelsByCost(entries, TOP_N));
   const tooltipCtx: TooltipContext = { entries, top, excludeZero: true };
@@ -545,7 +568,7 @@ function render(): void {
   renderKpis(series.kpi, entries);
   renderCostStacked(series.costStacked, models, tooltipCtx);
   renderModelMix(series.modelMix, models, tooltipCtx);
-  renderUnitPrice(buildModelUnitPrices(entries));
+  renderUnitPrice(series.unitPrices);
   renderAgentDonut(series.agentShare, buildAgentEfficiency(entries));
   renderCostRanking(buildModelCostRanking(entries), models);
   renderCacheHit(series.cacheHitRate);
@@ -598,10 +621,14 @@ function bindControls(): void {
 
   document.querySelectorAll(".seg-toggle button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".seg-toggle button").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".seg-toggle button").forEach((b) => {
+        b.classList.remove("active");
+        b.setAttribute("aria-pressed", "false");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-pressed", "true");
       donutSeg = (btn as HTMLElement).dataset.seg === "token" ? "token" : "cost";
-      if (lastAgentShare) renderAgentDonut(lastAgentShare, lastAgentEfficiency);
+      if (lastAgentShare) { renderAgentDonut(lastAgentShare, lastAgentEfficiency); }
     });
   });
 }
@@ -615,6 +642,35 @@ function setStatus(message: string, isError = false): void {
 async function main(): Promise<void> {
   setStatus("");
   try {
+    assertElements([
+      "nav-label",
+      "nav-prev",
+      "nav-next",
+      "nav-all",
+      "context-bar",
+      "context-bar-text",
+      "kpi-total-cost",
+      "kpi-total-sub",
+      "kpi-cache-rate",
+      "kpi-total-tokens",
+      "kpi-models",
+      "kpi-agents-sub",
+      "chart-cost-stacked",
+      "chart-model-mix",
+      "chart-cache-hit",
+      "chart-agent-donut",
+      "unit-price-body",
+      "cost-ranking-body",
+      "agent-efficiency-body",
+      "donut-value",
+      "donut-label",
+      "table-body",
+      "table-count",
+      "section",
+      "model",
+      "agent",
+      "status",
+    ]);
     await loadData();
     const entries = collectAllEntries();
     fillSelect("model", allModels(entries));
