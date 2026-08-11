@@ -7,9 +7,15 @@
   },
   "files": [
     "index.html",
-    "dist",
+    "dist/bundle.js",
     "public",
-    "src"
+    "src/cli.ts",
+    "src/server.ts",
+    "src/fetch-usage.ts",
+    "src/paths.ts",
+    "src/open-browser.ts",
+    "src/export.ts",
+    "src/types.ts"
   ],
   "publishConfig": {
     "access": "public"
