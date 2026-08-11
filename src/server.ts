@@ -56,7 +56,13 @@ export function createApp(options: { rootDir: string }) {
   };
 }
 
+const STATIC_PREFIXES = ["/dist/", "/public/"];
+
 async function serveStatic(rootDir: string, pathname: string): Promise<Response> {
+  // LAN 公開時にプロジェクト全体（src/・package.json・.git 等）を配信しないよう許可リストで制限する
+  if (pathname !== "/" && !STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+    return new Response("Not Found", { status: 404 });
+  }
   const normalizedRoot = normalize(rootDir);
   const relative = pathname === "/" ? "index.html" : pathname.slice(1);
   const resolved = normalize(join(rootDir, relative));

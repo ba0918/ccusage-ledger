@@ -92,4 +92,16 @@ describe("server セキュリティ", () => {
     const res = await get("/%%");
     expect(res.status).toBe(400);
   });
+
+  test("プロジェクトルート直下のファイルは配信しない（許可リスト）", async () => {
+    for (const path of ["/src/server.ts", "/package.json", "/.git/config", "/data/usage.json", "/AGENTS.md"]) {
+      const res = await get(path);
+      expect(res.status).toBe(404);
+    }
+  });
+
+  test("静的配信は許可リスト内のみ 200 を返す", async () => {
+    const res = await get("/dist/bundle.js");
+    expect(res.status).toBe(200);
+  });
 });
