@@ -1,12 +1,24 @@
 {
   "name": "ccusage-ledger",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "bin": {
+    "ccusage-ledger": "src/cli.ts"
+  },
+  "files": [
+    "index.html",
+    "dist",
+    "public",
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "bun run build && bun run src/server.ts",
     "build": "bun build src/client/main.ts --outfile dist/bundle.js",
     "export": "bun run build && bun run src/export.ts",
+    "prepublishOnly": "bun run build",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
