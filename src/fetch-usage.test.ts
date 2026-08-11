@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, withSafeChain, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, type SpawnResult } from "./fetch-usage";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
 
@@ -17,31 +17,8 @@ function writeCacheFixture(cachePath: string): void {
 }
 
 describe("DEFAULT_COMMAND", () => {
-  test("--by-agent でエージェント内訳を取得する", () => {
-    expect(DEFAULT_COMMAND).toEqual(["bunx", "ccusage", "--json", "--sections", "daily,monthly", "--by-agent"]);
-  });
-});
-
-describe("withSafeChain", () => {
-  test("safe-chain があればコマンドの先頭に前置する", () => {
-    expect(withSafeChain(DEFAULT_COMMAND, true)).toEqual(["safe-chain", ...DEFAULT_COMMAND]);
-  });
-
-  test("safe-chain が無ければ素のコマンドを返す", () => {
-    expect(withSafeChain(DEFAULT_COMMAND, false)).toEqual(DEFAULT_COMMAND);
-  });
-});
-
-describe("spawnEnv", () => {
-  test("safe-chain 起動時は PKG_EXECPATH を除外する（pkg ブートストラップの誤解釈回避）", () => {
-    expect(spawnEnv({ PKG_EXECPATH: "/safe-chain/bin/safe-chain", PATH: "/bin" }, true)).toEqual({ PATH: "/bin" });
-  });
-
-  test("safe-chain なしの起動では env をそのまま渡す", () => {
-    expect(spawnEnv({ PKG_EXECPATH: "/safe-chain/bin/safe-chain", PATH: "/bin" }, false)).toEqual({
-      PKG_EXECPATH: "/safe-chain/bin/safe-chain",
-      PATH: "/bin",
-    });
+  test("ccusage のバージョンを固定してエージェント内訳を取得する", () => {
+    expect(DEFAULT_COMMAND).toEqual(["bunx", "ccusage@20.0.19", "--json", "--sections", "daily,monthly", "--by-agent"]);
   });
 });
 
@@ -61,6 +38,19 @@ describe("fetchUsage デフォルト cachePath", () => {
       if (prev === undefined) delete process.env.XDG_CACHE_HOME;
       else process.env.XDG_CACHE_HOME = prev;
     }
+  });
+});
+
+describe("fetchUsage キャッシュ書き込み", () => {
+  test("キャッシュファイルは 0600 で書かれる", () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    const spawn = (_command: string[]): SpawnResult => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+
+    fetchUsage({ cachePath, spawn });
+
+    expect((statSync(cachePath).mode & 0o777)).toBe(0o600);
+    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
   });
 });
 

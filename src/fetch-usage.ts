@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
@@ -21,24 +21,10 @@ export interface FetchUsageResult {
   source: "fresh" | "cache";
 }
 
-export const DEFAULT_COMMAND = ["bunx", "ccusage", "--json", "--sections", "daily,monthly", "--by-agent"];
-
-export function withSafeChain(command: string[], safeChainAvailable: boolean): string[] {
-  return safeChainAvailable ? ["safe-chain", ...command] : command;
-}
-
-export function spawnEnv(env: Record<string, string | undefined>, safeChainAvailable: boolean): Record<string, string | undefined> {
-  if (!safeChainAvailable) return env;
-  const filtered = { ...env };
-  delete filtered.PKG_EXECPATH;
-  return filtered;
-}
+export const DEFAULT_COMMAND = ["bunx", "ccusage@20.0.19", "--json", "--sections", "daily,monthly", "--by-agent"];
 
 function defaultSpawn(command: string[]): SpawnResult {
-  const safeChainAvailable = Boolean(Bun.which("safe-chain"));
-  const args = withSafeChain(command, safeChainAvailable);
-  const env = spawnEnv(process.env, safeChainAvailable);
-  const result = Bun.spawnSync(args, { env });
+  const result = Bun.spawnSync(command);
   return { stdout: result.stdout.toString(), exitCode: result.exitCode };
 }
 
@@ -70,8 +56,10 @@ export function fetchUsage(options: FetchUsageOptions = {}): FetchUsageResult | 
 }
 
 function writeCache(cachePath: string, data: UsageData): void {
-  mkdirSync(dirname(cachePath), { recursive: true });
-  writeFileSync(cachePath, JSON.stringify(data, null, 2));
+  mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
+  const tmpPath = `${cachePath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  renameSync(tmpPath, cachePath);
 }
 
 function readCache(cachePath: string): FetchUsageResult | null {
