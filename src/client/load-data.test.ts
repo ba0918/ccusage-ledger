@@ -40,4 +40,8 @@ describe("loadUsageData", () => {
     const data = await loadUsageData({ daily: "not-an-array" }, async () => VALID);
     expect(data).toBe(VALID);
   });
+
+  test("fetch 結果がスキーマ不一致なら throw する（描画クラッシュを防ぐ）", async () => {
+    await expect(loadUsageData(undefined, async () => ({ daily: "not-an-array", monthly: [] }))).rejects.toThrow();
+  });
 });

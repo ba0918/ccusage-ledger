@@ -46,7 +46,7 @@ async function loadData(): Promise<void> {
     async () => {
       const res = await fetch("/api/usage");
       if (!res.ok) throw new Error(`/api/usage failed: ${res.status}`);
-      return (await res.json()) as UsageData;
+      return (await res.json()) as unknown;
     },
   );
 }

@@ -9,4 +9,10 @@ describe("escapeHtml", () => {
   test("シングルクォートをエスケープする", () => {
     expect(escapeHtml("it's")).toBe("it&#39;s");
   });
+
+  test("非文字列は String に変換してからエスケープする（描画クラッシュ防止）", () => {
+    expect(escapeHtml(20260811 as unknown as string)).toBe("20260811");
+    expect(escapeHtml(null as unknown as string)).toBe("null");
+    expect(escapeHtml(undefined as unknown as string)).toBe("undefined");
+  });
 });
