@@ -5,13 +5,13 @@
 ## 技術スタック
 
 - **サーバ**: Bun + TypeScript (`Bun.serve`)。外部フレームワークなし
-- **データ取得**: `bunx ccusage --json --sections daily,monthly --by-agent` を spawn して全履歴を取得
+- **データ取得**: `bunx ccusage --json --sections daily,monthly --by-agent` を spawn して全履歴を取得（safe-chain がインストールされていれば経由する）
 - **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
 ## データフロー
 
 1. サーバ起動時に `bunx ccusage --json --sections daily,monthly --by-agent` を実行し、そのマシンの全履歴を取得
-2. 結果を `data/usage.json` に上書き保存（最新1ファイルキャッシュ方式）
+2. 結果を `~/.cache/ccusage-ledger/usage.json` に上書き保存（最新1ファイルキャッシュ方式。`XDG_CACHE_HOME` があればそれを基準）
 3. サーバが JSON を配信し、フロントがクライアント側で集計して描画
 
 ## データ構造（ccusage JSON）
@@ -28,9 +28,15 @@
 - 期間ナビ: 全期間表示 または ◀▶ で特定の月・年を選択（日次/月次=月、年次=年）
 - モデル別 / エージェント別
 
+## 起動・配布
+
+- リポジトリ内でのサーバ起動: `bun run dev`（フロントのビルド後に起動。`bun run src/server.ts` のみの起動でも可）
+- npm 配布版の起動: `bunx ccusage-ledger`（ローカル対話環境では起動時にブラウザを自動で開く）
+- HTML エクスポート: `bun run export` → 実行時カレントの `dist/ccusage-ledger.html` に単一 HTML を出力
+- 公開: `npm publish`（publish 直前に `bun run build` が実行される。データ・シークレットはパッケージに含まれない）
+
 ## 主要コマンド
 
-- サーバ起動: `bun run dev`（フロントのビルド後に起動。`bun run src/server.ts` のみの起動でも可）
 - フロントビルド: `bun run build`
 - テスト: `bun test`
 - 型チェック: `bunx tsc --noEmit`

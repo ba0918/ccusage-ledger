@@ -5,8 +5,5 @@
 # Build output
 /dist/
 
-# ccusage cache
-/data/
-
 # Dependencies
 /node_modules/
