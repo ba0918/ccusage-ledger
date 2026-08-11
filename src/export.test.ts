@@ -88,4 +88,9 @@ describe("buildExportedHtml", () => {
     expect(out).toContain("script-src 'unsafe-inline'");
     expect(out).toContain("frame-ancestors 'none'");
   });
+
+  test("エクスポート HTML にデータ取り扱いの警告バナーを注入する", () => {
+    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
+    expect(out).toContain("このファイルには ccusage の使用量データが含まれます");
+  });
 });

@@ -11,6 +11,9 @@ export const EMBEDDED_TAG = '<script id="embedded-data"></script>';
 export const EXPORT_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+export const EXPORT_WARNING_BANNER =
+  '<div style="position:sticky;top:0;z-index:30;background:#3a1d1d;color:#ffb4b4;padding:8px 16px;font-size:12px;text-align:center">このファイルには ccusage の使用量データが含まれます。共有・取り扱いに注意してください。</div>';
+
 export function exportOutputPath(cwd: string): string {
   return join(cwd, "dist", "ccusage-ledger.html");
 }
@@ -20,6 +23,7 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
   return html
     .replace("</head>", `${cspMeta}</head>`)
+    .replace("<body>", `<body>${EXPORT_WARNING_BANNER}`)
     .replace(CHART_TAG, `<script>${chartJs}</script>`)
     .replace(BUNDLE_TAG, `<script>${bundle}</script>`)
     .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`);
