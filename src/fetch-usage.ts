@@ -27,9 +27,18 @@ export function withSafeChain(command: string[], safeChainAvailable: boolean): s
   return safeChainAvailable ? ["safe-chain", ...command] : command;
 }
 
+export function spawnEnv(env: Record<string, string | undefined>, safeChainAvailable: boolean): Record<string, string | undefined> {
+  if (!safeChainAvailable) return env;
+  const filtered = { ...env };
+  delete filtered.PKG_EXECPATH;
+  return filtered;
+}
+
 function defaultSpawn(command: string[]): SpawnResult {
   const safeChainAvailable = Boolean(Bun.which("safe-chain"));
-  const result = Bun.spawnSync(withSafeChain(command, safeChainAvailable));
+  const args = withSafeChain(command, safeChainAvailable);
+  const env = spawnEnv(process.env, safeChainAvailable);
+  const result = Bun.spawnSync(args, { env });
   return { stdout: result.stdout.toString(), exitCode: result.exitCode };
 }
 

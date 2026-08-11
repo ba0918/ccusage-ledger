@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, DEFAULT_COMMAND, withSafeChain, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, withSafeChain, type SpawnResult } from "./fetch-usage";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
 
@@ -29,6 +29,19 @@ describe("withSafeChain", () => {
 
   test("safe-chain が無ければ素のコマンドを返す", () => {
     expect(withSafeChain(DEFAULT_COMMAND, false)).toEqual(DEFAULT_COMMAND);
+  });
+});
+
+describe("spawnEnv", () => {
+  test("safe-chain 起動時は PKG_EXECPATH を除外する（pkg ブートストラップの誤解釈回避）", () => {
+    expect(spawnEnv({ PKG_EXECPATH: "/safe-chain/bin/safe-chain", PATH: "/bin" }, true)).toEqual({ PATH: "/bin" });
+  });
+
+  test("safe-chain なしの起動では env をそのまま渡す", () => {
+    expect(spawnEnv({ PKG_EXECPATH: "/safe-chain/bin/safe-chain", PATH: "/bin" }, false)).toEqual({
+      PKG_EXECPATH: "/safe-chain/bin/safe-chain",
+      PATH: "/bin",
+    });
   });
 });
 
