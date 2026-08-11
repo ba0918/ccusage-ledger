@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import type { UsageData } from "./types";
-import { buildExportedHtml } from "./export";
+import { buildExportedHtml, exportOutputPath } from "./export";
 
 const HTML = [
   "<!doctype html><html><head><title>ccusage</title></head><body>",
@@ -39,6 +40,12 @@ function extractEmbeddedJson(out: string): string {
   expect(assignment).toMatch(/^window\.CCUSAGE_DATA = /);
   return assignment.replace(/^window\.CCUSAGE_DATA = /, "").replace(/;$/, "");
 }
+
+describe("exportOutputPath", () => {
+  test("出力先は実行時カレントの dist/ccusage-ledger.html", () => {
+    expect(exportOutputPath("/tmp/work")).toBe(join("/tmp/work", "dist", "ccusage-ledger.html"));
+  });
+});
 
 describe("buildExportedHtml", () => {
   test("Chart.js の script タグをインライン内容に置換する", () => {

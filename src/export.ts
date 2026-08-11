@@ -1,11 +1,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fetchUsage } from "./fetch-usage";
+import { PACKAGE_DIR } from "./paths";
 import type { UsageData } from "./types";
 
 export const CHART_TAG = '<script src="/public/vendor/chart.umd.min.js"></script>';
 export const BUNDLE_TAG = '<script src="/dist/bundle.js"></script>';
 export const EMBEDDED_TAG = '<script id="embedded-data"></script>';
+
+export function exportOutputPath(cwd: string): string {
+  return join(cwd, "dist", "ccusage-ledger.html");
+}
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, data: UsageData): string {
   const dataJson = JSON.stringify(data).replace(/</g, "\\u003c");
@@ -16,7 +21,7 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
 }
 
 function main(): void {
-  const rootDir = process.cwd();
+  const rootDir = PACKAGE_DIR;
   const usage = fetchUsage();
   if (usage === null) {
     console.error("ERROR: ccusage データを取得できませんでした（キャッシュもありません）。");
@@ -28,10 +33,11 @@ function main(): void {
   const bundle = readFileSync(join(rootDir, "dist", "bundle.js"), "utf-8");
 
   const exported = buildExportedHtml(html, chartJs, bundle, usage.data);
-  mkdirSync(join(rootDir, "dist"), { recursive: true });
-  writeFileSync(join(rootDir, "dist", "ccusage-ledger.html"), exported);
+  const outputPath = exportOutputPath(process.cwd());
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, exported);
 
-  console.log("exported: dist/ccusage-ledger.html");
+  console.log(`exported: ${outputPath}`);
   console.warn("注意: この HTML には ccusage の使用量データが含まれます。共有相手に合わせて実行してください。");
 }
 
