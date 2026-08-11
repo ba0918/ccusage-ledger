@@ -80,4 +80,11 @@ describe("buildExportedHtml", () => {
     expect(embeddedScriptContent(out)).not.toContain("</script>");
     expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
   });
+
+  test("エクスポート HTML に CSP を注入する（ネットワーク送信を遮断）", () => {
+    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
+    expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
+    expect(out).toContain("connect-src 'none'");
+    expect(out).toContain("script-src 'unsafe-inline'");
+  });
 });

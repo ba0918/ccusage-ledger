@@ -8,13 +8,18 @@ export const CHART_TAG = '<script src="/public/vendor/chart.umd.min.js"></script
 export const BUNDLE_TAG = '<script src="/dist/bundle.js"></script>';
 export const EMBEDDED_TAG = '<script id="embedded-data"></script>';
 
+export const EXPORT_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'";
+
 export function exportOutputPath(cwd: string): string {
   return join(cwd, "dist", "ccusage-ledger.html");
 }
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, data: UsageData): string {
   const dataJson = JSON.stringify(data).replace(/</g, "\\u003c");
+  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
   return html
+    .replace("</head>", `${cspMeta}</head>`)
     .replace(CHART_TAG, `<script>${chartJs}</script>`)
     .replace(BUNDLE_TAG, `<script>${bundle}</script>`)
     .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`);
