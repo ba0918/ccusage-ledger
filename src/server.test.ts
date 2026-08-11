@@ -136,6 +136,12 @@ describe("server セキュリティ", () => {
     const res2 = await get("/dist/..%2fpublic");
     expect(res2.status).toBe(404);
   });
+
+  test("配信対象ディレクトリ内の .html（エクスポート成果物）は配信しない", async () => {
+    writeFileSync(join(rootDir, "dist", "ccusage-ledger.html"), "<html>embedded data</html>");
+    const res = await get("/dist/ccusage-ledger.html");
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("server Host 検証（DNS rebinding 対策）", () => {

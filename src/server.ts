@@ -96,6 +96,11 @@ async function serveStatic(rootDir: string, pathname: string): Promise<Response>
     return new Response("Not Found", { status: 404 });
   }
 
+  // エクスポート成果物（個人データ埋め込みの単一 HTML）を配信しない。index.html はルート / のみ
+  if (pathname !== "/" && extensionName(resolved) === ".html") {
+    return new Response("Not Found", { status: 404 });
+  }
+
   let isFile: boolean;
   try {
     isFile = statSync(resolved).isFile();
