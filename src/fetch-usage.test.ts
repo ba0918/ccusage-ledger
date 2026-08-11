@@ -3,8 +3,11 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fetchUsage, DEFAULT_COMMAND, spawnEnv, ccusageCliPath, buildCcusageCommand, type SpawnResult } from "./fetch-usage";
+import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
+// キャッシュには白リスト投影済みのデータが保存される（未知フィールド・totals は落ちる）
+const PROJECTED = projectUsageData(FIXTURE);
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "ccusage-fetch-"));
@@ -76,10 +79,13 @@ describe("fetchUsage デフォルト cachePath", () => {
       const result = await fetchUsage({ spawn: async () => ({ stdout: "", exitCode: 1 }) });
       expect(result).not.toBeNull();
       expect(result!.source).toBe("cache");
-      expect(result!.data).toEqual(FIXTURE);
+      expect(result!.data).toEqual(PROJECTED);
     } finally {
-      if (prev === undefined) delete process.env.XDG_CACHE_HOME;
-      else process.env.XDG_CACHE_HOME = prev;
+      if (prev === undefined) {
+        delete process.env.XDG_CACHE_HOME;
+      } else {
+        process.env.XDG_CACHE_HOME = prev;
+      }
     }
   });
 });
@@ -93,7 +99,19 @@ describe("fetchUsage キャッシュ書き込み", () => {
     await fetchUsage({ cachePath, spawn });
 
     expect(statSync(cachePath).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
+    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+  });
+
+  test("キャッシュは白リスト投影済みで保存する（totals などの未知フィールドを永続化しない）", async () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    const spawn = async (): Promise<SpawnResult> => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+
+    await fetchUsage({ cachePath, spawn });
+
+    const saved = JSON.parse(readFileSync(cachePath, "utf-8"));
+    expect(saved.totals).toBeUndefined();
+    expect(saved.daily).toHaveLength(3);
   });
 
   test("キャッシュ書き込み後は一時ファイルを残さない", async () => {
@@ -121,7 +139,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
 
     // 書き込み成功し、攻撃者の symlink は置き換えられていない
     expect(existsSync(cachePath)).toBe(true);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
+    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
     expect(lstatSync(decoy).isSymbolicLink()).toBe(true);
   });
 });
@@ -140,7 +158,8 @@ describe("fetchUsage", () => {
     expect(result).not.toBeNull();
     expect(result!.source).toBe("fresh");
     expect(result!.data.daily).toHaveLength(3);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
+    expect(result!.data).toEqual(PROJECTED);
+    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
   });
 
   test("取得失敗時は既存キャッシュへフォールバックする", async () => {
@@ -156,7 +175,7 @@ describe("fetchUsage", () => {
 
     expect(result).not.toBeNull();
     expect(result!.source).toBe("cache");
-    expect(result!.data).toEqual(FIXTURE);
+    expect(result!.data).toEqual(PROJECTED);
   });
 
   test("取得失敗かつキャッシュが無い場合は null を返す", async () => {
@@ -185,7 +204,7 @@ describe("fetchUsage", () => {
 
     expect(result).not.toBeNull();
     expect(result!.source).toBe("cache");
-    expect(result!.data).toEqual(FIXTURE);
+    expect(result!.data).toEqual(PROJECTED);
   });
 
   test("スキーマ不一致の stdout かつキャッシュが無い場合は null を返す", async () => {

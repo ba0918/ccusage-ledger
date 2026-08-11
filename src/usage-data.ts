@@ -1,6 +1,15 @@
 import type { UsageData } from "./types";
 
-const SECTIONS = ["daily", "monthly"] as const;
+// データ取得（--sections）と検証の両方で同じセクション集合を使う。
+// fetch-usage.ts の DEFAULT_COMMAND がここから --sections を構築するため、片方だけ更新してずれる事故を防ぐ
+export const SECTIONS = ["daily", "monthly"] as const;
+
+// daily は YYYY-MM-DD、monthly は YYYY-MM。buildYearly（slice(0,4)）と filterByRange（prefix 照合）が
+// この固定幅を前提にするため、形式が変わった場合は早期に検証で弾く
+export function isValidPeriod(period: string, section: "daily" | "monthly"): boolean {
+  if (section === "daily") { return /^\d{4}-\d{2}-\d{2}$/.test(period); }
+  return /^\d{4}-\d{2}$/.test(period);
+}
 
 const STRING_FIELDS = ["period"] as const;
 
@@ -16,41 +25,44 @@ const NUMERIC_FIELDS = [
 const BREAKDOWN_NUMERIC_FIELDS = ["cost", "inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"] as const;
 
 function isModelBreakdown(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
-  if (typeof record.modelName !== "string") return false;
+  if (typeof record.modelName !== "string") { return false; }
   return BREAKDOWN_NUMERIC_FIELDS.every((field) => typeof record[field] === "number");
 }
 
 function isAgentBreakdown(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
-  if (typeof record.agent !== "string") return false;
-  if (!NUMERIC_FIELDS.every((field) => typeof record[field] === "number")) return false;
-  if (!Array.isArray(record.modelsUsed) || !record.modelsUsed.every((name) => typeof name === "string")) return false;
-  if (!Array.isArray(record.modelBreakdowns) || !record.modelBreakdowns.every(isModelBreakdown)) return false;
+  if (typeof record.agent !== "string") { return false; }
+  if (!NUMERIC_FIELDS.every((field) => typeof record[field] === "number")) { return false; }
+  if (!Array.isArray(record.modelsUsed) || !record.modelsUsed.every((name) => typeof name === "string")) { return false; }
+  if (!Array.isArray(record.modelBreakdowns) || !record.modelBreakdowns.every(isModelBreakdown)) { return false; }
   return true;
 }
 
 function isValidPeriodEntry(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
-  if (!STRING_FIELDS.every((field) => typeof record[field] === "string")) return false;
-  if (!NUMERIC_FIELDS.every((field) => typeof record[field] === "number")) return false;
-  if (record.modelsUsed !== undefined && (!Array.isArray(record.modelsUsed) || !record.modelsUsed.every((name) => typeof name === "string"))) return false;
-  if (record.modelBreakdowns !== undefined && (!Array.isArray(record.modelBreakdowns) || !record.modelBreakdowns.every(isModelBreakdown))) return false;
-  if (record.agents !== undefined && (!Array.isArray(record.agents) || !record.agents.every(isAgentBreakdown))) return false;
+  if (!STRING_FIELDS.every((field) => typeof record[field] === "string")) { return false; }
+  if (!NUMERIC_FIELDS.every((field) => typeof record[field] === "number")) { return false; }
+  // modelsUsed / modelBreakdowns は PeriodEntry 型で必須。optional 扱いだと
+  // projectUsageData や集計が undefined に触れて描画途中でクラッシュする
+  if (!Array.isArray(record.modelsUsed) || !record.modelsUsed.every((name) => typeof name === "string")) { return false; }
+  if (!Array.isArray(record.modelBreakdowns) || !record.modelBreakdowns.every(isModelBreakdown)) { return false; }
+  if (record.agents !== undefined && (!Array.isArray(record.agents) || !record.agents.every(isAgentBreakdown))) { return false; }
   return true;
 }
 
 // 型不一致の JSON（totalCost が文字列など）を起動時・ロード時に弾き、
 // 描画途中でクラッシュしないようにする
 export function isUsageData(value: unknown): value is UsageData {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   for (const section of SECTIONS) {
     const entries = record[section];
-    if (!Array.isArray(entries) || !entries.every(isValidPeriodEntry)) return false;
+    if (!Array.isArray(entries)) { return false; }
+    if (!entries.every((entry) => isValidPeriodEntry(entry) && isValidPeriod((entry as { period: string }).period, section))) { return false; }
   }
   return true;
 }
@@ -58,6 +70,14 @@ export function isUsageData(value: unknown): value is UsageData {
 // クライアントが消費する既知フィールドだけを抽出した projection を返す。
 // /api/usage で未知フィールド（ccusage が将来追加する項目など）をそのまま公開しないための「白リスト投影」
 export function projectUsageData(value: UsageData): UsageData {
+  const projectModelBreakdown = (b: { modelName: string; cost: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number }) => ({
+    modelName: b.modelName,
+    cost: b.cost,
+    inputTokens: b.inputTokens,
+    outputTokens: b.outputTokens,
+    cacheReadTokens: b.cacheReadTokens,
+    cacheCreationTokens: b.cacheCreationTokens,
+  });
   const sectionEntries = (section: "daily" | "monthly") =>
     (value[section] ?? []).map((entry) => ({
       period: entry.period,
@@ -68,14 +88,7 @@ export function projectUsageData(value: UsageData): UsageData {
       cacheReadTokens: entry.cacheReadTokens,
       cacheCreationTokens: entry.cacheCreationTokens,
       modelsUsed: entry.modelsUsed,
-      modelBreakdowns: entry.modelBreakdowns.map((b) => ({
-        modelName: b.modelName,
-        cost: b.cost,
-        inputTokens: b.inputTokens,
-        outputTokens: b.outputTokens,
-        cacheReadTokens: b.cacheReadTokens,
-        cacheCreationTokens: b.cacheCreationTokens,
-      })),
+      modelBreakdowns: entry.modelBreakdowns.map(projectModelBreakdown),
       metadata: entry.metadata ? { agents: entry.metadata.agents } : undefined,
       agents: entry.agents?.map((a) => ({
         agent: a.agent,
@@ -86,14 +99,7 @@ export function projectUsageData(value: UsageData): UsageData {
         cacheReadTokens: a.cacheReadTokens,
         cacheCreationTokens: a.cacheCreationTokens,
         modelsUsed: a.modelsUsed,
-        modelBreakdowns: a.modelBreakdowns.map((b) => ({
-          modelName: b.modelName,
-          cost: b.cost,
-          inputTokens: b.inputTokens,
-          outputTokens: b.outputTokens,
-          cacheReadTokens: b.cacheReadTokens,
-          cacheCreationTokens: b.cacheCreationTokens,
-        })),
+        modelBreakdowns: a.modelBreakdowns.map(projectModelBreakdown),
       })),
       device: entry.device,
     }));

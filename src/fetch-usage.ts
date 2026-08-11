@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
-import { isUsageData } from "./usage-data";
+import { SECTIONS, isUsageData, projectUsageData } from "./usage-data";
 
 export interface SpawnResult {
   stdout: string;
@@ -23,8 +23,8 @@ export interface FetchUsageResult {
   source: "fresh" | "cache";
 }
 
-export const CCUSAGE_VERSION = "20.0.19";
-export const DEFAULT_COMMAND = ["--json", "--sections", "daily,monthly", "--by-agent"];
+// セクション集合は usage-data.ts の SECTIONS と常に一致させる（検証と取得がずれるとキャッシュが常に無効化される）
+export const DEFAULT_COMMAND = ["--json", "--sections", SECTIONS.join(","), "--by-agent"];
 
 // 子プロセスに渡す環境変数の許可リスト（API キー・トークン等の秘密は渡さない）
 const ALLOWED_ENV_KEYS = ["PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP", "TERM", "SHELL"] as const;
@@ -33,7 +33,7 @@ export function spawnEnv(env: Record<string, string | undefined>): Record<string
   const result: Record<string, string> = {};
   for (const key of ALLOWED_ENV_KEYS) {
     const value = env[key];
-    if (value !== undefined) result[key] = value;
+    if (value !== undefined) { result[key] = value; }
   }
   return result;
 }
@@ -53,29 +53,26 @@ export async function readStdoutWithLimit(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number = MAX_STDOUT_BYTES,
 ): Promise<string> {
+  // TextDecoder をストリーミングで使うと、全チャンク保持 + マージコピーの二重メモリを回避できる
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
   let total = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) { break; }
       total += value.byteLength;
       if (total > maxBytes) {
         throw new Error(`ccusage stdout is too large (limit ${maxBytes} bytes)`);
       }
-      chunks.push(value);
+      parts.push(decoder.decode(value, { stream: true }));
     }
+    parts.push(decoder.decode());
   } finally {
     reader.releaseLock();
   }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(merged);
+  return parts.join("");
 }
 
 async function defaultSpawn(args: string[]): Promise<SpawnResult> {
@@ -92,9 +89,15 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     stderr: "ignore",
     timeout: 60_000,
   });
-  const stdout = await readStdoutWithLimit(proc.stdout);
-  const exitCode = await proc.exited;
-  return { stdout, exitCode };
+  try {
+    const stdout = await readStdoutWithLimit(proc.stdout);
+    const exitCode = await proc.exited;
+    return { stdout, exitCode };
+  } finally {
+    // stdout 上限超過などで throw した場合は、パイプを読み止めたままの子プロセスが
+    // タイムアウトまで残留するため、確実に終了させる
+    proc.kill();
+  }
 }
 
 export async function fetchUsage(options: FetchUsageOptions = {}): Promise<FetchUsageResult | null> {
@@ -107,8 +110,16 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
     if (result.exitCode === 0) {
       const parsed: unknown = JSON.parse(result.stdout);
       if (isUsageData(parsed)) {
-        writeCache(cachePath, parsed);
-        return { data: parsed, source: "fresh" };
+        // キャッシュは白リスト投影済みで保存する（未知フィールドをディスクに永続化しない）。
+        // 取得結果も投影済みを返すため、配信側で再投影しても冪等になる
+        const projected = projectUsageData(parsed);
+        try {
+          writeCache(cachePath, projected);
+        } catch (error) {
+          // キャッシュ書き込み失敗はベストエフォートで扱う。取得済みの新鮮データを捨てずに返す
+          console.warn(`WARN: failed to write usage cache: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return { data: projected, source: "fresh" };
       }
     }
   } catch {
@@ -129,10 +140,12 @@ function writeCache(cachePath: string, data: UsageData): void {
   }
   // temp 名をランダムにして、PID ベースの予測可能な名前への symlink 仕掛けを防ぐ。
   // openSync の 'wx'（O_CREAT|O_EXCL）により既存の symlink を追わない
+  // キャッシュは JSON.parse で読むだけなので、可読性のためのインデントを付けない
+  // （巨大な全履歴を 1 ファイルに書く場面で、文字列生成時間・ファイルサイズ・一時メモリを削る）
   const tmpPath = `${cachePath}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
   const fd = openSync(tmpPath, "wx", 0o600);
   try {
-    writeSync(fd, JSON.stringify(data, null, 2));
+    writeSync(fd, JSON.stringify(data));
     closeSync(fd);
   } catch (error) {
     closeSync(fd);
@@ -144,8 +157,9 @@ function writeCache(cachePath: string, data: UsageData): void {
 function readCache(cachePath: string): FetchUsageResult | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(cachePath, "utf-8"));
-    if (!isUsageData(parsed)) throw new Error("invalid usage data shape");
-    return { data: parsed, source: "cache" };
+    if (!isUsageData(parsed)) { throw new Error("invalid usage data shape"); }
+    // キャッシュは投影済みで保存されているが、旧形式のキャッシュへの安全策として再投影する（冪等）
+    return { data: projectUsageData(parsed), source: "cache" };
   } catch {
     return null;
   }
