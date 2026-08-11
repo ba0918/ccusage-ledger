@@ -608,7 +608,7 @@ function setStatus(message: string, isError = false): void {
 }
 
 async function main(): Promise<void> {
-  setStatus("読み込み中...");
+  setStatus("");
   try {
     await loadData();
     const entries = collectAllEntries();
@@ -620,7 +620,6 @@ async function main(): Promise<void> {
       return;
     }
     render();
-    setStatus("読み込み完了");
   } catch (error) {
     setStatus(`データ取得エラー: ${error instanceof Error ? error.message : String(error)}`, true);
   }
