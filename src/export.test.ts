@@ -79,6 +79,18 @@ describe("buildExportedHtml", () => {
     expect(JSON.parse(json)).toEqual(DATA);
   });
 
+  test("埋め込むデータは白リスト投影を通す（未知フィールドを配布しない）", () => {
+    const data = {
+      ...DATA,
+      daily: [{ ...DATA.daily![0]!, promptText: "sensitive session text", unknownField: { nested: 1 } }],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", data as unknown as typeof DATA);
+    const embedded = JSON.parse(extractEmbeddedJson(out)) as Record<string, unknown>;
+    const entry = (embedded.daily as Record<string, unknown>[])[0]!;
+    expect(entry.promptText).toBeUndefined();
+    expect(entry.unknownField).toBeUndefined();
+  });
+
   test("データに </script> を含む文字列があっても script を破壊しない", () => {
     const data: UsageData = {
       ...DATA,
@@ -118,6 +130,17 @@ describe("buildExportedHtml", () => {
 
   test("<body> が無い HTML では例外を投げる（バナー注入が静かに失われない）", () => {
     expect(() => buildExportedHtml("<html><head></head></html>", "chart", "bundle", DATA)).toThrow();
+  });
+
+  test("Chart.js / bundle / 埋め込みデータのタグが無い HTML では例外を投げる（replace 漏れを検出）", () => {
+    const withoutChart = HTML.replace('<script src="/public/vendor/chart.umd.min.js"></script>', "");
+    expect(() => buildExportedHtml(withoutChart, "chart", "bundle", DATA)).toThrow(/chart/i);
+
+    const withoutBundle = HTML.replace('<script src="/dist/bundle.js"></script>', "");
+    expect(() => buildExportedHtml(withoutBundle, "chart", "bundle", DATA)).toThrow(/bundle/i);
+
+    const withoutEmbedded = HTML.replace('<script id="embedded-data"></script>', "");
+    expect(() => buildExportedHtml(withoutEmbedded, "chart", "bundle", DATA)).toThrow(/埋め込みデータ/i);
   });
 
   test("データに script 終了タグが複数あっても埋め込みにリテラルの < を残さない", () => {

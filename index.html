@@ -264,12 +264,12 @@
       <section class="grid">
         <div class="card wide">
           <h2>コスト積み上げ（モデル別） <span class="hint">期間フィルタで 日別 / 月別 / 年別 に切り替え</span></h2>
-          <div class="chart"><canvas id="chart-cost-stacked"></canvas></div>
+          <div class="chart"><canvas id="chart-cost-stacked" aria-label="コスト積み上げ（モデル別）"></canvas></div>
         </div>
 
         <div class="card">
           <h2>モデル構成比率 <span class="hint">model-mix</span></h2>
-          <div class="chart"><canvas id="chart-model-mix"></canvas></div>
+          <div class="chart"><canvas id="chart-model-mix" aria-label="モデル構成比率"></canvas></div>
         </div>
 
         <div class="card">
@@ -285,10 +285,10 @@
         </div>
 
         <div class="card">
-          <h2>エージェント別配分 <span class="hint"><span class="seg-toggle"><button class="active" data-seg="cost">コスト</button><button data-seg="token">トークン</button></span></span></h2>
+          <h2>エージェント別配分 <span class="hint"><span class="seg-toggle" role="group" aria-label="ドーナツの表示単位"><button class="active" data-seg="cost" aria-pressed="true">コスト</button><button data-seg="token" aria-pressed="false">トークン</button></span></span></h2>
           <div class="donut-wrap">
             <div class="donut">
-              <canvas id="chart-agent-donut"></canvas>
+              <canvas id="chart-agent-donut" aria-label="エージェント別配分"></canvas>
               <div class="donut-center">
                 <div>
                   <div class="v" id="donut-value">–</div>
@@ -321,7 +321,7 @@
 
         <div class="card wide">
           <h2>キャッシュヒット率 <span class="hint">期間ナビに連動</span></h2>
-          <div class="chart"><canvas id="chart-cache-hit"></canvas></div>
+          <div class="chart"><canvas id="chart-cache-hit" aria-label="キャッシュヒット率"></canvas></div>
         </div>
       </section>
 

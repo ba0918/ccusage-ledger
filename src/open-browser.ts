@@ -8,17 +8,23 @@ export interface OpenEnv {
 }
 
 export function shouldAutoOpen(env: OpenEnv): boolean {
-  if (env.SSH_CONNECTION || env.SSH_TTY) return false;
-  if (!env.isTTY) return false;
-  if (env.platform === "darwin") return true;
+  if (env.SSH_CONNECTION || env.SSH_TTY) { return false; }
+  if (!env.isTTY) { return false; }
+  if (env.platform === "darwin") { return true; }
   if (env.platform === "linux") {
     return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
   }
   return false;
 }
 
+// ワイルドカード bind（0.0.0.0）をブラウザで開けるアドレスに読み替える。
+// 表示用 URL の組み立て（browserUrl）とサーバーの起動ログで同じ読み替えを使う
+export function displayHostname(hostname: string): string {
+  return hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
+}
+
 export function browserUrl(hostname: string, port: number): string {
-  return `http://${hostname === "0.0.0.0" ? "127.0.0.1" : hostname}:${port}`;
+  return `http://${displayHostname(hostname)}:${port}`;
 }
 
 export interface OpenOptions {

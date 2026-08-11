@@ -71,6 +71,13 @@ describe("server /api/usage", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
   });
 
+  test("403 の SSH トンネル案内に実際の bind ポートを使う", async () => {
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0", port: 5000 });
+    const res = await app(new Request("http://192.168.1.10/api/usage"));
+    const body = await res.json();
+    expect(body.error).toContain("ssh -L 5000:127.0.0.1:5000");
+  });
+
   test("スキーマ外のフィールドは /api/usage で配信しない（curated projection）", async () => {
     const raw = JSON.parse(FIXTURE);
     raw.daily[0].agent = "all";
@@ -122,6 +129,7 @@ describe("server 静的配信", () => {
     const res = await get("/");
     expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 
   test("CSP に base-uri 'none' と form-action 'none' を含む", async () => {
@@ -280,7 +288,7 @@ describe("server セキュリティ", () => {
 
   test("ループバック bind のデフォルト rate limit は寛大な上限（600/分）を使う", async () => {
     const app = createApp({ rootDir, cachePath });
-    let statuses: number[] = [];
+    const statuses: number[] = [];
     for (let i = 0; i < 601; i++) {
       const res = await app(new Request("http://127.0.0.1/"));
       statuses.push(res.status);
@@ -390,23 +398,28 @@ describe("server Host 検証（DNS rebinding 対策）", () => {
 describe("server LAN bind 警告", () => {
   test("ループバック bind では警告しない", () => {
     for (const host of ["127.0.0.1", "localhost", "::1"]) {
-      expect(lanBindWarning(host)).toBeNull();
+      expect(lanBindWarning(host, 3000)).toBeNull();
     }
   });
 
   test("非ループバック bind では警告を返す", () => {
     for (const host of ["0.0.0.0", "::", "192.168.1.10"]) {
-      expect(lanBindWarning(host)).toContain("WARN");
+      expect(lanBindWarning(host, 3000)).toContain("WARN");
     }
   });
 
   test("非ループバック bind の警告に平文 HTTP の盗聴・改ざんリスクを明記する", () => {
     for (const host of ["0.0.0.0", "192.168.1.10"]) {
-      const warning = lanBindWarning(host)!;
+      const warning = lanBindWarning(host, 3000)!;
       expect(warning.toLowerCase()).toContain("plaintext");
       expect(warning.toLowerCase()).toContain("tamper");
       expect(warning.toLowerCase()).toContain("ssh tunnel");
     }
+  });
+
+  test("警告の SSH トンネル案内に実際の bind ポートを使う", () => {
+    const warning = lanBindWarning("0.0.0.0", 5000)!;
+    expect(warning).toContain("ssh -L 5000:127.0.0.1:5000");
   });
 });
 

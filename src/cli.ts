@@ -2,5 +2,8 @@
 import { main } from "./server";
 
 if (import.meta.main) {
-  void main();
+  main().catch((error) => {
+    console.error(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
 }

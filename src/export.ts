@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fetchUsage } from "./fetch-usage";
 import { PACKAGE_DIR } from "./paths";
 import type { UsageData } from "./types";
+import { projectUsageData } from "./usage-data";
 
 export const CHART_TAG = '<script src="/public/vendor/chart.umd.min.js"></script>';
 export const BUNDLE_TAG = '<script src="/dist/bundle.js"></script>';
@@ -31,17 +32,26 @@ export function writeExportedHtml(outputPath: string, html: string): void {
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, data: UsageData): string {
   // CSP・警告バナーの注入が無効な HTML で静かに失われないよう、挿入ポイントの存在を検証する
-  if (!html.includes("</head>")) throw new Error("index.html に </head> がありません");
-  if (!html.includes("<body>")) throw new Error("index.html に <body> がありません");
+  if (!html.includes("</head>")) { throw new Error("index.html に </head> がありません"); }
+  if (!html.includes("<body>")) { throw new Error("index.html に <body> がありません"); }
+  if (!html.includes(CHART_TAG)) { throw new Error("index.html に Chart.js の script タグがありません"); }
+  if (!html.includes(BUNDLE_TAG)) { throw new Error("index.html に bundle の script タグがありません"); }
+  if (!html.includes(EMBEDDED_TAG)) { throw new Error("index.html に埋め込みデータの script タグがありません"); }
 
-  const dataJson = JSON.stringify(data).replace(/</g, "\\u003c");
+  const dataJson = JSON.stringify(projectUsageData(data)).replace(/</g, "\\u003c");
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
-  return html
+  const out = html
     .replace("</head>", `${cspMeta}${EXPORT_FRAME_BUSTER}</head>`)
     .replace("<body>", `<body>${EXPORT_WARNING_BANNER}`)
     .replace(CHART_TAG, `<script>${chartJs}</script>`)
     .replace(BUNDLE_TAG, `<script>${bundle}</script>`)
     .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`);
+
+  // タグ表記が index.html とずれた場合、replace が効かず壊れた HTML が静かに出力されるのを防ぐ
+  for (const tag of [CHART_TAG, BUNDLE_TAG, EMBEDDED_TAG]) {
+    if (out.includes(tag)) { throw new Error(`index.html の ${tag} を置換できませんでした`); }
+  }
+  return out;
 }
 
 async function main(): Promise<void> {
@@ -65,5 +75,10 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main();
+  main().catch((error) => {
+    // dist/bundle.js や vendored Chart.js が無い場合はそのまま build を促す
+    console.error(`ERROR: export failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("Hint: run `bun run build` first to generate dist/bundle.js.");
+    process.exit(1);
+  });
 }

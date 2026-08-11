@@ -1,14 +1,13 @@
 import { readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isIP } from "node:net";
 import { join, normalize } from "node:path";
-import type { Server } from "bun";
 
 interface RequestIPProvider {
   requestIP(request: Request): { address: string } | null;
 }
 import { fetchUsage, DEFAULT_COMMAND } from "./fetch-usage";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
-import { browserUrl, openBrowser, shouldAutoOpen } from "./open-browser";
+import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
 import { isUsageData, projectUsageData } from "./usage-data";
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -25,7 +24,11 @@ const CONTENT_TYPES: Record<string, string> = {
 const COMMON_HEADERS: Record<string, string> = {
   // base-uri 'none': HTML 注入時に <base> で相対 URL 解決を乗っ取られないようにする
   // form-action 'none': フォーム送信先の強制を防ぐ（このアプリはフォーム送信を行わない）
+  // style-src 'unsafe-inline': モデル別バーの幅（style="width:N%"）をインライン style で設定しているため。
+  //   値は数値のみでデータ由来文字列を挿入しない。CSS 変数 + stylesheet 化すれば外せる（将来課題）
   "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  // frame-ancestors を無視する古いブラウザ向けの defense-in-depth（CSP だけに依存しない）
+  "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
   "cross-origin-resource-policy": "same-origin",
   "cross-origin-opener-policy": "same-origin",
@@ -33,21 +36,38 @@ const COMMON_HEADERS: Record<string, string> = {
   "permissions-policy": "camera=(), microphone=(), geolocation=()",
 };
 
+// LAN 公開時・/api/usage 拒否時に案内する推奨トンネルコマンド（3 箇所で同一文言を使う）。
+// ポートは実際の bind ポート（PORT 環境変数）を反映する
+function sshTunnelHint(port: number): string {
+  return `ssh -L ${port}:127.0.0.1:${port}`;
+}
+
 function withCommonHeaders(headers: Record<string, string>): Headers {
   return new Headers({ ...COMMON_HEADERS, ...headers });
+}
+
+function notFoundResponse(): Response {
+  return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+}
+
+function badRequestResponse(): Response {
+  return new Response(JSON.stringify({ error: "bad request" }), {
+    status: 400,
+    headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
+  });
 }
 
 // ループバック判定はリテラル集合ではなく IP アドレスとして行う
 // （127.0.0.0/8 の別名や ::1 はすべてループバック。HOST=127.0.0.2 等でも検証を有効にする）
 export function isLoopbackHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (host === "localhost") return true;
+  if (host === "localhost") { return true; }
   const version = isIP(host);
-  if (version === 4) return host.startsWith("127.");
+  if (version === 4) { return host.startsWith("127."); }
   if (version === 6) {
     // IPv4-mapped IPv6（::ffff:127.0.0.1 とその canonical 形式 ::ffff:7f00:1）の末尾 32bit が 127.0.0.0/8 かで判定する
     const mapped = mappedIPv4(host);
-    if (mapped !== null) return mapped.startsWith("127.");
+    if (mapped !== null) { return mapped.startsWith("127."); }
     return host === "::1";
   }
   return false;
@@ -56,35 +76,35 @@ export function isLoopbackHost(hostname: string): boolean {
 // ::ffff:x.x.x.x または ::ffff:hhhh:hhhh（末尾 32bit が IPv4）から IPv4 文字列を復元する
 function mappedIPv4(host: string): string | null {
   const m = host.match(/^.*:ffff:([0-9a-f.:]+)$/);
-  if (!m) return null;
+  if (!m) { return null; }
   const tail = m[1]!;
-  if (tail.includes(".")) return tail;
+  if (tail.includes(".")) { return tail; }
   const groups = tail.split(":");
   if (groups.length === 1) {
     const value = Number.parseInt(groups[0]!, 16);
-    if (!Number.isFinite(value) || value > 0xffff) return null;
+    if (!Number.isFinite(value) || value > 0xffff) { return null; }
     return `0.0.${(value >> 8) & 0xff}.${value & 0xff}`;
   }
   if (groups.length === 2) {
     const high = Number.parseInt(groups[0]!, 16);
     const low = Number.parseInt(groups[1]!, 16);
-    if (!Number.isFinite(high) || !Number.isFinite(low) || high > 0xffff || low > 0xffff) return null;
+    if (!Number.isFinite(high) || !Number.isFinite(low) || high > 0xffff || low > 0xffff) { return null; }
     return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
   }
   return null;
 }
 
-export function lanBindWarning(bindHostname: string): string | null {
-  if (isLoopbackHost(bindHostname)) return null;
+export function lanBindWarning(bindHostname: string, port: number): string | null {
+  if (isLoopbackHost(bindHostname)) { return null; }
   // 平文 HTTP は同一セグメントの攻撃者が応答を改ざん・盗聴でき、CSP も意味を失うことを明記する
-  return `WARN: binding to HOST=${bindHostname} exposes the dashboard and /api/usage data to anyone on the network (no authentication, plaintext HTTP: traffic can be eavesdropped and tampered with). To view from another device, use an SSH tunnel: ssh -L 3000:127.0.0.1:3000`;
+  return `WARN: binding to HOST=${bindHostname} exposes the dashboard and /api/usage data to anyone on the network (no authentication, plaintext HTTP: traffic can be eavesdropped and tampered with). To view from another device, use an SSH tunnel: ${sshTunnelHint(port)}`;
 }
 
 export type LanStartPolicy = "ok" | "warn" | "prompt" | "refuse";
 
 export function lanStartPolicy(bindHostname: string, isTTY: boolean, allowLan: boolean): LanStartPolicy {
-  if (lanBindWarning(bindHostname) === null) return "ok";
-  if (allowLan) return "warn";
+  if (isLoopbackHost(bindHostname)) { return "ok"; }
+  if (allowLan) { return "warn"; }
   // 非 TTY（ヘルプなし起動）では確認プロンプトが効かないため、明示オプトインが無ければ拒否する
   return isTTY ? "prompt" : "refuse";
 }
@@ -95,7 +115,7 @@ export function isLanAllowed(env: Record<string, string | undefined>): boolean {
 
 export function hostAllowed(urlHostname: string, bindHostname: string): boolean {
   // 非ループバック bind（HOST 指定による LAN 公開の明示オプトイン）では Host 検証を適用しない
-  if (!isLoopbackHost(bindHostname)) return true;
+  if (!isLoopbackHost(bindHostname)) { return true; }
   return isLoopbackHost(urlHostname);
 }
 
@@ -126,7 +146,7 @@ export function createRateLimiter(limit: number, windowMs: number, maxKeys: numb
     // 大量の source IP で Map が無制限に育たないよう、最古キーから回収する
     while (hits.size > maxKeys) {
       const oldest = hits.keys().next().value;
-      if (oldest === undefined) break;
+      if (oldest === undefined) { break; }
       hits.delete(oldest);
     }
     return true;
@@ -143,9 +163,10 @@ export function createApp(options: {
   rootDir: string;
   cachePath: string;
   hostname?: string;
+  port?: number;
   rateLimit?: (key: string) => boolean;
 }): AppWithUsage {
-  const { rootDir, cachePath, hostname = "127.0.0.1" } = options;
+  const { rootDir, cachePath, hostname = "127.0.0.1", port = 3000 } = options;
 
   // /api/usage は起動時にキャッシュを読み込んでメモリから配信する（リクエスト毎のファイル読込で DoS 面を作らない）。
   // 検証 + 白リスト投影を通し、型不一致データや未知フィールドを配信しない
@@ -160,6 +181,9 @@ export function createApp(options: {
   }
 
   // rate limit は常に適用する。loopback は寛大な上限（600/分）、LAN 公開時はより厳しい上限（120/分）
+  // 注意: ループバック bind では全ローカルプロセスが同一 source IP に集約されるため、
+  // rate limit は同一マシンの別プロセスによる /api/usage の大量リクエストを止められない
+  // （ループバック共有は AGENTS.md で許容した脅威モデル内の残余リスク）
   const lanMode = !isLoopbackHost(hostname);
   const rateLimiter = options.rateLimit ?? createRateLimiter(lanMode ? 120 : 600, 60_000);
   const staticCache = new Map<string, ArrayBuffer>();
@@ -175,34 +199,25 @@ export function createApp(options: {
 
     const url = parseUrl(request.url);
     if (url === null) {
-      return new Response(JSON.stringify({ error: "bad request" }), {
-        status: 400,
-        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
-      });
+      return badRequestResponse();
     }
 
     // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
     if (!hostAllowed(url.hostname, hostname)) {
-      return new Response(JSON.stringify({ error: "bad request" }), {
-        status: 400,
-        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
-      });
+      return badRequestResponse();
     }
 
     let pathname: string;
     try {
       pathname = decodeURIComponent(url.pathname);
     } catch {
-      return new Response(JSON.stringify({ error: "bad request" }), {
-        status: 400,
-        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
-      });
+      return badRequestResponse();
     }
 
     if (pathname === "/api/usage") {
       // 非ループバック bind ではデータを配信しない（SSH トンネル経由のループバック接続のみに限定）
       if (!isLoopbackHost(hostname)) {
-        return new Response(JSON.stringify({ error: "forbidden: /api/usage is only served over loopback. Use an SSH tunnel: ssh -L 3000:127.0.0.1:3000" }), {
+        return new Response(JSON.stringify({ error: `forbidden: /api/usage is only served over loopback. Use an SSH tunnel: ${sshTunnelHint(port)}` }), {
           status: 403,
           headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
         });
@@ -233,7 +248,7 @@ export function createApp(options: {
 const STATIC_PREFIXES = ["/dist/", "/public/"];
 
 export function isWithinBases(target: string, bases: string[]): boolean {
-  return bases.some((base) => target === base || target.startsWith(base + "/"));
+  return bases.some((base) => target === base || target.startsWith(`${base}/`));
 }
 
 async function serveStatic(rootDir: string, pathname: string, staticCache: Map<string, ArrayBuffer>): Promise<Response> {
@@ -244,18 +259,18 @@ async function serveStatic(rootDir: string, pathname: string, staticCache: Map<s
 
   // 末尾ドット・スペースは Windows で Win32 層により剥がされ、別ファイル（例: .html ブロック回避）に解決され得る
   if (pathname !== "/" && /[. ]$/.test(pathname)) {
-    return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+    return notFoundResponse();
   }
 
   const allowedBases = STATIC_PREFIXES.map((prefix) => normalize(join(rootDir, prefix)).replace(/[\\/]+$/, ""));
   if (pathname !== "/" && !isWithinBases(resolved, allowedBases)) {
-    return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+    return notFoundResponse();
   }
 
   // エクスポート成果物（個人データ埋め込みの単一 HTML）を配信しない。index.html はルート / のみ
   // （大文字小文字の違いでブロックを回避されないよう case-insensitive に比較する）
   if (pathname !== "/" && extensionName(resolved).toLowerCase() === ".html") {
-    return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+    return notFoundResponse();
   }
 
   // 一度読んだファイルはキャッシュから配信する（再読込・存在チェックでファイルシステムに触れない）
@@ -271,10 +286,10 @@ async function serveStatic(rootDir: string, pathname: string, staticCache: Map<s
   try {
     isFile = statSync(resolved).isFile();
   } catch {
-    return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+    return notFoundResponse();
   }
   if (!isFile) {
-    return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+    return notFoundResponse();
   }
 
   // symlink が allowlist 外を指している場合は配信しない（realpath で解決して再チェック）
@@ -283,10 +298,10 @@ async function serveStatic(rootDir: string, pathname: string, staticCache: Map<s
     real = realpathSync(resolved);
     const realBases = allowedBases.map((base) => realpathSync(base));
     if (pathname !== "/" && !isWithinBases(real, realBases)) {
-      return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+      return notFoundResponse();
     }
   } catch {
-    return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
+    return notFoundResponse();
   }
 
   const contentType = CONTENT_TYPES[extensionName(resolved)];
@@ -332,12 +347,13 @@ export async function main(): Promise<void> {
   if (lanPolicy === "refuse") {
     console.error(
       `ERROR: HOST=${hostname} (non-loopback bind) would expose the dashboard and usage data to the network. ` +
-        "Set CCUSAGE_LEDGER_ALLOW_LAN=1 to override, or use a loopback bind with an SSH tunnel: ssh -L 3000:127.0.0.1:3000",
+        "Set CCUSAGE_LEDGER_ALLOW_LAN=1 to override, or use a loopback bind with an SSH tunnel: " +
+        sshTunnelHint(port),
     );
     process.exit(1);
   }
   if (lanPolicy === "prompt") {
-    const warning = lanBindWarning(hostname)!;
+    const warning = lanBindWarning(hostname, port)!;
     console.warn(warning);
     process.stdout.write("Start anyway? (y/N): ");
     if (!confirmLanStart()) {
@@ -345,10 +361,10 @@ export async function main(): Promise<void> {
       process.exit(1);
     }
   } else if (lanPolicy === "warn") {
-    console.warn(lanBindWarning(hostname)!);
+    console.warn(lanBindWarning(hostname, port)!);
   }
 
-  const app = createApp({ rootDir, cachePath, hostname });
+  const app = createApp({ rootDir, cachePath, hostname, port });
   const server = Bun.serve({ hostname, port, fetch: app });
 
   // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）
@@ -357,9 +373,8 @@ export async function main(): Promise<void> {
     app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
   }
 
-  const displayHost = hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
   const boundPort = server.port ?? port;
-  console.log(`ccusage ledger: http://${displayHost}:${boundPort}`);
+  console.log(`ccusage ledger: http://${displayHostname(hostname)}:${boundPort}`);
   if (result === null) {
     console.warn("WARN: failed to fetch ccusage data and no cache exists. /api/usage will return an empty dataset.");
   } else {
@@ -380,5 +395,8 @@ export async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  void main();
+  main().catch((error) => {
+    console.error(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
 }
