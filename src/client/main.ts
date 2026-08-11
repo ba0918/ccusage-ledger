@@ -1,6 +1,7 @@
 import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
 import { loadUsageData } from "./load-data";
 import { escapeHtml } from "./escape";
+import { applyStaticTranslations, getLang, setLang, t, type Lang } from "./i18n";
 import {
   agentDonutData,
   allAgents,
@@ -17,7 +18,6 @@ import {
   topModelsByCost,
   totalTokensOf,
   TOP_N,
-  OTHER_LABEL,
   type AgentEfficiency,
   type ChartSeries,
   type DashboardFilters,
@@ -63,13 +63,13 @@ function el(id: string): HTMLElement {
 function assertElements(ids: readonly string[]): void {
   const missing = ids.filter((id) => document.getElementById(id) === null);
   if (missing.length > 0) {
-    throw new Error(`index.html に要素がありません: ${missing.join(", ")}`);
+    throw new Error(t("missingElements", { ids: missing.join(", ") }));
   }
 }
 
 function fillSelect(id: string, values: string[]): void {
   const select = document.getElementById(id) as HTMLSelectElement;
-  select.innerHTML = '<option value="">すべて</option>';
+  select.innerHTML = `<option value="">${t("all")}</option>`;
   for (const value of values) {
     const option = document.createElement("option");
     option.value = value;
@@ -109,7 +109,7 @@ function formatAxisCurrency(value: number): string {
 }
 
 function datasetColor(label: string, models: string[]): string {
-  return label === OTHER_LABEL ? OTHER_COLOR : modelColor(label, models);
+  return label === t("other") ? OTHER_COLOR : modelColor(label, models);
 }
 
 function colorize(series: ChartSeries, colorFor: (label: string) => string, fill: boolean | "origin" = false): ChartData {
@@ -137,7 +137,7 @@ function tooltipLabel(
     const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
     if (opts?.excludeZero && value === 0) { return ""; }
     const lines: string[] = [fmt(value, dataset.label ?? "")];
-    if (dataset.label === OTHER_LABEL && opts?.entries && opts.top) {
+    if (dataset.label === t("other") && opts?.entries && opts.top) {
       const entry = opts.entries[dataIndex];
       if (entry) {
         const inner = opts.inner ?? ((item: OtherBreakdownItem) => `${item.modelName}: ${Math.round(item.ratio)}%`);
@@ -225,13 +225,13 @@ function renderNav(): void {
   const contextText = el("context-bar-text");
   const allBtn = el("nav-all");
   if (viewingAll) {
-    label.textContent = "全期間";
+    label.textContent = t("allPeriods");
     contextBar.style.display = "none";
     allBtn.classList.add("active");
   } else {
     const text = navLabel();
     label.textContent = text;
-    contextText.textContent = text;
+    contextText.textContent = t("showingData", { period: text });
     contextBar.style.display = "";
     allBtn.classList.remove("active");
   }
@@ -239,10 +239,11 @@ function renderNav(): void {
 
 function rangeDescription(): string {
   const range = state.range;
-  if (range.kind === "all") { return "全期間の累計"; }
-  return range.month !== undefined
-    ? `${range.year}/${String(range.month).padStart(2, "0")} の合計`
-    : `${range.year} の合計`;
+  if (range.kind === "all") { return t("allPeriodsTotal"); }
+  const period = range.month !== undefined
+    ? `${range.year}/${String(range.month).padStart(2, "0")}`
+    : `${range.year}`;
+  return t("periodTotal", { period });
 }
 
 function renderKpis(kpi: KpiSummary, entries: PeriodEntry[]): void {
@@ -251,7 +252,7 @@ function renderKpis(kpi: KpiSummary, entries: PeriodEntry[]): void {
   el("kpi-cache-rate").textContent = formatPercent(overallCacheHitRate(entries));
   el("kpi-total-tokens").textContent = formatTokens(kpi.totalTokens);
   el("kpi-models").textContent = String(kpi.activeModelCount);
-  el("kpi-agents-sub").textContent = `${countAgents(entries)} エージェント`;
+  el("kpi-agents-sub").textContent = t("agentCount", { count: countAgents(entries) });
 }
 
 function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext): void {
@@ -262,12 +263,12 @@ function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: T
     {
       interaction: { mode: "index", intersect: false },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45 }, title: { display: true, text: "期間" } },
+        x: { stacked: true, ticks: { maxRotation: 45 }, title: { display: true, text: t("period") } },
         y: {
           stacked: true,
           beginAtZero: true,
           ticks: { callback: (value: unknown) => formatAxisCurrency(Number(value)) },
-          title: { display: true, text: "コスト (USD)" },
+          title: { display: true, text: t("costUsd") },
         },
       },
       plugins: {
@@ -299,7 +300,7 @@ function renderModelMix(series: ChartSeries, models: string[], tooltipCtx?: Tool
           min: 0,
           max: 100,
           ticks: { callback: (value: unknown) => `${Math.round(Number(value))}%` },
-          title: { display: true, text: "構成比 (%)" },
+          title: { display: true, text: t("ratioPercent") },
         },
       },
       plugins: {
@@ -352,7 +353,7 @@ function renderCacheHit(series: ChartSeries): void {
     labels: series.labels,
     datasets: [
       {
-        ...(dataset ?? { label: "キャッシュヒット率", data: [] }),
+        ...(dataset ?? { label: t("cacheHitRate"), data: [] }),
         fill: "origin",
         backgroundColor: "#4cd6a0",
         borderColor: "#4cd6a0",
@@ -367,12 +368,12 @@ function renderCacheHit(series: ChartSeries): void {
         min: 0,
         max: 100,
         ticks: { callback: (value: unknown) => `${Math.round(Number(value))}%` },
-        title: { display: true, text: "キャッシュヒット率 (%)" },
+        title: { display: true, text: t("cacheHitRatePercent") },
       },
     },
     plugins: {
       legend: { display: false },
-      tooltip: { callbacks: { label: tooltipLabel((value) => `キャッシュヒット率 ${Math.round(value)}%`) } },
+      tooltip: { callbacks: { label: tooltipLabel((value) => t("cacheHitTooltip", { value: Math.round(value) })) } },
     },
   });
 }
@@ -400,14 +401,14 @@ function renderAgentDonut(share: ReturnType<typeof buildDashboardSeriesFromEntri
   lastAgentShare = share;
   lastAgentEfficiency = efficiency;
   const effBody = document.getElementById("agent-efficiency-body")!;
-  const segLabel = donutSeg === "cost" ? "合計コスト" : "合計トークン";
+  const segLabel = donutSeg === "cost" ? t("totalCost") : t("totalTokens");
   el("donut-value").textContent = "–";
   el("donut-label").textContent = segLabel;
 
   if (!share.hasDetail || share.agents.length === 0) {
     charts["chart-agent-donut"]?.destroy();
     delete charts["chart-agent-donut"];
-    effBody.innerHTML = '<tr><td colspan="5" class="donut-note">エージェント別内訳データがありません</td></tr>';
+    effBody.innerHTML = `<tr><td colspan="5" class="donut-note">${t("noAgentDetail")}</td></tr>`;
     return;
   }
 
@@ -480,8 +481,8 @@ function renderTable(entries: PeriodEntry[]): void {
   const tbody = document.getElementById("table-body")!;
 
   if (entries.length === 0) {
-    el("table-count").textContent = "期間 0件";
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">表示期間のデータがありません</td></tr>';
+    el("table-count").textContent = t("periodCount", { count: 0 });
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${t("noDataForPeriod")}</td></tr>`;
     return;
   }
 
@@ -502,7 +503,9 @@ function renderTable(entries: PeriodEntry[]): void {
 
   const visible = sliceLatest(entries, MAX_TABLE_ROWS);
   el("table-count").textContent =
-    entries.length > MAX_TABLE_ROWS ? `期間 ${entries.length}件（表示 ${visible.length}件）` : `期間 ${entries.length}件`;
+    entries.length > MAX_TABLE_ROWS
+      ? t("periodCountShown", { count: entries.length, shown: visible.length })
+      : t("periodCount", { count: entries.length });
 
   const orderedEntries = [...visible].reverse();
   const rows: string[] = [];
@@ -515,7 +518,7 @@ function renderTable(entries: PeriodEntry[]): void {
         <td>${hasDetail
           ? `<button type="button" class="expand-btn" aria-expanded="${isFirstOpen ? "true" : "false"}"><span class="caret">▶</span></button>`
           : ""}${escapeHtml(entry.period)}</td>
-        <td>All</td>
+        <td>${t("all")}</td>
         <td class="models"></td>
         <td class="num">${formatTokensFull(entry.inputTokens)}</td>
         <td class="num">${formatTokensFull(entry.outputTokens)}</td>
@@ -539,7 +542,7 @@ function renderTable(entries: PeriodEntry[]): void {
   });
 
   rows.push(`<tr class="total-row">
-      <td>合計</td>
+      <td>${t("total")}</td>
       <td></td>
       <td></td>
       <td class="num">${formatTokensFull(totalInput)}</td>
@@ -559,7 +562,11 @@ function render(): void {
   renderNav();
 
   // entries を一度だけ選別し、全系列と共有する（selectSectionEntries の二重実行を避ける）
-  const series = buildDashboardSeriesFromEntries(selectSectionEntries(usageData, state.section, state));
+  const series = buildDashboardSeriesFromEntries(selectSectionEntries(usageData, state.section, state), {
+    other: t("other"),
+    unitPrice: t("unitPriceLabel"),
+    cacheHit: t("cacheHitRate"),
+  });
   const entries = series.entries;
   const models = allModels(collectAllEntries());
   const top = new Set(topModelsByCost(entries, TOP_N));
@@ -619,9 +626,9 @@ function bindControls(): void {
     render();
   });
 
-  document.querySelectorAll(".seg-toggle button").forEach((btn) => {
+  document.querySelectorAll(".donut-toggle button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".seg-toggle button").forEach((b) => {
+      document.querySelectorAll(".donut-toggle button").forEach((b) => {
         b.classList.remove("active");
         b.setAttribute("aria-pressed", "false");
       });
@@ -630,6 +637,35 @@ function bindControls(): void {
       donutSeg = (btn as HTMLElement).dataset.seg === "token" ? "token" : "cost";
       if (lastAgentShare) { renderAgentDonut(lastAgentShare, lastAgentEfficiency); }
     });
+  });
+
+  bindLangToggle();
+}
+
+function bindLangToggle(): void {
+  const buttons = document.querySelectorAll<HTMLButtonElement>(".lang-toggle button");
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const lang = btn.dataset.lang === "ja" ? "ja" : "en";
+      setLang(lang, window.localStorage);
+      applyStaticTranslations(document);
+      syncLangToggle();
+      // 言語切替で「すべて」やラベルが変わるため、フィルタ選択肢と動的領域を再構築する
+      const entries = collectAllEntries();
+      fillSelect("model", allModels(entries));
+      fillSelect("agent", allAgents(entries));
+      render();
+    });
+  });
+}
+
+// 言語トグルの active 表示を現在言語に合わせる（初期化時と切替時に呼ぶ）
+function syncLangToggle(): void {
+  const lang: Lang = getLang(window.localStorage);
+  document.querySelectorAll<HTMLButtonElement>(".lang-toggle button").forEach((btn) => {
+    const isActive = btn.dataset.lang === lang;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", String(isActive));
   });
 }
 
@@ -677,13 +713,20 @@ async function main(): Promise<void> {
     fillSelect("agent", allAgents(entries));
     bindControls();
     if (entries.length === 0) {
-      setStatus("データがありません");
+      setStatus(t("noData"));
       return;
     }
     render();
   } catch (error) {
-    setStatus(`データ取得エラー: ${error instanceof Error ? error.message : String(error)}`, true);
+    setStatus(t("dataError", { message: error instanceof Error ? error.message : String(error) }), true);
   }
 }
+
+// 保存済み言語を初回ペイント前に適用する（index.html の静的文言を一瞬英語表示させない）。
+// script は body 末尾・parser-blocking で読み込まれるため、ここは初回描画より前の同期実行になる。
+// 言語状態の初期化（localStorage 読込）と適用を main() より先に行い、切替時と同じ経路を通す
+setLang(getLang(window.localStorage), window.localStorage);
+applyStaticTranslations(document);
+syncLangToggle();
 
 void main();
