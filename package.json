@@ -6,6 +6,7 @@
     "ccusage-ledger": "src/cli.ts"
   },
   "files": [
+    "bun.lock",
     "index.html",
     "dist/bundle.js",
     "public",
