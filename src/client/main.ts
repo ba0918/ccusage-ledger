@@ -1,7 +1,7 @@
 import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
 import { loadUsageData } from "./load-data";
 import { escapeHtml } from "./escape";
-import { applyStaticTranslations, getLang, setLang, t, type Lang } from "./i18n";
+import { applyStaticTranslations, createSafeStorage, getLang, setLang, t, type Lang } from "./i18n";
 import {
   agentDonutData,
   allAgents,
@@ -31,6 +31,8 @@ type TooltipContext = { entries: PeriodEntry[]; top: ReadonlySet<string>; exclud
 
 const state: DashboardFilters = { section: "daily", model: null, agent: null, range: { kind: "all" } };
 let usageData: UsageData | null = null;
+// データ 0 状態では render() を走らせず「データがありません」の簡潔表示を維持するためのフラグ
+let hasData = false;
 let navYear = 0;
 let navMonth = 1;
 let viewingAll = true;
@@ -40,6 +42,10 @@ let lastAgentEfficiency: AgentEfficiency[] = [];
 
 const AGENT_PALETTE = ["#7aa7ff", "#4cd6a0", "#f5b34d", "#c084fc", "#76b7b2", "#e15759"];
 const OTHER_COLOR = "#8b92a7";
+
+// localStorage が使えない環境（プライバシーモード等で SecurityError）でも初期化を死なせない。
+// プロパティアクセス自体が throw するため、遅延評価の getRaw を createSafeStorage に渡す
+const storage = createSafeStorage(() => window.localStorage);
 
 const charts: Record<string, ChartInstance> = {};
 
@@ -67,7 +73,7 @@ function assertElements(ids: readonly string[]): void {
   }
 }
 
-function fillSelect(id: string, values: string[]): void {
+function fillSelect(id: string, values: string[], selected: string | null = null): void {
   const select = document.getElementById(id) as HTMLSelectElement;
   select.innerHTML = `<option value="">${t("all")}</option>`;
   for (const value of values) {
@@ -76,6 +82,9 @@ function fillSelect(id: string, values: string[]): void {
     option.textContent = value;
     select.appendChild(option);
   }
+  // innerHTML 再構築で選択が消えるため、呼び出し元が渡した選択値を復元する。
+  // 言語切替時は state.model / state.agent を渡し、select の表示と実データの絞り込みを一致させる
+  select.value = selected ?? "";
 }
 
 function collectAllEntries() {
@@ -647,13 +656,19 @@ function bindLangToggle(): void {
   buttons.forEach((btn) => {
     btn.addEventListener("click", () => {
       const lang = btn.dataset.lang === "ja" ? "ja" : "en";
-      setLang(lang, window.localStorage);
+      setLang(lang, storage);
       applyStaticTranslations(document);
       syncLangToggle();
-      // 言語切替で「すべて」やラベルが変わるため、フィルタ選択肢と動的領域を再構築する
+      if (!hasData) {
+        // データ 0 状態では render() を走らせず「データがありません」の簡潔表示を維持する
+        setStatus(t("noData"));
+        return;
+      }
+      // 言語切替で「すべて」やラベルが変わるため、フィルタ選択肢と動的領域を再構築する。
+      // 適用中のモデル・エージェント選択を state から復元し、表示と実データの絞り込みを一致させる
       const entries = collectAllEntries();
-      fillSelect("model", allModels(entries));
-      fillSelect("agent", allAgents(entries));
+      fillSelect("model", allModels(entries), state.model);
+      fillSelect("agent", allAgents(entries), state.agent);
       render();
     });
   });
@@ -661,7 +676,7 @@ function bindLangToggle(): void {
 
 // 言語トグルの active 表示を現在言語に合わせる（初期化時と切替時に呼ぶ）
 function syncLangToggle(): void {
-  const lang: Lang = getLang(window.localStorage);
+  const lang: Lang = getLang(storage);
   document.querySelectorAll<HTMLButtonElement>(".lang-toggle button").forEach((btn) => {
     const isActive = btn.dataset.lang === lang;
     btn.classList.toggle("active", isActive);
@@ -709,10 +724,11 @@ async function main(): Promise<void> {
     ]);
     await loadData();
     const entries = collectAllEntries();
+    hasData = entries.length > 0;
     fillSelect("model", allModels(entries));
     fillSelect("agent", allAgents(entries));
     bindControls();
-    if (entries.length === 0) {
+    if (!hasData) {
       setStatus(t("noData"));
       return;
     }
@@ -725,7 +741,7 @@ async function main(): Promise<void> {
 // 保存済み言語を初回ペイント前に適用する（index.html の静的文言を一瞬英語表示させない）。
 // script は body 末尾・parser-blocking で読み込まれるため、ここは初回描画より前の同期実行になる。
 // 言語状態の初期化（localStorage 読込）と適用を main() より先に行い、切替時と同じ経路を通す
-setLang(getLang(window.localStorage), window.localStorage);
+setLang(getLang(storage), storage);
 applyStaticTranslations(document);
 syncLangToggle();
 

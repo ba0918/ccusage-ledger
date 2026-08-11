@@ -3,8 +3,8 @@ import type { AgentBreakdown, ModelBreakdown, PeriodEntry, UsageData } from "./t
 export const TOP_N = 5;
 
 // 上位 N モデル以外をまとめる「その他」バケットのラベル。表示層が t("other") で渡すため、
-// 純計算層は既定値（日本語）を持ち、言語に依存しない
-export const OTHER_LABEL = "その他";
+// 純計算層の既定値は言語に依存しない英語を使う
+export const OTHER_LABEL = "Others";
 
 // 系列ビルダーが受け取る表示ラベル群。unitPrice は単価チャート、cacheHit はキャッシュヒット率チャートの
 // データセットラベル。main.ts が現在言語の t() 結果を渡す
@@ -17,8 +17,8 @@ export interface SeriesLabels {
 // ラベル未指定（テスト互換・既存呼び出し）時の既定値。表示層は t() の現在言語ラベルを常に渡す
 export const DEFAULT_LABELS: SeriesLabels = {
   other: OTHER_LABEL,
-  unitPrice: "実効単価 ($/MTok)",
-  cacheHit: "キャッシュヒット率",
+  unitPrice: "Effective unit price ($/MTok)",
+  cacheHit: "Cache hit rate",
 };
 
 // 末尾（最新）max 件を返す。描画行数のキャップに使う（Data 由来の巨大配列で DOM を固めない）

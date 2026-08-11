@@ -95,10 +95,10 @@ export type MessageKey = keyof typeof dict;
 
 export const MESSAGE_KEYS = Object.keys(dict) as readonly MessageKey[];
 
-// getMessage は辞書を直接引く。型上キー欠落は起きないが、辞書がランタイムで壊れた場合に
-// undefined を返さないようキー名へフォールバックする（要素の textContent への undefined 代入防止）
+// getMessage は辞書を直接引く。辞書キーがランタイムで壊れた場合（未知キー・削除済みキー）でも
+// throw せずキー名へフォールバックする（要素の textContent への undefined 代入防止）
 export function getMessage(lang: Lang, key: MessageKey): string {
-  return dict[key][lang] ?? key;
+  return dict[key]?.[lang] ?? key;
 }
 
 // {name} プレースホルダを params で置換する。指定が無いプレースホルダは空文字へ置換する
@@ -108,6 +108,48 @@ export function interpolate(template: string, params: Record<string, string | nu
 }
 
 let currentLang: Lang = DEFAULT_LANG;
+
+// 生 storage の取得・読み書きを try/catch で保護するラッパー。localStorage が使えない環境
+// （プライバシーモード等で SecurityError）でも初期化を死なせず、失敗時はメモリのみで動作する。
+// getRaw は window.localStorage のような遅延評価アクセスに使う（プロパティアクセス自体が throw するため）。
+// setItem は常にメモリへも書くため、生 storage が読めない場合でも直近の保存値は復元できる
+export function createSafeStorage(
+  getRaw: () => Pick<Storage, "getItem" | "setItem"> | null,
+): Pick<Storage, "getItem" | "setItem"> {
+  const memory = new Map<string, string>();
+  const safeRaw = (): Pick<Storage, "getItem" | "setItem"> | null => {
+    try {
+      return getRaw();
+    } catch {
+      return null;
+    }
+  };
+  return {
+    getItem(key: string): string | null {
+      const raw = safeRaw();
+      if (raw) {
+        try {
+          const value = raw.getItem(key);
+          if (value !== null) { return value; }
+        } catch {
+          return memory.get(key) ?? null;
+        }
+      }
+      return memory.get(key) ?? null;
+    },
+    setItem(key: string, value: string): void {
+      memory.set(key, value);
+      const raw = safeRaw();
+      if (raw) {
+        try {
+          raw.setItem(key, value);
+        } catch {
+          // 生 storage への書き込みに失敗してもメモリ側で保持する
+        }
+      }
+    },
+  };
+}
 
 // localStorage から現在言語を解決する薄いラッパー（pure な resolveLang に委譲する）
 export function getLang(storage: Pick<Storage, "getItem">): Lang {
@@ -128,13 +170,13 @@ export function t(key: MessageKey, params?: Record<string, string | number>): st
 }
 
 // 静的要素に data-i18n を適用する。dataset.i18n（textContent）/ dataset.i18nTitle（title）/
-// dataset.i18nAria（aria-label）/ dataset.i18nLang（lang 属性）の順に差し替える。
-// DOM に依存しないため、フェイク要素（dataset / textContent / title / lang / setAttribute）でテストできる
+// dataset.i18nAria（aria-label）の順に差し替える。<html lang> は applyStaticTranslations が直接設定する
+// （data-i18n-lang は使わない）
+// DOM に依存しないため、フェイク要素（dataset / textContent / title / setAttribute）でテストできる
 export interface TranslatableElement {
   dataset: Record<string, string | undefined>;
   textContent: string;
   title: string;
-  lang: string;
   setAttribute(name: string, value: string): void;
 }
 
@@ -148,9 +190,6 @@ export function applyTranslationsToElement(el: TranslatableElement, lang: Lang):
   if (el.dataset.i18nAria !== undefined) {
     el.setAttribute("aria-label", getMessage(lang, el.dataset.i18nAria as MessageKey));
   }
-  if (el.dataset.i18nLang !== undefined) {
-    el.lang = lang;
-  }
 }
 
 // 静的要素（data-i18n 系属性を持つ要素）へ現在言語を一括適用し、<html lang> も同期する。
@@ -160,7 +199,7 @@ export function applyStaticTranslations(
 ): void {
   const lang = currentLang;
   for (const el of root.querySelectorAll<HTMLElement>(
-    "[data-i18n], [data-i18n-title], [data-i18n-aria], [data-i18n-lang]",
+    "[data-i18n], [data-i18n-title], [data-i18n-aria]",
   )) {
     applyTranslationsToElement(el, lang);
   }
