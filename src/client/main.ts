@@ -660,8 +660,12 @@ function bindLangToggle(): void {
       applyStaticTranslations(document);
       syncLangToggle();
       if (!hasData) {
-        // データ 0 状態では render() を走らせず「データがありません」の簡潔表示を維持する
+        // データ 0 状態では render() を走らせず「データがありません」の簡潔表示を維持する。
+        // ただし KPI サブ・ドーナツ中央ラベルは data-i18n 対象外（補間を含む）のため、
+        // 言語切替時にここで直接更新して英語残りを防ぐ
         setStatus(t("noData"));
+        el("kpi-agents-sub").textContent = t("agentCount", { count: 0 });
+        el("donut-label").textContent = donutSeg === "cost" ? t("totalCost") : t("totalTokens");
         return;
       }
       // 言語切替で「すべて」やラベルが変わるため、フィルタ選択肢と動的領域を再構築する。

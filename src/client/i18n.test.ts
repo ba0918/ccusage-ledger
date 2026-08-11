@@ -446,6 +446,18 @@ describe("main.ts の言語切替", () => {
     expect(kpiCost.textContent).toBe("");
   });
 
+  test("データ 0 状態で言語切替すると KPI サブとドーナツ中央ラベルも言語に追従する", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, EMPTY_DATA, false, "empty-labels");
+
+    const agentsSub = dom.getElementById("kpi-agents-sub")!;
+    const donutLabel = dom.getElementById("donut-label")!;
+
+    dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
+    expect(agentsSub.textContent).toBe("0 エージェント");
+    expect(donutLabel.textContent).toBe("合計コスト");
+  });
+
   test("localStorage が使えない環境でも初期化が完了して言語切替できる", async () => {
     const dom = createFakeDom();
     await loadMain(dom, EMPTY_DATA, true, "broken-storage");
