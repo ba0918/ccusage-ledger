@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fetchUsage, DEFAULT_COMMAND, type SpawnResult } from "./fetch-usage";
@@ -23,14 +23,14 @@ describe("DEFAULT_COMMAND", () => {
 });
 
 describe("fetchUsage デフォルト cachePath", () => {
-  test("XDG_CACHE_HOME 基準のパスをデフォルトに使う", () => {
+  test("XDG_CACHE_HOME 基準のパスをデフォルトに使う", async () => {
     const dir = tempDir();
     const prev = process.env.XDG_CACHE_HOME;
     process.env.XDG_CACHE_HOME = dir;
     try {
       const expected = join(dir, "ccusage-ledger", "usage.json");
       writeCacheFixture(expected);
-      const result = fetchUsage({ spawn: (_command: string[]) => ({ stdout: "", exitCode: 1 }) });
+      const result = await fetchUsage({ spawn: async () => ({ stdout: "", exitCode: 1 }) });
       expect(result).not.toBeNull();
       expect(result!.source).toBe("cache");
       expect(result!.data).toEqual(FIXTURE);
@@ -42,28 +42,39 @@ describe("fetchUsage デフォルト cachePath", () => {
 });
 
 describe("fetchUsage キャッシュ書き込み", () => {
-  test("キャッシュファイルは 0600 で書かれる", () => {
+  test("キャッシュファイルは 0600 で書かれる", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    const spawn = (_command: string[]): SpawnResult => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+    const spawn = async (): Promise<SpawnResult> => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
 
-    fetchUsage({ cachePath, spawn });
+    await fetchUsage({ cachePath, spawn });
 
-    expect((statSync(cachePath).mode & 0o777)).toBe(0o600);
+    expect(statSync(cachePath).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
+  });
+
+  test("キャッシュ書き込み後は一時ファイルを残さない", async () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    const spawn = async (): Promise<SpawnResult> => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+
+    await fetchUsage({ cachePath, spawn });
+
+    const tmpFiles = readdirSync(dirname(cachePath)).filter((name) => name.includes(".tmp"));
+    expect(tmpFiles).toEqual([]);
   });
 });
 
 describe("fetchUsage", () => {
-  test("取得成功時に stdout の JSON をキャッシュファイルへ保存して返す", () => {
+  test("取得成功時に stdout の JSON をキャッシュファイルへ保存して返す", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    const spawn = (_command: string[]): SpawnResult => ({
+    const spawn = async (): Promise<SpawnResult> => ({
       stdout: JSON.stringify(FIXTURE),
       exitCode: 0,
     });
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).not.toBeNull();
     expect(result!.source).toBe("fresh");
@@ -71,103 +82,103 @@ describe("fetchUsage", () => {
     expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
   });
 
-  test("取得失敗時は既存キャッシュへフォールバックする", () => {
+  test("取得失敗時は既存キャッシュへフォールバックする", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
     writeCacheFixture(cachePath);
-    const spawn = (_command: string[]): SpawnResult => ({
+    const spawn = async (): Promise<SpawnResult> => ({
       stdout: "",
       exitCode: 1,
     });
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).not.toBeNull();
     expect(result!.source).toBe("cache");
     expect(result!.data).toEqual(FIXTURE);
   });
 
-  test("取得失敗かつキャッシュが無い場合は null を返す", () => {
+  test("取得失敗かつキャッシュが無い場合は null を返す", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    const spawn = (_command: string[]): SpawnResult => ({
+    const spawn = async (): Promise<SpawnResult> => ({
       stdout: "",
       exitCode: 1,
     });
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).toBeNull();
   });
 
-  test("スキーマ不一致の stdout は無効としてキャッシュへフォールバックする", () => {
+  test("スキーマ不一致の stdout は無効としてキャッシュへフォールバックする", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
     writeCacheFixture(cachePath);
-    const spawn = (_command: string[]): SpawnResult => ({
+    const spawn = async (): Promise<SpawnResult> => ({
       stdout: JSON.stringify({ error: "invalid output" }),
       exitCode: 0,
     });
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).not.toBeNull();
     expect(result!.source).toBe("cache");
     expect(result!.data).toEqual(FIXTURE);
   });
 
-  test("スキーマ不一致の stdout かつキャッシュが無い場合は null を返す", () => {
+  test("スキーマ不一致の stdout かつキャッシュが無い場合は null を返す", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    const spawn = (_command: string[]): SpawnResult => ({
+    const spawn = async (): Promise<SpawnResult> => ({
       stdout: JSON.stringify({ daily: "not-an-array" }),
       exitCode: 0,
     });
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).toBeNull();
   });
 
-  test("スキーマ不一致のキャッシュは無効として扱う", () => {
+  test("スキーマ不一致のキャッシュは無効として扱う", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
     mkdirSync(dirname(cachePath), { recursive: true });
     writeFileSync(cachePath, JSON.stringify({ daily: 1, monthly: 2 }));
-    const spawn = (_command: string[]): SpawnResult => ({
+    const spawn = async (): Promise<SpawnResult> => ({
       stdout: "",
       exitCode: 1,
     });
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).toBeNull();
   });
 
-  test("spawn が例外を投げてもキャッシュがあればフォールバックする", () => {
+  test("spawn が例外を投げてもキャッシュがあればフォールバックする", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
     writeCacheFixture(cachePath);
-    const spawn = (_command: string[]): SpawnResult => {
+    const spawn = async (): Promise<SpawnResult> => {
       throw new Error("command not found");
     };
 
-    const result = fetchUsage({ cachePath, spawn });
+    const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).not.toBeNull();
     expect(result!.source).toBe("cache");
   });
 
-  test("コマンドに --sections を渡し monthly セクションを含める", () => {
+  test("コマンドに --sections を渡し monthly セクションを含める", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
     const command = ["bunx", "ccusage", "--json", "--sections", "daily,monthly"];
-    const spawn = (cmd: string[]): SpawnResult => {
+    const spawn = async (cmd: string[]): Promise<SpawnResult> => {
       expect(cmd).toEqual(command);
       return { stdout: JSON.stringify(FIXTURE), exitCode: 0 };
     };
 
-    const result = fetchUsage({ cachePath, spawn, command });
+    const result = await fetchUsage({ cachePath, spawn, command });
 
     expect(result!.source).toBe("fresh");
   });

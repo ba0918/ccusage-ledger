@@ -1,10 +1,5 @@
 import type { UsageData } from "../types";
-
-export function isUsageData(value: unknown): value is UsageData {
-  if (typeof value !== "object" || value === null) return false;
-  const sections = ["daily", "monthly"];
-  return sections.every((section) => Array.isArray((value as Record<string, unknown>)[section]));
-}
+import { isUsageData } from "../usage-data";
 
 export async function loadUsageData(
   embedded: unknown,

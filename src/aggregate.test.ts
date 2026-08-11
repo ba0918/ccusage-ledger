@@ -27,6 +27,7 @@ import {
   otherBreakdown,
   buildModelUnitPrices,
   maxFinite,
+  sliceLatest,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -785,5 +786,16 @@ describe("maxFinite", () => {
   test("NaN や無限大を無視し、すべて無効なら fallback を返す", () => {
     expect(maxFinite([NaN, Infinity, -Infinity], 1)).toBe(1);
     expect(maxFinite([NaN, 5], 1)).toBe(5);
+  });
+});
+
+describe("sliceLatest", () => {
+  test("max 件数以内ならそのまま返す", () => {
+    expect(sliceLatest([1, 2], 3)).toEqual([1, 2]);
+  });
+
+  test("max を超える場合は末尾（最新）max 件を返す", () => {
+    expect(sliceLatest([1, 2, 3, 4, 5], 3)).toEqual([3, 4, 5]);
+    expect(sliceLatest([], 3)).toEqual([]);
   });
 });

@@ -1,5 +1,6 @@
 import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
 import { loadUsageData } from "./load-data";
+import { escapeHtml } from "./escape";
 import {
   allAgents,
   allModels,
@@ -11,6 +12,7 @@ import {
   modelColor,
   otherBreakdown,
   selectSectionEntries,
+  sliceLatest,
   topModelsByCost,
   TOP_N,
   type AgentEfficiency,
@@ -67,14 +69,6 @@ function fillSelect(id: string, values: string[]): void {
 function collectAllEntries() {
   const sections: ("daily" | "monthly")[] = ["daily", "monthly"];
   return sections.flatMap((section) => usageData?.[section] ?? []);
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 function formatCurrency(cost: number): string {
@@ -458,32 +452,42 @@ function bindExpand(): void {
   });
 }
 
+const MAX_TABLE_ROWS = 1000;
+
 function renderTable(entries: PeriodEntry[]): void {
   const tbody = document.getElementById("table-body")!;
-  el("table-count").textContent = `期間 ${entries.length}件`;
 
   if (entries.length === 0) {
+    el("table-count").textContent = "期間 0件";
     tbody.innerHTML = '<tr class="empty-row"><td colspan="7">表示期間のデータがありません</td></tr>';
     return;
   }
 
+  // 集計は全件で行い、表示だけ最新 MAX_TABLE_ROWS 件にキャップする（巨大データで DOM を固めない）
   let totalInput = 0;
   let totalOutput = 0;
   let totalCost = 0;
   let totalCacheRead = 0;
   let totalTokenFields = 0;
 
-  const orderedEntries = [...entries].reverse();
-  const rows: string[] = [];
-  orderedEntries.forEach((entry, periodIndex) => {
-    const isFirstOpen = periodIndex === 0;
-    const agents = entry.agents ?? [];
-    const hasDetail = agents.length > 0;
+  for (const entry of entries) {
     totalInput += entry.inputTokens;
     totalOutput += entry.outputTokens;
     totalCost += entry.totalCost;
     totalCacheRead += entry.cacheReadTokens;
     totalTokenFields += entry.inputTokens + entry.outputTokens + entry.cacheReadTokens + entry.cacheCreationTokens;
+  }
+
+  const visible = sliceLatest(entries, MAX_TABLE_ROWS);
+  el("table-count").textContent =
+    entries.length > MAX_TABLE_ROWS ? `期間 ${entries.length}件（表示 ${visible.length}件）` : `期間 ${entries.length}件`;
+
+  const orderedEntries = [...visible].reverse();
+  const rows: string[] = [];
+  orderedEntries.forEach((entry, periodIndex) => {
+    const isFirstOpen = periodIndex === 0;
+    const agents = entry.agents ?? [];
+    const hasDetail = agents.length > 0;
 
     rows.push(`<tr class="period-row${isFirstOpen ? " open" : ""}">
         <td>${hasDetail

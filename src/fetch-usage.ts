@@ -2,13 +2,14 @@ import { mkdirSync, writeFileSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
+import { isUsageData } from "./usage-data";
 
 export interface SpawnResult {
   stdout: string;
   exitCode: number;
 }
 
-export type SpawnFn = (command: string[]) => SpawnResult;
+export type SpawnFn = (command: string[]) => Promise<SpawnResult>;
 
 export interface FetchUsageOptions {
   command?: string[];
@@ -23,25 +24,21 @@ export interface FetchUsageResult {
 
 export const DEFAULT_COMMAND = ["bunx", "ccusage@20.0.19", "--json", "--sections", "daily,monthly", "--by-agent"];
 
-function defaultSpawn(command: string[]): SpawnResult {
-  // ccusage 取得がハングしてもサーバ起動（bind）を止めないようタイムアウトを設ける
-  const result = Bun.spawnSync(command, { timeout: 60_000 });
-  return { stdout: result.stdout.toString(), exitCode: result.exitCode };
+async function defaultSpawn(command: string[]): Promise<SpawnResult> {
+  // ccusage 取得がハングしてもサーバーのイベントループを塞がないよう非同期 spawn + タイムアウトを使う
+  const proc = Bun.spawn(command, { stdout: "pipe", stderr: "ignore", timeout: 60_000 });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  return { stdout, exitCode };
 }
 
-function isUsageData(data: unknown): data is UsageData {
-  if (typeof data !== "object" || data === null) return false;
-  const sections = ["daily", "monthly"];
-  return sections.every((section) => Array.isArray((data as Record<string, unknown>)[section]));
-}
-
-export function fetchUsage(options: FetchUsageOptions = {}): FetchUsageResult | null {
+export async function fetchUsage(options: FetchUsageOptions = {}): Promise<FetchUsageResult | null> {
   const command = options.command ?? DEFAULT_COMMAND;
   const cachePath = options.cachePath ?? defaultCachePath(process.env);
   const spawn = options.spawn ?? defaultSpawn;
 
   try {
-    const result = spawn(command);
+    const result = await spawn(command);
     if (result.exitCode === 0) {
       const parsed: unknown = JSON.parse(result.stdout);
       if (isUsageData(parsed)) {
@@ -58,7 +55,8 @@ export function fetchUsage(options: FetchUsageOptions = {}): FetchUsageResult | 
 
 function writeCache(cachePath: string, data: UsageData): void {
   mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
-  const tmpPath = `${cachePath}.tmp`;
+  // 同時実行（サーバー / export / 複数プロセス）で同じ temp 名を共有しないよう PID を含める
+  const tmpPath = `${cachePath}.tmp.${process.pid}`;
   writeFileSync(tmpPath, JSON.stringify(data, null, 2), { mode: 0o600 });
   renameSync(tmpPath, cachePath);
 }

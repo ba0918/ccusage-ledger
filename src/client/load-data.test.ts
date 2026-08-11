@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { UsageData } from "../types";
-import { isUsageData, loadUsageData } from "./load-data";
+import { loadUsageData } from "./load-data";
 
 const VALID: UsageData = {
   daily: [
@@ -39,17 +39,5 @@ describe("loadUsageData", () => {
   test("埋め込みデータがスキーマ不一致なら fetch にフォールバックする", async () => {
     const data = await loadUsageData({ daily: "not-an-array" }, async () => VALID);
     expect(data).toBe(VALID);
-  });
-});
-
-describe("isUsageData", () => {
-  test("daily / monthly の配列を持つオブジェクトを受理する", () => {
-    expect(isUsageData(VALID)).toBe(true);
-  });
-
-  test("null / プリミティブ / daily が配列でない値を拒否する", () => {
-    expect(isUsageData(null)).toBe(false);
-    expect(isUsageData(42)).toBe(false);
-    expect(isUsageData({ daily: 1, monthly: [] })).toBe(false);
   });
 });

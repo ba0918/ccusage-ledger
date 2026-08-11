@@ -36,6 +36,6 @@ export function openBrowser(url: string, options: OpenOptions = {}): void {
   const command = platform === "darwin" ? "open" : "xdg-open";
   const result = spawn([command, url]);
   if (result.exitCode !== 0) {
-    console.warn(`WARN: ブラウザを自動で開けませんでした（${command}）。手動で開いてください: ${url}`);
+    console.warn(`WARN: could not open the browser automatically (${command}). Open it manually: ${url}`);
   }
 }

@@ -18,7 +18,17 @@ export function exportOutputPath(cwd: string): string {
   return join(cwd, "dist", "ccusage-ledger.html");
 }
 
+export function writeExportedHtml(outputPath: string, html: string): void {
+  mkdirSync(dirname(outputPath), { recursive: true });
+  // 個人データ埋め込みファイルを他のローカルユーザーから読めないよう 0600 に制限する
+  writeFileSync(outputPath, html, { mode: 0o600 });
+}
+
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, data: UsageData): string {
+  // CSP・警告バナーの注入が無効な HTML で静かに失われないよう、挿入ポイントの存在を検証する
+  if (!html.includes("</head>")) throw new Error("index.html に </head> がありません");
+  if (!html.includes("<body>")) throw new Error("index.html に <body> がありません");
+
   const dataJson = JSON.stringify(data).replace(/</g, "\\u003c");
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
   return html
@@ -29,11 +39,11 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
     .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const rootDir = PACKAGE_DIR;
-  const usage = fetchUsage();
+  const usage = await fetchUsage();
   if (usage === null) {
-    console.error("ERROR: ccusage データを取得できませんでした（キャッシュもありません）。");
+    console.error("ERROR: failed to fetch ccusage data (and no cache exists).");
     process.exit(1);
   }
 
@@ -43,11 +53,10 @@ function main(): void {
 
   const exported = buildExportedHtml(html, chartJs, bundle, usage.data);
   const outputPath = exportOutputPath(process.cwd());
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, exported);
+  writeExportedHtml(outputPath, exported);
 
   console.log(`exported: ${outputPath}`);
-  console.warn("注意: この HTML には ccusage の使用量データが含まれます。共有相手に合わせて実行してください。");
+  console.warn("Note: this HTML contains your ccusage usage data. Only export it when sharing with someone you trust.");
 }
 
 if (import.meta.main) {
