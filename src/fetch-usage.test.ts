@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fetchUsage, DEFAULT_COMMAND, spawnEnv, ccusageCliPath, buildCcusageCommand, type SpawnResult } from "./fetch-usage";
@@ -105,6 +105,24 @@ describe("fetchUsage キャッシュ書き込み", () => {
 
     const tmpFiles = readdirSync(dirname(cachePath)).filter((name) => name.includes(".tmp"));
     expect(tmpFiles).toEqual([]);
+  });
+
+  test("キャッシュ temp ファイル名はランダムで、攻撃者が事前に symlink を仕掛けても追わない", async () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    mkdirSync(dirname(cachePath), { recursive: true });
+
+    // 攻撃者が PID ベースの固定 temp 名に symlink を事前に仕掛けた状態
+    const decoy = join(dirname(cachePath), "usage.json.tmp.12345");
+    symlinkSync("/tmp/ccusage-attacker-decoy", decoy);
+
+    const spawn = async (): Promise<SpawnResult> => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+    await fetchUsage({ cachePath, spawn });
+
+    // 書き込み成功し、攻撃者の symlink は置き換えられていない
+    expect(existsSync(cachePath)).toBe(true);
+    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(FIXTURE);
+    expect(lstatSync(decoy).isSymbolicLink()).toBe(true);
   });
 });
 
@@ -224,5 +242,35 @@ describe("fetchUsage", () => {
     const result = await fetchUsage({ cachePath, spawn, command });
 
     expect(result!.source).toBe("fresh");
+  });
+});
+
+describe("spawn デフォルト（stdout 上限）", () => {
+  test("巨大な stdout は読み捨てられず、fetchUsage が失敗する（メモリ枯渇防止）", async () => {
+    // defaultSpawn は Bun.spawn を使うため、ここでは上限ロジックを持つ関数を直接検証する
+    const { readStdoutWithLimit } = await import("./fetch-usage");
+    const { ReadableStream } = globalThis;
+    const reader = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        controller.close();
+      },
+    });
+    await expect(
+      readStdoutWithLimit(reader as ReadableStream<Uint8Array>, 1024 * 1024 + 1),
+    ).rejects.toThrow(/too large/i);
+  });
+
+  test("上限内の stdout はそのまま返す", async () => {
+    const { readStdoutWithLimit } = await import("./fetch-usage");
+    const reader = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello"));
+        controller.close();
+      },
+    });
+    const text = await readStdoutWithLimit(reader as ReadableStream<Uint8Array>, 1024);
+    expect(text).toBe("hello");
   });
 });
