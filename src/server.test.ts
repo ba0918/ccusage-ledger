@@ -90,6 +90,7 @@ describe("server 静的配信", () => {
   test("静的レスポンスに CSP ヘッダを付与する", async () => {
     const res = await get("/");
     expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   });
 });
 

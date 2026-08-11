@@ -16,7 +16,7 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 const COMMON_HEADERS: Record<string, string> = {
-  "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
+  "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
 };
 

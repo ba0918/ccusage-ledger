@@ -9,7 +9,7 @@ export const BUNDLE_TAG = '<script src="/dist/bundle.js"></script>';
 export const EMBEDDED_TAG = '<script id="embedded-data"></script>';
 
 export const EXPORT_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'";
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 export function exportOutputPath(cwd: string): string {
   return join(cwd, "dist", "ccusage-ledger.html");

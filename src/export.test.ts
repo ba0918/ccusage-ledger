@@ -86,5 +86,6 @@ describe("buildExportedHtml", () => {
     expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
     expect(out).toContain("connect-src 'none'");
     expect(out).toContain("script-src 'unsafe-inline'");
+    expect(out).toContain("frame-ancestors 'none'");
   });
 });
