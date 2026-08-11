@@ -469,13 +469,16 @@ function bindExpand(): void {
   const tbody = document.getElementById("table-body")!;
   tbody.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
-    if (!target.classList.contains("expand-btn")) { return; }
+    // ▶ は expand-btn の子要素（span）なので、classList 判定ではクリック対象が
+    // 内部要素のときに発火しない。closest でボタン自身か子孫クリックかを判定する
+    const button = target.closest(".expand-btn");
+    if (!button) { return; }
     event.stopPropagation();
-    const row = target.closest(".period-row");
+    const row = button.closest(".period-row");
     if (!row) { return; }
     row.classList.toggle("open");
     const isOpen = row.classList.contains("open");
-    target.setAttribute("aria-expanded", String(isOpen));
+    button.setAttribute("aria-expanded", String(isOpen));
     let sibling = row.nextElementSibling;
     while (sibling?.classList.contains("agent-row")) {
       sibling.classList.toggle("hidden");

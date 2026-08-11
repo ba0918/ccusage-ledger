@@ -252,8 +252,10 @@ class FakeElement {
   value = "";
   style: Record<string, string> = {};
   children: FakeElement[] = [];
+  parent: FakeElement | null = null;
+  nextElementSibling: FakeElement | null = null;
   private innerHTMLValue = "";
-  private listeners = new Map<string, Array<() => void>>();
+  private listeners = new Map<string, Array<(event?: unknown) => void>>();
   private classes = new Set<string>();
   private attrs: Record<string, string> = {};
 
@@ -293,18 +295,32 @@ class FakeElement {
   setAttribute(name: string, value: string): void {
     this.attrs[name] = value;
   }
+  getAttribute(name: string): string | null {
+    return this.attrs[name] ?? null;
+  }
   appendChild(child: FakeElement): void {
     this.children.push(child);
   }
-  addEventListener(type: string, handler: () => void): void {
+  addEventListener(type: string, handler: (event?: unknown) => void): void {
     const list = this.listeners.get(type) ?? [];
     list.push(handler);
     this.listeners.set(type, list);
   }
-  dispatch(type: string): void {
+  dispatch(type: string, event?: unknown): void {
     for (const handler of this.listeners.get(type) ?? []) {
-      handler();
+      handler(event);
     }
+  }
+  // 自分と祖先を遡ってクラスが一致する要素を返す（クリックの対象解決に使う）。
+  // 引数はクラスセレクタ（例: ".expand-btn"）で、先頭のドットを除いてクラス名と比較する
+  closest(selector: string): FakeElement | null {
+    const className = selector.startsWith(".") ? selector.slice(1) : selector;
+    let node: FakeElement | null = this;
+    while (node !== null) {
+      if (node.classList.contains(className)) { return node; }
+      node = node.parent;
+    }
+    return null;
   }
 }
 
@@ -456,6 +472,35 @@ describe("main.ts の言語切替", () => {
     dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
     expect(agentsSub.textContent).toBe("0 エージェント");
     expect(donutLabel.textContent).toBe("合計コスト");
+  });
+
+  test("expand-btn の内部（▶）をクリックしても行の開閉が機能する", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_MODELS, false, "expand-caret");
+
+    const tbody = dom.getElementById("table-body")!;
+    // 実 DOM の階層（period-row > expand-btn > caret、および agent-row 兄弟）を組み立てる
+    const row = new FakeElement();
+    row.classList.add("period-row");
+    const button = new FakeElement();
+    button.classList.add("expand-btn");
+    button.parent = row;
+    const caret = new FakeElement();
+    caret.parent = button;
+    const agentRow = new FakeElement();
+    agentRow.classList.add("agent-row");
+    row.nextElementSibling = agentRow;
+
+    // ▶（span.caret）がクリック対象でも、closest で expand-btn を解決して開閉できる
+    const clickEvent = { target: caret, stopPropagation: () => {} };
+    tbody.dispatch("click", clickEvent);
+    expect(row.classList.contains("open")).toBe(true);
+    expect(agentRow.classList.contains("hidden")).toBe(true);
+
+    // もう一度クリックで閉じる
+    tbody.dispatch("click", clickEvent);
+    expect(row.classList.contains("open")).toBe(false);
+    expect(agentRow.classList.contains("hidden")).toBe(false);
   });
 
   test("localStorage が使えない環境でも初期化が完了して言語切替できる", async () => {
