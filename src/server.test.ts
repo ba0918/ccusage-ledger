@@ -51,6 +51,14 @@ describe("server /api/usage", () => {
     const res = await get("/api/usage");
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
+
+  test("/api/usage は起動時に読み込んだ内容を配信し、ファイルを再読込しない", async () => {
+    const app = createApp({ rootDir, cachePath });
+    rmSync(cachePath);
+    const res = await app(new Request("http://127.0.0.1/api/usage"));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(FIXTURE);
+  });
 });
 
 describe("server 静的配信", () => {

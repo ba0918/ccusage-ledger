@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { fetchUsage, DEFAULT_COMMAND } from "./fetch-usage";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
@@ -36,6 +36,14 @@ export function hostAllowed(urlHostname: string, bindHostname: string): boolean 
 export function createApp(options: { rootDir: string; cachePath: string; hostname?: string }) {
   const { rootDir, cachePath, hostname = "127.0.0.1" } = options;
 
+  // /api/usage は起動時にキャッシュを読み込んでメモリから配信する（リクエスト毎のファイル読込で DoS 面を作らない）
+  let usageBody: string | null = null;
+  try {
+    usageBody = readFileSync(cachePath, "utf-8");
+  } catch {
+    usageBody = null;
+  }
+
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
 
@@ -58,14 +66,13 @@ export function createApp(options: { rootDir: string; cachePath: string; hostnam
     }
 
     if (pathname === "/api/usage") {
-      if (!existsSync(cachePath)) {
+      if (usageBody === null) {
         return new Response(JSON.stringify({ error: "usage data not available" }), {
           status: 404,
           headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
         });
       }
-      const body = await Bun.file(cachePath).arrayBuffer();
-      return new Response(body, {
+      return new Response(usageBody, {
         status: 200,
         headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
       });
