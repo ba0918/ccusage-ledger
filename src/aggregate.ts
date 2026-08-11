@@ -66,7 +66,8 @@ function mergeEntries(year: string, entries: PeriodEntry[]): PeriodEntry {
   const modelNames = new Map<string, ModelBreakdown>();
   const agents = new Set<string>();
   const modelsUsed = new Set<string>();
-  const agentBreakdowns = new Map<string, AgentBreakdown>();
+  // agent 別の合算は Map で持ち、最後に配列へ変換する（find()/includes() の O(n^2) を避ける）
+  const agentBreakdowns = new Map<string, { merged: AgentBreakdown; modelsUsed: Set<string>; modelNames: Map<string, ModelBreakdown> }>();
   let totalCost = 0;
 
   for (const entry of entries) {
@@ -90,39 +91,45 @@ function mergeEntries(year: string, entries: PeriodEntry[]): PeriodEntry {
       modelNames.set(breakdown.modelName, merged);
     }
     for (const agent of entry.agents ?? []) {
-      const merged = agentBreakdowns.get(agent.agent) ?? {
-        agent: agent.agent,
-        totalCost: 0,
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        modelsUsed: [],
-        modelBreakdowns: [],
+      const acc = agentBreakdowns.get(agent.agent) ?? {
+        merged: {
+          agent: agent.agent,
+          totalCost: 0,
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          modelsUsed: [],
+          modelBreakdowns: [],
+        },
+        modelsUsed: new Set<string>(),
+        modelNames: new Map<string, ModelBreakdown>(),
       };
-      merged.totalCost += agent.totalCost;
-      merged.totalTokens += agent.totalTokens;
-      merged.inputTokens += agent.inputTokens;
-      merged.outputTokens += agent.outputTokens;
-      merged.cacheReadTokens += agent.cacheReadTokens;
-      merged.cacheCreationTokens += agent.cacheCreationTokens;
-      for (const model of agent.modelsUsed) {
-        if (!merged.modelsUsed.includes(model)) merged.modelsUsed.push(model);
-      }
+      acc.merged.totalCost += agent.totalCost;
+      acc.merged.totalTokens += agent.totalTokens;
+      acc.merged.inputTokens += agent.inputTokens;
+      acc.merged.outputTokens += agent.outputTokens;
+      acc.merged.cacheReadTokens += agent.cacheReadTokens;
+      acc.merged.cacheCreationTokens += agent.cacheCreationTokens;
+      for (const model of agent.modelsUsed) acc.modelsUsed.add(model);
       for (const breakdown of agent.modelBreakdowns) {
-        const agentModel = merged.modelBreakdowns.find((b) => b.modelName === breakdown.modelName);
-        if (agentModel) {
-          agentModel.cost += breakdown.cost;
-          agentModel.inputTokens += breakdown.inputTokens;
-          agentModel.outputTokens += breakdown.outputTokens;
-          agentModel.cacheReadTokens += breakdown.cacheReadTokens;
-          agentModel.cacheCreationTokens += breakdown.cacheCreationTokens;
-        } else {
-          merged.modelBreakdowns.push({ ...breakdown });
-        }
+        const agentModel = acc.modelNames.get(breakdown.modelName) ?? {
+          modelName: breakdown.modelName,
+          cost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        };
+        agentModel.cost += breakdown.cost;
+        agentModel.inputTokens += breakdown.inputTokens;
+        agentModel.outputTokens += breakdown.outputTokens;
+        agentModel.cacheReadTokens += breakdown.cacheReadTokens;
+        agentModel.cacheCreationTokens += breakdown.cacheCreationTokens;
+        acc.modelNames.set(breakdown.modelName, agentModel);
       }
-      agentBreakdowns.set(agent.agent, merged);
+      agentBreakdowns.set(agent.agent, acc);
     }
   }
 
@@ -137,7 +144,11 @@ function mergeEntries(year: string, entries: PeriodEntry[]): PeriodEntry {
     modelsUsed: [...modelsUsed],
     modelBreakdowns: [...modelNames.values()],
     metadata: { agents: [...agents] },
-    agents: [...agentBreakdowns.values()],
+    agents: [...agentBreakdowns.values()].map((acc) => {
+      acc.merged.modelsUsed = [...acc.modelsUsed];
+      acc.merged.modelBreakdowns = [...acc.modelNames.values()];
+      return acc.merged;
+    }),
     device: entries.find((e) => e.device !== undefined)?.device,
   };
   return merged;
