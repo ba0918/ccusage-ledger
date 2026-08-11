@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { fetchUsage, DEFAULT_COMMAND } from "./fetch-usage";
+import { PACKAGE_DIR, defaultCachePath } from "./paths";
+import { browserUrl, openBrowser, shouldAutoOpen } from "./open-browser";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -22,8 +24,8 @@ function withCommonHeaders(headers: Record<string, string>): Headers {
   return new Headers({ ...COMMON_HEADERS, ...headers });
 }
 
-export function createApp(options: { rootDir: string }) {
-  const { rootDir } = options;
+export function createApp(options: { rootDir: string; cachePath: string }) {
+  const { rootDir, cachePath } = options;
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -38,14 +40,13 @@ export function createApp(options: { rootDir: string }) {
     }
 
     if (pathname === "/api/usage") {
-      const usagePath = join(rootDir, "data", "usage.json");
-      if (!existsSync(usagePath)) {
+      if (!existsSync(cachePath)) {
         return new Response(JSON.stringify({ error: "usage data not available" }), {
           status: 404,
           headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
         });
       }
-      const body = await Bun.file(usagePath).arrayBuffer();
+      const body = await Bun.file(cachePath).arrayBuffer();
       return new Response(body, {
         status: 200,
         headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
@@ -88,21 +89,35 @@ function extensionName(path: string): string {
 }
 
 export async function main(): Promise<void> {
-  const rootDir = process.cwd();
-  const usagePath = join(rootDir, "data", "usage.json");
-  const result = fetchUsage({ command: DEFAULT_COMMAND, cachePath: usagePath });
+  const rootDir = PACKAGE_DIR;
+  const cachePath = defaultCachePath(process.env);
+  const result = fetchUsage({ command: DEFAULT_COMMAND, cachePath });
 
   const port = Number(process.env.PORT ?? 3000);
   const hostname = process.env.HOST ?? "127.0.0.1";
 
-  const app = createApp({ rootDir });
+  const app = createApp({ rootDir, cachePath });
   const server = Bun.serve({ hostname, port, fetch: app });
 
-  console.log(`ccusage ledger: http://${hostname}:${server.port}`);
+  const displayHost = hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
+  const boundPort = server.port ?? port;
+  console.log(`ccusage ledger: http://${displayHost}:${boundPort}`);
   if (result === null) {
     console.warn("WARN: ccusage データを取得できず、キャッシュもありません。/api/usage は 404 を返します。");
   } else {
     console.log(`データ取得元: ${result.source === "fresh" ? "bunx ccusage --json（新規取得）" : "キャッシュ"}`);
+  }
+
+  const autoOpenEnv = {
+    SSH_CONNECTION: process.env.SSH_CONNECTION,
+    SSH_TTY: process.env.SSH_TTY,
+    DISPLAY: process.env.DISPLAY,
+    WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
+    isTTY: Boolean(process.stdout.isTTY),
+    platform: process.platform,
+  };
+  if (shouldAutoOpen(autoOpenEnv)) {
+    openBrowser(browserUrl(hostname, boundPort));
   }
 }
 

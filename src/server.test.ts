@@ -1,22 +1,24 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createApp } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
 let rootDir: string;
+let cachePath: string;
 
 beforeEach(() => {
   rootDir = mkdtempSync(join(tmpdir(), "ccusage-server-"));
-  mkdirSync(join(rootDir, "data"), { recursive: true });
+  cachePath = join(rootDir, "cache", "usage.json");
+  mkdirSync(dirname(cachePath), { recursive: true });
   mkdirSync(join(rootDir, "dist"), { recursive: true });
   mkdirSync(join(rootDir, "public", "vendor"), { recursive: true });
   writeFileSync(join(rootDir, "index.html"), "<!doctype html><title>ccusage</title>");
   writeFileSync(join(rootDir, "dist", "bundle.js"), "console.log('bundle');");
   writeFileSync(join(rootDir, "public", "vendor", "chart.umd.min.js"), "// chart.js");
-  writeFileSync(join(rootDir, "data", "usage.json"), FIXTURE);
+  writeFileSync(cachePath, FIXTURE);
 });
 
 afterEach(() => {
@@ -24,20 +26,20 @@ afterEach(() => {
 });
 
 async function get(path: string): Promise<Response> {
-  const app = createApp({ rootDir });
+  const app = createApp({ rootDir, cachePath });
   return app(new Request(`http://127.0.0.1${path}`));
 }
 
 describe("server /api/usage", () => {
-  test("data/usage.json の内容を application/json で返す", async () => {
+  test("cachePath の内容を application/json で返す", async () => {
     const res = await get("/api/usage");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
     expect(await res.text()).toBe(FIXTURE);
   });
 
-  test("data/usage.json が無い場合は 404 を返す", async () => {
-    rmSync(join(rootDir, "data", "usage.json"));
+  test("cachePath のファイルが無い場合は 404 を返す", async () => {
+    rmSync(cachePath);
     const res = await get("/api/usage");
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("application/json");
