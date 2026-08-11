@@ -114,9 +114,10 @@ describe("buildExportedHtml", () => {
     expect(out).toContain("frame-ancestors 'none'");
   });
 
-  test("エクスポート HTML にデータ取り扱いの警告バナーを注入する", () => {
+  test("エクスポート HTML にデータ取り扱いの警告バナーを注入する（英語デフォルト + data-i18n キー）", () => {
     const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
-    expect(out).toContain("このファイルには ccusage の使用量データが含まれます");
+    expect(out).toContain("This file contains your ccusage usage data");
+    expect(out).toContain('data-i18n="exportWarning"');
   });
 
   test("エクスポート HTML にフレーム検出スクリプトを注入する（clickjacking 対策）", () => {
@@ -140,7 +141,7 @@ describe("buildExportedHtml", () => {
     expect(() => buildExportedHtml(withoutBundle, "chart", "bundle", DATA)).toThrow(/bundle/i);
 
     const withoutEmbedded = HTML.replace('<script id="embedded-data"></script>', "");
-    expect(() => buildExportedHtml(withoutEmbedded, "chart", "bundle", DATA)).toThrow(/埋め込みデータ/i);
+    expect(() => buildExportedHtml(withoutEmbedded, "chart", "bundle", DATA)).toThrow(/embedded data/i);
   });
 
   test("データに script 終了タグが複数あっても埋め込みにリテラルの < を残さない", () => {

@@ -78,7 +78,7 @@ export async function readStdoutWithLimit(
 async function defaultSpawn(args: string[]): Promise<SpawnResult> {
   const cliPath = ccusageCliPath();
   if (!existsSync(cliPath)) {
-    throw new Error(`ccusage がインストールされていません: ${cliPath}（bun install を実行してください）`);
+    throw new Error(`ccusage is not installed: ${cliPath} (run \`bun install\`)`);
   }
   // bunx による毎回のレジストリ解決をやめ、依存として固定した cli.js を直接実行する。
   // 子プロセスには許可リストの環境変数だけを渡し、RCE された場合に環境変数経由の秘密を奪えないようにする。

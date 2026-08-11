@@ -13,7 +13,7 @@ export const EXPORT_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 export const EXPORT_WARNING_BANNER =
-  '<div style="position:sticky;top:0;z-index:30;background:#3a1d1d;color:#ffb4b4;padding:8px 16px;font-size:12px;text-align:center">このファイルには ccusage の使用量データが含まれます。共有・取り扱いに注意してください。</div>';
+  '<div style="position:sticky;top:0;z-index:30;background:#3a1d1d;color:#ffb4b4;padding:8px 16px;font-size:12px;text-align:center" data-i18n="exportWarning">This file contains your ccusage usage data. Be careful when sharing or handling it.</div>';
 
 // ブラウザは <meta> CSP の frame-ancestors を無視するため、フレーム内での表示を JS で防ぐ
 // （サーバー配信時は X-Frame-Options: DENY を別途付与すること。AGENTS.md 参照）
@@ -32,11 +32,11 @@ export function writeExportedHtml(outputPath: string, html: string): void {
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, data: UsageData): string {
   // CSP・警告バナーの注入が無効な HTML で静かに失われないよう、挿入ポイントの存在を検証する
-  if (!html.includes("</head>")) { throw new Error("index.html に </head> がありません"); }
-  if (!html.includes("<body>")) { throw new Error("index.html に <body> がありません"); }
-  if (!html.includes(CHART_TAG)) { throw new Error("index.html に Chart.js の script タグがありません"); }
-  if (!html.includes(BUNDLE_TAG)) { throw new Error("index.html に bundle の script タグがありません"); }
-  if (!html.includes(EMBEDDED_TAG)) { throw new Error("index.html に埋め込みデータの script タグがありません"); }
+  if (!html.includes("</head>")) { throw new Error("index.html is missing </head>"); }
+  if (!html.includes("<body>")) { throw new Error("index.html is missing <body>"); }
+  if (!html.includes(CHART_TAG)) { throw new Error("index.html is missing the Chart.js script tag"); }
+  if (!html.includes(BUNDLE_TAG)) { throw new Error("index.html is missing the bundle script tag"); }
+  if (!html.includes(EMBEDDED_TAG)) { throw new Error("index.html is missing the embedded data script tag"); }
 
   const dataJson = JSON.stringify(projectUsageData(data)).replace(/</g, "\\u003c");
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
@@ -49,7 +49,7 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
 
   // タグ表記が index.html とずれた場合、replace が効かず壊れた HTML が静かに出力されるのを防ぐ
   for (const tag of [CHART_TAG, BUNDLE_TAG, EMBEDDED_TAG]) {
-    if (out.includes(tag)) { throw new Error(`index.html の ${tag} を置換できませんでした`); }
+    if (out.includes(tag)) { throw new Error(`failed to replace ${tag} in index.html`); }
   }
   return out;
 }
