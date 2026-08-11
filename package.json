@@ -24,7 +24,8 @@
     "src/usage-data.ts",
     "src/client/main.ts",
     "src/client/escape.ts",
-    "src/client/load-data.ts"
+    "src/client/load-data.ts",
+    "src/client/i18n.ts"
   ],
   "publishConfig": {
     "access": "public"
