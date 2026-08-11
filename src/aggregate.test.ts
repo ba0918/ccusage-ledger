@@ -26,6 +26,7 @@ import {
   modelColor,
   otherBreakdown,
   buildModelUnitPrices,
+  maxFinite,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -773,5 +774,16 @@ describe("buildCacheHitRateSeries", () => {
     expect(series.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
     expect(series.datasets[0]!.data[0]).toBeCloseTo(0.4);
     expect(series.datasets[0]!.data[2]).toBeCloseTo(0);
+  });
+});
+
+describe("maxFinite", () => {
+  test("有限値の最大を返す", () => {
+    expect(maxFinite([1, 3, 2], 0)).toBe(3);
+  });
+
+  test("NaN や無限大を無視し、すべて無効なら fallback を返す", () => {
+    expect(maxFinite([NaN, Infinity, -Infinity], 1)).toBe(1);
+    expect(maxFinite([NaN, 5], 1)).toBe(5);
   });
 });

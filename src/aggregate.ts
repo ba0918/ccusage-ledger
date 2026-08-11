@@ -2,6 +2,16 @@ import type { AgentBreakdown, ModelBreakdown, PeriodEntry, UsageData } from "./t
 
 export const TOP_N = 5;
 
+// Math.max(...arr) は要素数が多いとスタック超過、NaN が混ざると結果が NaN になる。
+// データ由来の値で最大値を計算する場合はこちらを使う。
+export function maxFinite(values: number[], fallback: number): number {
+  let max = fallback;
+  for (const value of values) {
+    if (Number.isFinite(value) && value > max) max = value;
+  }
+  return max;
+}
+
 export type Section = "daily" | "monthly";
 
 const TOKEN_FIELDS = [

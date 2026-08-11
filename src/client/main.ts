@@ -7,6 +7,7 @@ import {
   buildDashboardSeries,
   buildModelCostRanking,
   buildModelUnitPrices,
+  maxFinite,
   modelColor,
   otherBreakdown,
   selectSectionEntries,
@@ -326,7 +327,7 @@ function hitRateColor(hitRate: number): string {
 }
 
 function renderUnitPrice(prices: ModelUnitPrice[]): void {
-  const maxPrice = Math.max(...prices.map((p) => p.unitPrice), 1);
+  const maxPrice = maxFinite(prices.map((p) => p.unitPrice), 1);
   const tbody = document.getElementById("unit-price-body") as HTMLElement;
   tbody.innerHTML = prices
     .map((p) => {
@@ -373,7 +374,7 @@ function renderCacheHit(series: ChartSeries): void {
 }
 
 function renderCostRanking(ranking: ModelCostRank[], models: string[]): void {
-  const maxCost = Math.max(...ranking.map((r) => r.cost), 1);
+  const maxCost = maxFinite(ranking.map((r) => r.cost), 1);
   const tbody = document.getElementById("cost-ranking-body") as HTMLElement;
   tbody.innerHTML = ranking
     .map((r) => {
