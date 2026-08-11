@@ -24,7 +24,8 @@ export interface FetchUsageResult {
 export const DEFAULT_COMMAND = ["bunx", "ccusage@20.0.19", "--json", "--sections", "daily,monthly", "--by-agent"];
 
 function defaultSpawn(command: string[]): SpawnResult {
-  const result = Bun.spawnSync(command);
+  // ccusage 取得がハングしてもサーバ起動（bind）を止めないようタイムアウトを設ける
+  const result = Bun.spawnSync(command, { timeout: 60_000 });
   return { stdout: result.stdout.toString(), exitCode: result.exitCode };
 }
 
