@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, DEFAULT_COMMAND, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, withSafeChain, type SpawnResult } from "./fetch-usage";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
 
@@ -19,6 +19,35 @@ function writeCacheFixture(cachePath: string): void {
 describe("DEFAULT_COMMAND", () => {
   test("--by-agent でエージェント内訳を取得する", () => {
     expect(DEFAULT_COMMAND).toEqual(["bunx", "ccusage", "--json", "--sections", "daily,monthly", "--by-agent"]);
+  });
+});
+
+describe("withSafeChain", () => {
+  test("safe-chain があればコマンドの先頭に前置する", () => {
+    expect(withSafeChain(DEFAULT_COMMAND, true)).toEqual(["safe-chain", ...DEFAULT_COMMAND]);
+  });
+
+  test("safe-chain が無ければ素のコマンドを返す", () => {
+    expect(withSafeChain(DEFAULT_COMMAND, false)).toEqual(DEFAULT_COMMAND);
+  });
+});
+
+describe("fetchUsage デフォルト cachePath", () => {
+  test("XDG_CACHE_HOME 基準のパスをデフォルトに使う", () => {
+    const dir = tempDir();
+    const prev = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = dir;
+    try {
+      const expected = join(dir, "ccusage-ledger", "usage.json");
+      writeCacheFixture(expected);
+      const result = fetchUsage({ spawn: (_command: string[]) => ({ stdout: "", exitCode: 1 }) });
+      expect(result).not.toBeNull();
+      expect(result!.source).toBe("cache");
+      expect(result!.data).toEqual(FIXTURE);
+    } finally {
+      if (prev === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = prev;
+    }
   });
 });
 

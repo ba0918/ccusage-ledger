@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
 
 export interface SpawnResult {
@@ -22,8 +23,13 @@ export interface FetchUsageResult {
 
 export const DEFAULT_COMMAND = ["bunx", "ccusage", "--json", "--sections", "daily,monthly", "--by-agent"];
 
+export function withSafeChain(command: string[], safeChainAvailable: boolean): string[] {
+  return safeChainAvailable ? ["safe-chain", ...command] : command;
+}
+
 function defaultSpawn(command: string[]): SpawnResult {
-  const result = Bun.spawnSync(command);
+  const safeChainAvailable = Boolean(Bun.which("safe-chain"));
+  const result = Bun.spawnSync(withSafeChain(command, safeChainAvailable));
   return { stdout: result.stdout.toString(), exitCode: result.exitCode };
 }
 
@@ -35,7 +41,7 @@ function isUsageData(data: unknown): data is UsageData {
 
 export function fetchUsage(options: FetchUsageOptions = {}): FetchUsageResult | null {
   const command = options.command ?? DEFAULT_COMMAND;
-  const cachePath = options.cachePath ?? "data/usage.json";
+  const cachePath = options.cachePath ?? defaultCachePath(process.env);
   const spawn = options.spawn ?? defaultSpawn;
 
   try {

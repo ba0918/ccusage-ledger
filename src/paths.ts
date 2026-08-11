@@ -6,6 +6,7 @@ export const PACKAGE_DIR = join(import.meta.dir, "..");
 export interface CachePathEnv {
   XDG_CACHE_HOME?: string;
   HOME?: string;
+  [key: string]: string | undefined;
 }
 
 export function defaultCachePath(env: CachePathEnv = {}): string {
