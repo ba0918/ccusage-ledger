@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bunx tsc --noEmit
+      - run: bun run build
+      - run: npm audit --omit=dev

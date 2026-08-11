@@ -15,7 +15,12 @@
     "src/paths.ts",
     "src/open-browser.ts",
     "src/export.ts",
-    "src/types.ts"
+    "src/types.ts",
+    "src/aggregate.ts",
+    "src/usage-data.ts",
+    "src/client/main.ts",
+    "src/client/escape.ts",
+    "src/client/load-data.ts"
   ],
   "publishConfig": {
     "access": "public"
@@ -25,7 +30,7 @@
     "build": "bun build src/client/main.ts --outfile dist/bundle.js",
     "export": "bun run build && bun run src/export.ts",
     "prepare": "bun run build",
-    "prepublishOnly": "bun run build",
+    "prepublishOnly": "bun test && bunx tsc --noEmit && bun run build",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
