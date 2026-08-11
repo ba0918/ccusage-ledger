@@ -1,7 +1,10 @@
 {
   "name": "ccusage-ledger",
   "version": "0.1.0",
+  "description": "Agent CLI usage dashboard: visualize cost, tokens, and cache hit rates from ccusage data",
   "type": "module",
+  "license": "MIT",
+  "keywords": ["ccusage", "claude-code", "codex", "opencode", "dashboard", "usage"],
   "bin": {
     "ccusage-ledger": "src/cli.ts"
   },
@@ -31,13 +34,15 @@
     "build": "bun build src/client/main.ts --outfile dist/bundle.js",
     "export": "bun run build && bun run src/export.ts",
     "prepare": "bun run build",
-    "prepublishOnly": "bun test && bunx tsc --noEmit && bun run build",
+    "prepublishOnly": "bun test && bunx tsc --noEmit && bun run lint && bun run build",
     "test": "bun test",
+    "lint": "bunx biome lint src/",
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.7.2",
-    "@types/bun": "^1.1.14"
+    "@biomejs/biome": "^2.5.6",
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
   },
   "dependencies": {
     "ccusage": "20.0.19"

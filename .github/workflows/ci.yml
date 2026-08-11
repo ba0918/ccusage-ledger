@@ -22,6 +22,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bunx tsc --noEmit
+      - run: bun run lint
       - run: bun run build
       # npm audit は package-lock.json が無いため ENOLOCK で常に失敗する。
       # bun.lock を直接監査する bun audit を使う（bun 1.2.30+ で利用可能）

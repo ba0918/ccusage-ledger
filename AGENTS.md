@@ -48,3 +48,4 @@
 - フロントビルド: `bun run build`
 - テスト: `bun test`
 - 型チェック: `bunx tsc --noEmit`
+- リント: `bun run lint`（biome。`noNonNullAssertion` は `noUncheckedIndexedAccess` との併用慣用のため biome.jsonc で無効化している）

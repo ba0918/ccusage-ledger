@@ -6,6 +6,8 @@
     "moduleDetection": "force",
     "types": ["bun"],
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noUncheckedIndexedAccess": true,
     "noFallthroughCasesInSwitch": true,
     "exactOptionalPropertyTypes": false,
