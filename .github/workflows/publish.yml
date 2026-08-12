@@ -17,7 +17,24 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
+      # lockfile 内の依存に既知脆弱性があれば publish を止める（bun.lock は integrity 固定済み）
+      - run: bun audit
       # prepublishOnly がテスト・型チェック・lint・build を実行し、publish を publish 直前に走らせる
+      # npm pack --dry-run で配布物を検証する。files リストに i18n モジュールとバンドルが含まれること、
+      # 秘密ファイル（.env / *.key 等）が混入しないことを確認してから公開する
+      - run: |
+          output=$(npm pack --dry-run 2>&1)
+          echo "$output"
+          for expected in dist/bundle.js src/client/i18n.ts index.html; do
+            if ! echo "$output" | grep -q "$expected"; then
+              echo "ERROR: 配布物に $expected が含まれていません" >&2
+              exit 1
+            fi
+          done
+          if echo "$output" | grep -qE '\.env(\.|$)|\.pem$|\.key$|credentials|secret'; then
+            echo "ERROR: 配布物に秘密ファイルが混入しています" >&2
+            exit 1
+          fi
       # NODE_AUTH_TOKEN は npm publish 用の認証トークン（GitHub の secret に設定する）
       - run: npm publish --access public
         env:
