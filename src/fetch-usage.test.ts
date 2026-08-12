@@ -79,6 +79,26 @@ describe("waitForExit", () => {
     );
     expect(await waitForExit(proc)).toBe(2);
   });
+
+  test("終了要求を無視する子プロセスを猶予後に強制終了し、有限時間で失敗として完了する", async () => {
+    const proc = spawnProcess(
+      process.execPath,
+      ["-e", "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    await new Promise<void>((resolve) => proc.stdout!.once("data", () => resolve()));
+    const signals: Array<NodeJS.Signals | number | undefined> = [];
+    const originalKill = proc.kill.bind(proc);
+    proc.kill = ((signal?: NodeJS.Signals | number) => {
+      signals.push(signal);
+      return originalKill(signal);
+    }) as typeof proc.kill;
+
+    const started = Date.now();
+    expect(await waitForExit(proc, { timeoutMs: 20, terminationGraceMs: 20, forceKillWaitMs: 200 })).toBe(1);
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
 });
 
 describe("buildCcusageCommand", () => {
