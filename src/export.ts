@@ -31,9 +31,23 @@ export const EXPORT_WARNING_BANNER =
 
 // ブラウザは <meta> CSP の frame-ancestors を無視するため、フレーム内での表示を JS で防ぐ
 // （サーバー配信時は X-Frame-Options: DENY を別途付与すること。AGENTS.md 参照）。
-// nonce ベース CSP 下で実行させるため、nonce 属性を付与する
+// nonce ベース CSP 下で実行させるため、nonce 属性を付与する。
+//
+// fail-closed にするため「既定で非表示 → トップレベルだと確認できたときだけ表示」にする。
+// sandbox 付き iframe やクロスオリジンのトップナビゲーション制限下では
+// window.top.location への代入が例外になる / 黙って無視されるため、
+// 脱出に頼るだけだとフレーム内に個人データが表示されたままになる。
+// JS 無効時は script が動かず何も表示されなくなるため、<noscript> で表示に戻す
+// （この場合フレーム保護は効かないが、その旨は EXPORT_NOSCRIPT_FRAME_WARNING で警告する）
 export function exportFrameBuster(nonce: string): string {
-  return `<script nonce="${nonce}">if (window.top !== window.self) { window.top.location = window.location; }</script>`;
+  return (
+    `<style nonce="${nonce}">html{display:none}</style>` +
+    `<script nonce="${nonce}">` +
+    "if (window.top === window.self) { document.documentElement.style.display = \"block\"; }" +
+    " else { try { window.top.location = window.location; } catch (e) { /* 脱出できない場合は非表示のまま維持する */ } }" +
+    "</script>" +
+    `<noscript><style nonce="${nonce}">html{display:block}</style></noscript>`
+  );
 }
 
 // JS を無効化した環境では frame buster が動かない（<meta> CSP の frame-ancestors も無視される）ため、

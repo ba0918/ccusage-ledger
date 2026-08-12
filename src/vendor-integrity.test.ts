@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   CCUSAGE_WRAPPER_SHA256,
   computeWrapperHash,
+  toPosixRelPath,
   computeNativeHash,
   ccusageNativePackageDir,
   expectedNativeCcusageHash,
@@ -31,6 +32,16 @@ describe("vendored assets integrity", () => {
     // ラッパー（node_modules/ccusage）は cli.js + config-schema.json のみでプラットフォームに
     // 依存しないため、全プラットフォームで同一の固定値を検証できる（F4）
     expect(computeWrapperHash()).toBe(CCUSAGE_WRAPPER_SHA256);
+  });
+
+  test("ハッシュ対象の相対パスは区切り文字を / に正規化する（Windows で固定値と一致しなくなるのを防ぐ）", () => {
+    // Windows の readdirSync は入れ子を "\" 区切りで返す。相対パス自体をダイジェストに
+    // 含めるため、正規化しないと改ざんが無くても整合性チェックが常に失敗し、
+    // ダッシュボードが古いキャッシュか空表示に落ちる
+    expect(toPosixRelPath("src\\cli.js", "\\")).toBe("src/cli.js");
+    expect(toPosixRelPath("src/cli.js", "/")).toBe("src/cli.js");
+    // 既に POSIX 形式のパスは、どの区切り文字設定でも変わらない
+    expect(toPosixRelPath("config-schema.json", "\\")).toBe("config-schema.json");
   });
 
   test("ccusage のソースは cli.js 単体でなくパッケージ全体をハッシュ対象にする（内部モジュール改ざんの検出）", () => {

@@ -303,7 +303,21 @@ describe("buildExportedHtml", () => {
 
   test("エクスポート HTML にフレーム検出スクリプトを注入する（clickjacking 対策）", () => {
     const out = build();
-    expect(out).toContain("window.top !== window.self");
+    expect(out).toContain("window.top === window.self");
+  });
+
+  test("フレーム保護は fail-closed（既定で非表示、トップレベルのときだけ表示）", () => {
+    // sandbox 付き iframe やクロスオリジンのトップナビゲーション制限下では
+    // window.top.location への代入が例外・無視になるため、脱出だけに頼ると
+    // フレーム内に個人データが表示されたままになる
+    const out = build();
+    expect(out).toContain("html{display:none}");
+    // トップレベルだと確認できたときだけ表示に戻す
+    expect(out).toMatch(/window\.top === window\.self[\s\S]*documentElement\.style\.display/);
+    // 脱出できない場合に例外で処理が止まらず、非表示のまま維持されること
+    expect(out).toMatch(/try \{ window\.top\.location[\s\S]*catch/);
+    // JS 無効時は script が動かないため、noscript で表示に戻す（警告は別途出す）
+    expect(out).toMatch(/<noscript><style[^>]*>html\{display:block\}<\/style><\/noscript>/);
   });
 
   test("JS 無効環境向けに <noscript> フレーム保護警告を注入する（F14）", () => {

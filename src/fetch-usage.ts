@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { messageOf } from "./errors";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
@@ -148,16 +148,27 @@ export function ccusageNativePackageDir(packageDir: string = PACKAGE_DIR): strin
   return existsSync(root) ? root : null;
 }
 
-// ディレクトリ配下の全ファイルを「相対パス + ':' + 内容」の連結でハッシュする
+// ディレクトリ配下の全ファイルを「相対パス + ':' + 内容」の連結でハッシュする。
+// 相対パス自体をダイジェストに含めるため、区切り文字を "/" に正規化してから並べ替え・ハッシュする
+// （Windows の readdirSync は入れ子を "\" 区切りで返すため、正規化しないと同一内容でも
+//   固定値と一致せず、改ざんが無いのに整合性チェックが常に失敗する）
+export function toPosixRelPath(name: string, separator: string = sep): string {
+  return name.split(separator).join("/");
+}
+
 function hashPackageFiles(root: string): string {
   const files = (readdirSync(root, { recursive: true, encoding: "utf8" }) as string[])
     .filter((name) => statSync(join(root, name)).isFile())
-    .sort();
+    .map((name) => ({ name, key: toPosixRelPath(name) }))
+    .sort((a, b) => {
+      if (a.key < b.key) { return -1; }
+      return a.key > b.key ? 1 : 0;
+    });
   const hash = createHash("sha256");
-  for (const rel of files) {
-    hash.update(rel);
+  for (const file of files) {
+    hash.update(file.key);
     hash.update(":");
-    hash.update(readFileSync(join(root, rel)));
+    hash.update(readFileSync(join(root, file.name)));
   }
   return hash.digest("hex");
 }

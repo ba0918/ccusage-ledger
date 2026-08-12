@@ -225,7 +225,9 @@ export function createApp(options: {
   const app = new Hono();
 
   // ハンドラから例外が漏れた場合も共通セキュリティヘッダ付きの 500 を返す（CSP なしのエラーページを返さない）
-  app.onError((_c, error) => {
+  // Hono の ErrorHandler は (error, context) の順で呼ばれる。引数を取り違えると
+  // Context を messageOf に渡すことになり、500 の原因がログから判らなくなる
+  app.onError((error, _c) => {
     console.error(`ERROR: unhandled server error: ${messageOf(error)}`);
     return new Response("Internal Server Error", { status: 500, headers: withCommonHeaders({}) });
   });
