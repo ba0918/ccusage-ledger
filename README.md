@@ -10,7 +10,7 @@ It reads JSON emitted by [ccusage](https://github.com/ccusage/ccusage) and displ
 
 ## Requirements
 
-[Bun](https://bun.sh) is required. The `ccusage-ledger` bin starts via `#!/usr/bin/env bun`, so it does not run on a machine without Bun (npm cannot enforce Bun, so install it beforehand).
+[Bun](https://bun.sh) is required for development (build / test / typecheck). The `ccusage-ledger` bin starts via `#!/usr/bin/env node`, so the published package does not require Bun to start.
 
 ## Getting Started
 
@@ -52,7 +52,7 @@ By default the server binds only to `127.0.0.1`. With a non-loopback bind such a
 
 - On a TTY, a warning is shown and confirmation is requested at startup
 - On a non-TTY, startup is refused unless `CCUSAGE_LEDGER_ALLOW_LAN=1` is set
-- On a non-loopback bind, `/api/usage` returns 403 (the data body is not served)
+- For non-loopback connections, `/api/usage` returns 403 (the data body is not served); the decision is based on the connection's source IP, so an SSH tunnel reaching loopback still works
 
 To view from another device, use an **SSH tunnel**. The tunnel itself acts as access control, and the connection source becomes loopback, so `/api/usage` works as well. The SSH tunnel encrypts the network segment, but the connection between the tunnel endpoint and the dashboard on the server still uses plain HTTP end-to-end (the encryption boundary is the SSH connection, not the dashboard itself).
 
@@ -72,13 +72,13 @@ bun run export
 
 Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working directory.
 
-**Caution**: The exported file contains your ccusage usage data. Only export it when sharing with someone you trust. For external distribution, set `X-Frame-Options: DENY` in the server response headers (the exported HTML's CSP is injected via `<meta>`, which browsers ignore for `frame-ancestors`; iframe embedding is only prevented by the JS frame buster).
+**Caution**: The exported file contains your ccusage usage data. Only export it when sharing with someone you trust. For external distribution, set `X-Frame-Options: DENY` in the server response headers (the exported HTML's CSP is injected via `<meta>`, which browsers ignore for `frame-ancestors`; iframe embedding is only prevented by the JS frame buster). If the output lands inside a git repository other than ccusage-ledger, a warning is printed — the file contains personal data, do not commit or upload it.
 
 ## Data
 
 The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.19`) directly to fetch the full history and caches it at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
 
-The child process gets an empty temporary `HOME` and only the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. The installed ccusage package (wrapper + platform native binary) is sha256-verified against a pinned value at every startup.
+The child process gets an empty temporary `HOME` and only a small allowlist of non-secret env vars (`PATH`, `TERM`, `TMPDIR`, etc.) plus the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` or API keys — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. At startup the installed ccusage wrapper is sha256-verified against a pinned value on every platform, and the platform native binary against a per-platform table (platforms without a recorded hash are warned, not verified).
 
 > This guards against accidental access and post-install tampering. The hash constant ships inside the artifact it verifies, so a supply-chain compromise of the pinned release itself (or a same-user attacker) is out of scope for this control.
 

@@ -51,7 +51,8 @@
 - `/api/usage` は空データ（キャッシュ無し）と実データでレスポンスボディが異なるため、サーバーに到達できる相手は「利用者がエージェント CLI を使っているか」を判定できる（存在オラクル）。データ本体は設計上配信するため、この 1 ビットだけを隠すことはしない
 - HTML エクスポート: `bun run export` → 実行時カレントの `dist/ccusage-ledger.html` に単一 HTML を出力。出力先が ccusage-ledger 以外の git リポジトリ内の場合は、個人データ入り HTML の誤コミットを防ぐため警告を出す
 - エクスポート HTML の CSP は `<meta>` タグで注入し、script は生成時にランダム nonce を付与して `script-src 'unsafe-inline'` を避ける（エスケープ漏れがあっても nonce を持たない注入タグは CSP でブロックされる。style 属性のみ `style-src-attr 'unsafe-inline'` を許す）。ブラウザは `<meta>` の `frame-ancestors` を無視するため、フレーム検出 JS（frame buster）を注入して iframe 埋め込み時の表示を防ぎ、JS 無効環境には `<noscript>` 警告を注入する。ただし、JS を無効化した環境や CSP 無効化時は防げないため、外部配信する場合はサーバーのレスポンスヘッダで `X-Frame-Options: DENY` を付与すること
-- 公開: `npm publish`（publish 直前に `bun run build` が実行される。`files` の `!dist/ccusage-ledger.html` によりエクスポート成果物をパッケージから除外し、publish.yml の pack 検証でも混入を確認する。データ・シークレットはパッケージに含まれない）
+- 公開: `npm publish`（publish 直前に `bun run build` が実行される。`files` は明示 allowlist（bun.lock / index.html / dist/bundle.js / dist/ccusage-ledger.js / public/app.css / public/vendor/chart.umd.min.js）のため、エクスポート成果物や dist/ に置いた未知のファイルはリスト外としてそもそもパックされず、publish.yml の pack 検証でも混入を確認する。データ・シークレットはパッケージに含まれない）
+- CI の GitHub Actions 参照は完全 SHA ピン + バージョンコメント必須で、`workflow-pins.test.ts` が機械的に検証する。Actions の更新は dependabot が提案するが auto-merge は無効（手動で再ピン確認する）
 
 ## 主要コマンド
 
