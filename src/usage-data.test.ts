@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isUsageData } from "./usage-data";
+import { isUsageData, projectUsageData, MAX_SECTION_ENTRIES, MAX_MODELS_USED, MAX_MODEL_BREAKDOWNS, MAX_AGENTS, MAX_STRING_LENGTH } from "./usage-data";
 
 const VALID_ENTRY = {
   period: "2026-08-11",
@@ -61,5 +61,142 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, period: "2026-01" }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [], monthly: [{ ...VALID_ENTRY, period: "2026-01-10" }] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, period: "2026-01-10" }], monthly: [{ ...VALID_ENTRY, period: "2026-01" }] })).toBe(true);
+  });
+
+  test("セクションのエントリ数が上限を超えるデータは false（巨大キャッシュによる DoS を拒否）", () => {
+    const many = Array.from({ length: MAX_SECTION_ENTRIES + 1 }, (_, i) => ({
+      ...VALID_ENTRY,
+      period: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
+    }));
+    expect(isUsageData({ daily: many, monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: many.slice(0, MAX_SECTION_ENTRIES), monthly: [] })).toBe(true);
+  });
+
+  test("modelName / agent / device の文字列長が上限を超えるデータは false", () => {
+    const long = "x".repeat(MAX_STRING_LENGTH + 1);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: [long] }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: long, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }] }], monthly: [] })).toBe(false);
+    const withAgent = (agent: unknown) => ({ daily: [{ ...VALID_ENTRY, agents: [{ agent, totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }] }], monthly: [] });
+    expect(isUsageData(withAgent(long))).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, device: long }], monthly: [] })).toBe(false);
+  });
+
+  test("modelBreakdowns / modelsUsed / agents の件数が上限を超えるデータは false", () => {
+    const manyModels = Array.from({ length: MAX_MODELS_USED + 1 }, (_, i) => `model-${i}`);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: manyModels }], monthly: [] })).toBe(false);
+
+    const manyBreakdowns = Array.from({ length: MAX_MODEL_BREAKDOWNS + 1 }, (_, i) => ({
+      modelName: `model-${i}`,
+      cost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    }));
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: manyBreakdowns }], monthly: [] })).toBe(false);
+
+    const manyAgents = Array.from({ length: MAX_AGENTS + 1 }, (_, i) => ({
+      agent: `agent-${i}`,
+      totalCost: 1,
+      totalTokens: 1,
+      inputTokens: 1,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      modelsUsed: [],
+      modelBreakdowns: [],
+    }));
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, agents: manyAgents }], monthly: [] })).toBe(false);
+  });
+
+  test("metadata.agents も agents と同じ上限で検証する（キャップ迂回の DoS を拒否）", () => {
+    const many = Array.from({ length: MAX_AGENTS + 1 }, () => "agent");
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: many } }], monthly: [] })).toBe(false);
+    const long = "x".repeat(MAX_STRING_LENGTH + 1);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: [long] } }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: ["ok"] } }], monthly: [] })).toBe(true);
+  });
+
+  test("NaN / Infinity の数値は false（集計が Infinity/NaN に化けて描画が壊れるのを防ぐ）", () => {
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: Number.NaN }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalTokens: Number.POSITIVE_INFINITY }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: "m", cost: Number.NEGATIVE_INFINITY, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }] }], monthly: [] })).toBe(false);
+  });
+
+  test("絶対値が上限（1e12）を超える数値は false（加算で Infinity に溢れて全チャートが壊れるのを防ぐ）", () => {
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: 1e308 }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalTokens: Number.MAX_VALUE }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: "m", cost: 1e308, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }] }], monthly: [] })).toBe(false);
+    // 上限ちょうど / 負値（将来の返金等）は通す
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: 1e12 }], monthly: [] })).toBe(true);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: -5 }], monthly: [] })).toBe(true);
+  });
+
+  test("全期間を通した distinct モデル名が上限を超えるデータは false（クライアントの選択肢生成 OOM を防ぐ）", () => {
+    // 各エントリは個別上限内でも、エントリ横断で無数の distinct 名を作れる。allModels() が
+    // 全名を Set 化して fillSelect が <option> を 1 名ずつ生やすため、横断 cap で守る
+    const entries = Array.from({ length: 5 }, (_, i) => ({
+      ...VALID_ENTRY,
+      period: `2026-08-${String(i + 1).padStart(2, "0")}`,
+      modelBreakdowns: Array.from({ length: 50 }, (_, j) => ({
+        modelName: `model-${i}-${j}`,
+        cost: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      })),
+    }));
+    // 50 distinct は通す
+    expect(isUsageData({ daily: entries, monthly: [] })).toBe(true);
+    // 上限（MAX_DISTINCT_NAMES = 1000）を超える distinct 名は false
+    const overflow = Array.from({ length: 21 }, (_, i) => ({
+      ...VALID_ENTRY,
+      period: `2026-08-${String((i % 28) + 1).padStart(2, "0")}`,
+      modelBreakdowns: Array.from({ length: 50 }, (_, j) => ({
+        modelName: `model-${i}-${j}`,
+        cost: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      })),
+    }));
+    expect(isUsageData({ daily: overflow, monthly: [] })).toBe(false);
+  });
+
+  test("全期間を通した distinct エージェント名が上限を超えるデータは false", () => {
+    const withAgents = (count: number) => ({
+      daily: Array.from({ length: count }, (_, i) => ({
+        ...VALID_ENTRY,
+        period: `2026-08-${String((i % 28) + 1).padStart(2, "0")}`,
+        agents: [{
+          agent: `agent-${i}`,
+          totalCost: 1,
+          totalTokens: 1,
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          modelsUsed: [],
+          modelBreakdowns: [],
+        }],
+      })),
+      monthly: [],
+    });
+    expect(isUsageData(withAgents(10))).toBe(true);
+    // 上限を超える distinct エージェント名は false
+    const overflow = withAgents(1001);
+    expect(isUsageData(overflow)).toBe(false);
+  });
+});
+
+describe("projectUsageData", () => {
+  test("device はクライアントが未消費のため投影から落とす（totals と同様の白リスト原則）", () => {
+    const entry = { ...VALID_ENTRY, device: "my-hostname", metadata: { agents: ["claude"] } };
+    const projected = projectUsageData({ daily: [entry], monthly: [] });
+    expect(projected.daily![0]!.device).toBeUndefined();
+    // 検証は維持しつつ、投影で公開する既知フィールド（metadata.agents）は残す
+    expect(projected.daily![0]!.metadata).toEqual({ agents: ["claude"] });
   });
 });

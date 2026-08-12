@@ -22,17 +22,24 @@ jobs:
       # lockfile 内の依存に既知脆弱性があれば publish を止める（bun.lock は integrity 固定済み）
       - run: bun audit
       # prepublishOnly がテスト・型チェック・lint・build を実行し、publish を publish 直前に走らせる
-      # npm pack --dry-run で配布物を検証する。files リストに i18n モジュールとバンドルが含まれること、
-      # 秘密ファイル（.env / *.key 等）が混入しないことを確認してから公開する
+      # npm pack --dry-run で配布物を検証する。files リストに必要な成果物が含まれること、
+      # 秘密ファイル（.env / *.key 等）や個人データ埋め込みのエクスポート HTML が混入しないことを
+      # 確認してから公開する（files は明示ファイルリストで、エクスポート成果物や dist/ に
+      # 置いた未知のファイルはそもそもパックされない。ここでは除外が効いていること自体を
+      # 検証する defense-in-depth）
       - run: |
           output=$(npm pack --dry-run 2>&1)
           echo "$output"
-          for expected in dist/bundle.js src/client/i18n.ts index.html; do
+          for expected in dist/bundle.js dist/ccusage-ledger.js public/app.css index.html; do
             if ! echo "$output" | grep -q "$expected"; then
               echo "ERROR: 配布物に $expected が含まれていません" >&2
               exit 1
             fi
           done
+          if echo "$output" | grep -q 'ccusage-ledger\.html'; then
+            echo "ERROR: 配布物に個人データ埋め込みのエクスポート HTML が含まれています（npm run export の成果物を消してください）" >&2
+            exit 1
+          fi
           if echo "$output" | grep -qE '\.env(\.|$)|\.pem$|\.key$|credentials|secret'; then
             echo "ERROR: 配布物に秘密ファイルが混入しています" >&2
             exit 1

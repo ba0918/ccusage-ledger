@@ -8,3 +8,9 @@
 
 # Dependencies
 /node_modules/
+
+# Local environment files
+# （現在は未使用だが、うっかり .env 系の秘密をコミットしないための予防パターン）
+.env
+.env.*
+!.env.example
