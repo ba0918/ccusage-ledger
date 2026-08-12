@@ -250,9 +250,6 @@ export function createApp(options: {
     const isApiPath = pathname.startsWith("/api/");
 
     const ip = resolveRequestIp(c);
-    if (!limitRequest(ip, isApiPath)) {
-      return tooManyRequests();
-    }
 
     // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
     if (!hostAllowed(url.hostname, hostname)) {
@@ -264,6 +261,14 @@ export function createApp(options: {
     // （bind がループバックでも防御は維持され、SSH トンネル経由のループバック接続は通る）
     if (isApiPath && !isLoopbackHost(ip)) {
       return apiForbidden();
+    }
+
+    // rate limit は「安価な検証で拒否されたリクエストの後」に適用する。Host 検証（400）や
+    // /api ゲート（403）が先に走るため、悪意ある Web ページの DNS-rebinding ループが
+    // 被害者自身の rate limit 予算を消費して正当なダッシュボードを 429 にできる
+    // ドライブバイ自己 DoS（F7）を起こせない。拒否済みリクエストは予算を消費しない
+    if (!limitRequest(ip, isApiPath)) {
+      return tooManyRequests();
     }
 
     c.set("pathname", pathname);
@@ -521,12 +526,27 @@ function parsePort(value: string | undefined): number {
   return port;
 }
 
+// HOST は IP リテラルまたはホスト名のみ受け付ける。bind に渡す値がそのまま browserUrl →
+// openBrowser（xdg-open / open への URL 引数）に流れるため、シェルメタ文字や URL を
+// 壊す文字を事前に弾く（parsePort と対称の設定ミス検出。bind 失敗の「判りにくいエラー」を防ぎ、
+// 意図しない URL がブラウザ起動に渡るのを防ぐ）。[A-Za-z0-9.:-] 以外（IPv6 の括弧、シェル
+// メタ文字、空白等）は拒否する
+export function parseHostname(value: string | undefined): string {
+  const raw = value ?? "127.0.0.1";
+  if (raw === "" || !/^[A-Za-z0-9.:-]+$/.test(raw)) {
+    throw new Error(`Invalid HOST=${raw}: expected an IP literal or hostname (allowed: [A-Za-z0-9.:-])`);
+  }
+  return raw;
+}
+
 export async function main(): Promise<void> {
   const rootDir = PACKAGE_DIR;
   const cachePath = defaultCachePath(process.env);
 
   const port = parsePort(process.env.PORT);
-  const hostname = process.env.HOST ?? "127.0.0.1";
+  // HOST は IP リテラル/ホスト名以外を起動時に拒否する（browserUrl → openBrowser に流れるため）。
+  // bind 失敗の「判りにくいエラー」より先に、設定ミスを明確なメッセージで報告する
+  const hostname = parseHostname(process.env.HOST);
 
   const lanPolicy = lanStartPolicy(hostname, Boolean(process.stdin.isTTY), isLanAllowed(process.env));
   if (lanPolicy === "refuse") {

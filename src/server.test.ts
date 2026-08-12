@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, type AppWithUsage } from "./server";
+import { createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, parseHostname, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -391,6 +391,39 @@ describe("server セキュリティ", () => {
     const res = await app(new Request("http://127.0.0.1/api/usage"));
     expect(res.status).toBe(403);
   });
+
+  test("Host 拒否（DNS rebinding）されるリクエストは rate limit の予算を消費しない（ドライブバイ自己 DoS 防止）", async () => {
+    // rate limit を Host 検証より先に実行すると、悪意ある Web ページのバックグラウンドループが
+    // 被害者自身のループバック予算を食い尽くして 429 にできる。Host 拒否は予算を消費せずに
+    // 400 を返すべき（F7）
+    let apiCalls = 0;
+    const app = createApp({
+      rootDir,
+      cachePath,
+      rateLimit: () => { apiCalls++; return true; },
+    });
+    for (let i = 0; i < 20; i++) {
+      const res = await app(new Request("http://evil.example.com/api/usage"), appEnv("127.0.0.1"));
+      expect(res.status).toBe(400);
+    }
+    // Host 拒否された 20 リクエストが rateLimit に一切触れないことを検証する
+    expect(apiCalls).toBe(0);
+  });
+
+  test("/api ループバックゲートで 403 になる非ループバック接続は rate limit の予算を消費しない", async () => {
+    let apiCalls = 0;
+    const app = createApp({
+      rootDir,
+      cachePath,
+      hostname: "0.0.0.0",
+      rateLimit: () => { apiCalls++; return true; },
+    });
+    for (let i = 0; i < 20; i++) {
+      const res = await call(app, "/api/usage", "192.168.1.10");
+      expect(res.status).toBe(403);
+    }
+    expect(apiCalls).toBe(0);
+  });
 });
 
 describe("server LAN 案内ページ", () => {
@@ -580,5 +613,27 @@ describe("server LAN 公開オプトイン環境変数", () => {
     expect(isLanAllowed({ CCUSAGE_LEDGER_ALLOW_LAN: "0" })).toBe(false);
     expect(isLanAllowed({ CCUSAGE_LEDGER_ALLOW_LAN: "1" })).toBe(true);
     expect(isLanAllowed({ CCUSAGE_LEDGER_ALLOW_LAN: "true" })).toBe(true);
+  });
+});
+
+describe("server parseHostname", () => {
+  test("有効な HOST（IP リテラル / localhost / ホスト名）はそのまま返す", () => {
+    expect(parseHostname(undefined)).toBe("127.0.0.1");
+    expect(parseHostname("0.0.0.0")).toBe("0.0.0.0");
+    expect(parseHostname("127.0.0.1")).toBe("127.0.0.1");
+    expect(parseHostname("::")).toBe("::");
+    expect(parseHostname("::1")).toBe("::1");
+    expect(parseHostname("localhost")).toBe("localhost");
+    expect(parseHostname("myhost.local")).toBe("myhost.local");
+  });
+
+  test("シェルメタ文字や URL を壊す文字を含む HOST は拒否する（openBrowser への不正 URL 流入を防ぐ）", () => {
+    for (const bad of ["127.0.0.1$(touch /tmp/pwn)", "127.0.0.1;id", "host|nc", "a b", "a/b", "a%20b", "<script>", '"', "a$b"]) {
+      expect(() => parseHostname(bad)).toThrow(/Invalid HOST/);
+    }
+  });
+
+  test("空文字の HOST は拒否する（未設定はデフォルトで解決される）", () => {
+    expect(() => parseHostname("")).toThrow(/Invalid HOST/);
   });
 });
