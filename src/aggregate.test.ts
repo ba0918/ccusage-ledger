@@ -12,6 +12,7 @@ import {
   allModels,
   allAgents,
   buildModelCostSeries,
+  buildModelTokenSeries,
   buildModelMixSeries,
   buildUnitPriceSeries,
   buildCacheHitRateSeries,
@@ -24,6 +25,7 @@ import {
   buildModelCostRanking,
   modelColor,
   otherBreakdown,
+  modelTokenBreakdown,
   buildModelUnitPrices,
   agentDonutData,
   maxFinite,
@@ -559,6 +561,30 @@ describe("buildDashboardSeries", () => {
     expect(series.cacheHitRate.datasets[0]!.label).toBe("Hit");
   });
 
+  test("Cost と Tokens の積み上げ系列で同じコスト上位モデルと「その他」の区分を使う", () => {
+    const entries: PeriodEntry[] = [
+      {
+        ...entryWithModels("2026-01", [["m1", 6], ["m2", 5], ["m3", 4], ["m4", 3], ["m5", 2], ["m6", 1]]),
+        modelBreakdowns: [
+          { modelName: "m1", cost: 6, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "m2", cost: 5, inputTokens: 2, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "m3", cost: 4, inputTokens: 3, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "m4", cost: 3, inputTokens: 4, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "m5", cost: 2, inputTokens: 5, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "m6", cost: 1, inputTokens: 1000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        ],
+      },
+    ];
+
+    const series = buildDashboardSeriesFromEntries(entries);
+
+    expect(series.costStacked.datasets.map((dataset) => dataset.label)).toEqual(["m1", "m2", "m3", "m4", "m5", "Others"]);
+    expect(series.tokensStacked.datasets.map((dataset) => dataset.label)).toEqual(
+      series.costStacked.datasets.map((dataset) => dataset.label),
+    );
+    expect(series.tokensStacked.datasets.at(-1)?.data).toEqual([1000]);
+  });
+
   test("モデルフィルタで全系列がそのモデルのデータだけになる", () => {
     const series = buildDashboardSeries(DATA, { section: "daily", model: "model-a", agent: null, range: { kind: "all" } });
 
@@ -642,6 +668,83 @@ describe("buildModelCostSeries", () => {
     const series = buildModelCostSeries(entries);
 
     expect(series.datasets.map((d) => d.label)).toEqual(["m3", "m2", "m1"]);
+  });
+});
+
+describe("buildModelTokenSeries", () => {
+  test("モデル別に Input・Output・Cache Read・Cache Creation の合計を期間系列として返す", () => {
+    const entries: PeriodEntry[] = [
+      {
+        period: "2026-01",
+        totalCost: 1,
+        totalTokens: 999,
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        cacheCreationTokens: 40,
+        modelsUsed: ["model-a"],
+        modelBreakdowns: [
+          { modelName: "model-a", cost: 1, inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 },
+        ],
+      },
+    ];
+
+    const series = buildModelTokenSeries(entries);
+
+    expect(series.labels).toEqual(["2026-01"]);
+    expect(series.datasets).toEqual([{ label: "model-a", data: [100] }]);
+  });
+
+  test("コスト上位モデルの指定を共有し、残りを同じ「その他」区分へ集約する", () => {
+    const entries: PeriodEntry[] = [
+      {
+        ...entryWithModels("2026-01", [["expensive", 10], ["token-heavy", 1]]),
+        inputTokens: 1001,
+        modelBreakdowns: [
+          { modelName: "expensive", cost: 10, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          { modelName: "token-heavy", cost: 1, inputTokens: 1000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+        ],
+      },
+    ];
+
+    const series = buildModelTokenSeries(entries, 1, "Others", ["expensive"], 2);
+
+    expect(series.datasets).toEqual([
+      { label: "expensive", data: [1] },
+      { label: "Others", data: [1000] },
+    ]);
+  });
+});
+
+describe("modelTokenBreakdown", () => {
+  test("「その他」に含まれる各モデルの Total と4種類の内訳を返す", () => {
+    const entry: PeriodEntry = {
+      ...entryWithModels("2026-01", [["top", 10], ["other-a", 2], ["other-b", 1]]),
+      modelBreakdowns: [
+        { modelName: "top", cost: 10, inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 4 },
+        { modelName: "other-a", cost: 2, inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 },
+        { modelName: "other-b", cost: 1, inputTokens: 5, outputTokens: 4, cacheReadTokens: 3, cacheCreationTokens: 2 },
+      ],
+    };
+
+    expect(modelTokenBreakdown(entry, null, new Set(["top"]))).toEqual([
+      {
+        modelName: "other-a",
+        totalTokens: 100,
+        inputTokens: 10,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        cacheCreationTokens: 40,
+      },
+      {
+        modelName: "other-b",
+        totalTokens: 14,
+        inputTokens: 5,
+        outputTokens: 4,
+        cacheReadTokens: 3,
+        cacheCreationTokens: 2,
+      },
+    ]);
   });
 });
 

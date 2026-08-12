@@ -417,6 +417,33 @@ export interface OtherBreakdownItem {
   ratio: number;
 }
 
+export interface ModelTokenBreakdownItem {
+  modelName: string;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export function modelTokenBreakdown(
+  entry: PeriodEntry,
+  modelName: string | null,
+  top: ReadonlySet<string>,
+): ModelTokenBreakdownItem[] {
+  return entry.modelBreakdowns
+    .filter((breakdown) => modelName === null ? !top.has(breakdown.modelName) : breakdown.modelName === modelName)
+    .map((breakdown) => ({
+      modelName: breakdown.modelName,
+      totalTokens: totalTokensOf(breakdown),
+      inputTokens: breakdown.inputTokens,
+      outputTokens: breakdown.outputTokens,
+      cacheReadTokens: breakdown.cacheReadTokens,
+      cacheCreationTokens: breakdown.cacheCreationTokens,
+    }))
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+}
+
 export function otherBreakdown(entry: PeriodEntry, top: ReadonlySet<string>): OtherBreakdownItem[] {
   return entry.modelBreakdowns
     .filter((b) => !top.has(b.modelName))
@@ -574,6 +601,7 @@ export function buildAgentShare(entries: PeriodEntry[], efficiency: AgentEfficie
 
 export interface DashboardSeries {
   costStacked: ChartSeries;
+  tokensStacked: ChartSeries;
   modelMix: ChartSeries;
   unitPrice: ChartSeries;
   unitPrices: ModelUnitPrice[];
@@ -606,6 +634,7 @@ export function buildDashboardSeriesFromEntries(entries: PeriodEntry[], labels: 
   // distinctModelCount の全 breakdown 再走査をしない（render ごとに 2 回の走査が消える）
   return {
     costStacked: buildModelCostSeries(entries, TOP_N, labels.other, top, byModel.size),
+    tokensStacked: buildModelTokenSeries(entries, TOP_N, labels.other, top, byModel.size),
     modelMix: buildModelMixSeries(entries, TOP_N, labels.other, top, byModel.size),
     unitPrice: unitPriceSeries(unitPrices, labels.unitPrice),
     unitPrices,
@@ -668,6 +697,22 @@ export function buildModelCostSeries(
   }, top, modelCount);
 }
 
+export function buildModelTokenSeries(
+  entries: PeriodEntry[],
+  topN: number = TOP_N,
+  otherLabel: string = OTHER_LABEL,
+  top: string[] = topModelsByCost(entries, topN),
+  modelCount: number = distinctModelCount(entries),
+): ChartSeries {
+  return buildTopModelSeries(entries, otherLabel, (index, _entry, modelName, topSet) => {
+    if (modelName === null) {
+      return sumNonTopTokens(index, topSet);
+    }
+    const breakdown = index.get(modelName);
+    return breakdown ? totalTokensOf(breakdown) : 0;
+  }, top, modelCount);
+}
+
 export function buildModelMixSeries(
   entries: PeriodEntry[],
   topN: number = TOP_N,
@@ -690,6 +735,14 @@ function sumNonTopCost(index: EntryModelIndex, topSet: ReadonlySet<string>): num
   let sum = 0;
   for (const breakdown of index.values()) {
     if (!topSet.has(breakdown.modelName)) { sum += breakdown.cost; }
+  }
+  return sum;
+}
+
+function sumNonTopTokens(index: EntryModelIndex, topSet: ReadonlySet<string>): number {
+  let sum = 0;
+  for (const breakdown of index.values()) {
+    if (!topSet.has(breakdown.modelName)) { sum += totalTokensOf(breakdown); }
   }
   return sum;
 }
