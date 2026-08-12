@@ -612,6 +612,17 @@ describe("main.ts の言語切替", () => {
     expect(dom.getElementById("chart-cost-stacked")!.getAttribute("aria-label")).toBe("Tokens stacked (by model)");
   });
 
+  test("データ 0 状態で Tokens 選択後に言語切替しても見出しと canvas の読み上げラベルを翻訳する", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, EMPTY_DATA, false, "empty-stacked-language");
+
+    dom.querySelectorAll(".stacked-toggle button")[1]!.dispatch("click");
+    dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
+
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("トークン積み上げ（モデル別）");
+    expect(dom.getElementById("chart-cost-stacked")!.getAttribute("aria-label")).toBe("トークン積み上げ（モデル別）");
+  });
+
   test("データ 0 状態で言語切替すると KPI サブとドーナツ中央ラベルも言語に追従する", async () => {
     const dom = createFakeDom();
     await loadMain(dom, EMPTY_DATA, false, "empty-labels");

@@ -262,6 +262,7 @@ function bindLangToggle(): void {
       applyStaticTranslations(document);
       syncLangToggle();
       if (!hasData) {
+        syncStackedTitle();
         // データ 0 状態では render() を走らせず「データがありません」の簡潔表示を維持する。
         // ただし KPI サブ・ドーナツ中央ラベルは data-i18n 対象外（補間を含む）のため、
         // 言語切替時にここで直接更新して英語残りを防ぐ
