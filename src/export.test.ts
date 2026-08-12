@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UsageData } from "./types";
-import { buildExportedHtml, exportOutputPath, writeExportedHtml } from "./export";
+import { buildExportedHtml, exportOutputPath, writeExportedHtml, isForeignGitWorktree } from "./export";
 
 const HTML = [
   "<!doctype html><html><head><title>ccusage</title>",
@@ -38,7 +38,7 @@ function build(): string {
 }
 
 function embeddedScriptContent(out: string): string {
-  const match = out.match(/<script id="embedded-data">(.*?)<\/script>/s);
+  const match = out.match(/<script id="embedded-data"[^>]*>(.*?)<\/script>/s);
   expect(match).not.toBeNull();
   return match![1]!;
 }
@@ -52,6 +52,43 @@ function extractEmbeddedJson(out: string): string {
 describe("exportOutputPath", () => {
   test("出力先は実行時カレントの dist/ccusage-ledger.html", () => {
     expect(exportOutputPath("/tmp/work")).toBe(join("/tmp/work", "dist", "ccusage-ledger.html"));
+  });
+});
+
+describe("isForeignGitWorktree", () => {
+  test("git リポジトリの外なら false（警告なし）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      // 出力先とパッケージルートが同じ（git 外 or 同一ルートに属する）場合は false
+      expect(isForeignGitWorktree(dir, dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("対象パッケージ自身の git リポジトリ内なら false（本来の利用）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      mkdirSync(join(dir, ".git"));
+      // 出力先（dir/dist）とパッケージルート（dir）が同じ git ルート
+      expect(isForeignGitWorktree(dir, dir)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("他プロジェクトの git リポジトリ内への書き込みは true（F8: 誤共有の防止）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const foreignRepo = join(dir, "other-project");
+      const pkgRoot = join(dir, "ccusage-ledger");
+      mkdirSync(join(foreignRepo, ".git"), { recursive: true });
+      mkdirSync(join(pkgRoot, ".git"), { recursive: true });
+      // 出力先は foreignRepo 内、パッケージルートは ccusage-ledger。git ルートが異なるため警告対象
+      expect(isForeignGitWorktree(foreignRepo, pkgRoot)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -81,19 +118,22 @@ describe("writeExportedHtml", () => {
 describe("buildExportedHtml", () => {
   test("Chart.js の script タグをインライン内容に置換する", () => {
     const out = build();
-    expect(out).toContain("<script>var CHART = 1;</script>");
+    expect(out).toContain("<script nonce=");
+    expect(out).toContain(">var CHART = 1;</script>");
     expect(out).not.toContain('<script src="/public/vendor/chart.umd.min.js"></script>');
   });
 
   test("bundle の script タグをインライン内容に置換する", () => {
     const out = build();
-    expect(out).toContain("<script>var BUNDLE = 2;</script>");
+    expect(out).toContain("<script nonce=");
+    expect(out).toContain(">var BUNDLE = 2;</script>");
     expect(out).not.toContain('<script src="/dist/bundle.js"></script>');
   });
 
   test("app.css の link タグをインラインの <style> に置換する", () => {
     const out = build();
-    expect(out).toContain("<style>body { color: #000; }</style>");
+    expect(out).toContain("<style nonce=");
+    expect(out).toContain(">body { color: #000; }</style>");
     expect(out).not.toContain('<link rel="stylesheet" href="/public/app.css" />');
   });
 
@@ -201,8 +241,58 @@ describe("buildExportedHtml", () => {
     const out = build();
     expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
     expect(out).toContain("connect-src 'none'");
-    expect(out).toContain("script-src 'unsafe-inline'");
     expect(out).toContain("frame-ancestors 'none'");
+  });
+
+  test("CSP の script-src は nonce ベースで、script-src に unsafe-inline を含めない（F3: エスケープ漏れ時のバックストップ）", () => {
+    // 単一ファイル HTML はインライン script を避けられないが、nonce 属性付きタグのみを許可し、
+    // script-src から 'unsafe-inline' を除去する。これにより、将来のエスケープ回帰で注入された
+    // <script> やインラインイベントハンドラ（onerror 等）は nonce を持たないためブロックされる
+    const out = build();
+    const csp = out.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)![1]!;
+    expect(csp).toMatch(/script-src 'nonce-[A-Za-z0-9+/=]+'/);
+    // script-src ディレクティブ（style-src-attr ではない）に unsafe-inline が無いことを検証する
+    const scriptSrc = csp.match(/script-src [^;]+/)![0]!;
+    expect(scriptSrc).not.toContain("'unsafe-inline'");
+  });
+
+  test("インライン script すべてに CSP nonce 属性を付与する（埋め込みデータ / Chart.js / bundle / frame buster）", () => {
+    const out = build();
+    const csp = out.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)![1]!;
+    const nonce = csp.match(/script-src 'nonce-([A-Za-z0-9+/=]+)'/)![1]!;
+    // 全ての <script ...> タグ（非 src 属性）に nonce 属性が付く
+    const scripts = [...out.matchAll(/<script(?![^>]*\bsrc=)[^>]*>/g)].map((m) => m[0]);
+    expect(scripts.length).toBeGreaterThanOrEqual(4);
+    for (const tag of scripts) {
+      expect(tag).toContain(`nonce="${nonce}"`);
+    }
+    // src 属性を持つ script タグ（サーバー配信用タグ）は export 内に残らない
+    expect(out).not.toContain('<script src=');
+  });
+
+  test("style 要素（インライン CSS）にも nonce を付与し、style-src-attr のみ unsafe-inline を許す", () => {
+    const out = build();
+    const csp = out.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)![1]!;
+    // bar 幅（style="width:N%"）や警告バナーのインライン style 属性のため style-src-attr のみ許可
+    expect(csp).toContain("style-src-attr 'unsafe-inline'");
+    expect(csp).toMatch(/style-src 'nonce-[A-Za-z0-9+/=]+'/);
+    // <style> 要素にも nonce が付与される
+    expect(out).toMatch(/<style nonce="/);
+  });
+
+  test("データに </script> を含む文字列があっても script を破壊しない", () => {
+    const data: UsageData = {
+      ...DATA,
+      daily: [
+        {
+          ...DATA.daily![0]!,
+          modelsUsed: ['claude-3</script><script>alert("x")'],
+        },
+      ],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
+    expect(embeddedScriptContent(out)).not.toContain("</script>");
+    expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
   });
 
   test("エクスポート HTML にデータ取り扱いの警告バナーを注入する（英語デフォルト + data-i18n キー）", () => {
@@ -214,6 +304,15 @@ describe("buildExportedHtml", () => {
   test("エクスポート HTML にフレーム検出スクリプトを注入する（clickjacking 対策）", () => {
     const out = build();
     expect(out).toContain("window.top !== window.self");
+  });
+
+  test("JS 無効環境向けに <noscript> フレーム保護警告を注入する（F14）", () => {
+    // frame buster は JS 依存のため、JS を無効化した環境では iframe 埋め込みを防げない。
+    // その旨をユーザーに明示する noscript ブロックを注入する
+    const out = build();
+    expect(out).toContain("<noscript");
+    expect(out).toMatch(/<noscript[^>]*>[\s\S]*<\/noscript>/);
+    expect(out).toMatch(/frame|iframe|embed/i);
   });
 
   test("</head> が無い HTML では例外を投げる（CSP 注入が静かに失われない）", () => {

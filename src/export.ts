@@ -1,4 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { messageOf } from "./errors";
 import { fetchUsage } from "./fetch-usage";
@@ -11,19 +13,60 @@ export const BUNDLE_TAG = '<script src="/dist/bundle.js"></script>';
 export const EMBEDDED_TAG = '<script id="embedded-data"></script>';
 export const APP_CSS_TAG = '<link rel="stylesheet" href="/public/app.css" />';
 
-export const EXPORT_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+// エクスポート HTML の CSP は nonce ベースにする（F3）。単一ファイル HTML はインライン script を
+// 避けられないが、script-src に 'unsafe-inline' を使うと、エスケープ回帰で注入された <script> や
+// インラインイベントハンドラ（onerror 等）が実行されてしまう。生成したランダム nonce を
+// script-src と全インライン script/style タグに付与し、'unsafe-inline' を除去することで、
+// nonce を持たない注入タグは CSP でブロックされる（エスケープが唯一の防衛線にならない）
+export function exportCsp(nonce: string): string {
+  return `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; style-src-attr 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+}
+
+export function generateNonce(): string {
+  return randomBytes(16).toString("base64");
+}
 
 export const EXPORT_WARNING_BANNER =
   '<div style="position:sticky;top:0;z-index:30;background:#3a1d1d;color:#ffb4b4;padding:8px 16px;font-size:12px;text-align:center" data-i18n="exportWarning">This file contains your ccusage usage data. Be careful when sharing or handling it.</div>';
 
 // ブラウザは <meta> CSP の frame-ancestors を無視するため、フレーム内での表示を JS で防ぐ
-// （サーバー配信時は X-Frame-Options: DENY を別途付与すること。AGENTS.md 参照）
-export const EXPORT_FRAME_BUSTER =
-  '<script>if (window.top !== window.self) { window.top.location = window.location; }</script>';
+// （サーバー配信時は X-Frame-Options: DENY を別途付与すること。AGENTS.md 参照）。
+// nonce ベース CSP 下で実行させるため、nonce 属性を付与する
+export function exportFrameBuster(nonce: string): string {
+  return `<script nonce="${nonce}">if (window.top !== window.self) { window.top.location = window.location; }</script>`;
+}
+
+// JS を無効化した環境では frame buster が動かない（<meta> CSP の frame-ancestors も無視される）ため、
+// フレーム保護が無効になることをユーザーに明示する noscript 警告を注入する（F14）
+export const EXPORT_NOSCRIPT_FRAME_WARNING =
+  '<noscript><div style="background:#3a1d1d;color:#ffb4b4;padding:8px 16px;font-size:12px;text-align:center">Warning: JavaScript is disabled, so iframe embedding protection is inactive. Do not load this file inside a frame.</div></noscript>';
 
 export function exportOutputPath(cwd: string): string {
   return join(cwd, "dist", "ccusage-ledger.html");
+}
+
+// 起点から親へ遡って .git（ディレクトリ or worktree 用ファイル）を見つけ、git リポジトリの
+// ルートを返す。見つからなければ null。worktree / submodule は .git がファイルになるため
+// existsSync でディレクトリ・ファイルの両方を拾う
+export function findGitRoot(startDir: string): string | null {
+  let current = startDir;
+  for (;;) {
+    if (existsSync(join(current, ".git"))) { return current; }
+    const parent = dirname(current);
+    if (parent === current) { return null; }
+    current = parent;
+  }
+}
+
+// エクスポート出力先が「ccusage-ledger 自身の git リポジトリとは異なる git リポジトリ内」かどうか。
+// export は実行時カレントに dist/ccusage-ledger.html を書くため、他プロジェクトの checkout 内で
+// 実行すると個人データ埋め込み HTML が誤ってコミット・共有される（F8）。ただし
+// パッケージ自身が git 管理下にない場合（npm インストール先）は比較できないため false を返す
+export function isForeignGitWorktree(outputDir: string, packageDir: string): boolean {
+  const outputRoot = findGitRoot(outputDir);
+  const packageRoot = findGitRoot(packageDir);
+  if (outputRoot === null || packageRoot === null) { return false; }
+  return outputRoot !== packageRoot;
 }
 
 export function writeExportedHtml(outputPath: string, html: string): void {
@@ -35,7 +78,7 @@ export function writeExportedHtml(outputPath: string, html: string): void {
   chmodSync(outputPath, 0o600);
 }
 
-export function buildExportedHtml(html: string, chartJs: string, bundle: string, css: string, data: UsageData): string {
+export function buildExportedHtml(html: string, chartJs: string, bundle: string, css: string, data: UsageData, nonce: string = generateNonce()): string {
   // CSP・警告バナーの注入が無効な HTML で静かに失われないよう、挿入ポイントの存在を検証する
   if (!html.includes("</head>")) { throw new Error("index.html is missing </head>"); }
   if (!html.includes("<body>")) { throw new Error("index.html is missing <body>"); }
@@ -49,14 +92,14 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
   const dataJson = JSON.stringify(projectUsageData(data))
     .replace(/</g, "\\u003c")
     .replace(/[\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16)}`);
-  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
+  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${exportCsp(nonce)}">`;
   const out = html
-    .replace("</head>", `${cspMeta}${EXPORT_FRAME_BUSTER}</head>`)
+    .replace("</head>", `${cspMeta}${exportFrameBuster(nonce)}${EXPORT_NOSCRIPT_FRAME_WARNING}</head>`)
     .replace("<body>", `<body>${EXPORT_WARNING_BANNER}`)
-    .replace(CHART_TAG, `<script>${chartJs}</script>`)
-    .replace(BUNDLE_TAG, `<script>${bundle}</script>`)
-    .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`)
-    .replace(APP_CSS_TAG, `<style>${css}</style>`);
+    .replace(CHART_TAG, `<script nonce="${nonce}">${chartJs}</script>`)
+    .replace(BUNDLE_TAG, `<script nonce="${nonce}">${bundle}</script>`)
+    .replace(EMBEDDED_TAG, `<script id="embedded-data" nonce="${nonce}">window.CCUSAGE_DATA = ${dataJson};</script>`)
+    .replace(APP_CSS_TAG, `<style nonce="${nonce}">${css}</style>`);
 
   // タグ表記が index.html とずれた場合、replace が効かず壊れた HTML が静かに出力されるのを防ぐ
   for (const tag of [CHART_TAG, BUNDLE_TAG, EMBEDDED_TAG, APP_CSS_TAG]) {
@@ -84,6 +127,14 @@ async function main(): Promise<void> {
 
   console.log(`exported: ${outputPath}`);
   console.warn("Note: this HTML contains your ccusage usage data. Only export it when sharing with someone you trust.");
+  // 他プロジェクトの git リポジトリ内に書き込む場合は、個人データ入り HTML が誤ってコミット
+  // されないよう明示的に警告する（F8。誤共有・誤公開の防止）
+  if (isForeignGitWorktree(dirname(outputPath), PACKAGE_DIR)) {
+    console.warn(
+      `WARN: the output is written inside a git repository that is not ccusage-ledger (${findGitRoot(dirname(outputPath))}). ` +
+        "This file contains your ccusage usage data. Make sure it is not committed, shared, or uploaded.",
+    );
+  }
 }
 
 if (import.meta.main) {
