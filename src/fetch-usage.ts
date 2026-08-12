@@ -93,10 +93,37 @@ export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
   return join(packageDir, "node_modules", "ccusage", "src", "cli.js");
 }
 
-// ccusage@20.0.19 の実行コード全体（ラッパー + 実行プラットフォームの native バイナリ）の sha256。
-// 依存を更新した場合や別プラットフォーム（darwin / win32 等）で開発する場合は再計算して必ず更新する
+// ccusage@20.0.19 のラッパー（node_modules/ccusage = cli.js + config-schema.json）の sha256。
+// ラッパーは cli.js + config-schema.json のみでプラットフォーム非依存のため、全プラットフォームで
+// 同一の固定値を照合できる。依存を更新した場合は再計算して必ず更新する
 // （vendor-integrity.test.ts の固定値と同一アルゴリズムで算出する）
-export const CCUSAGE_SHA256 = "69e6fd78a1296a269e6a750b8497a6c06b8233bb85d6a418a99c42639ee8612a";
+export const CCUSAGE_WRAPPER_SHA256 = "986573dbd113bcf093a5dd9a5253f26ebdd97500daa4ad64d53af19d2bc1c1f4";
+
+// 実行プラットフォームの native バイナリ（@ccusage/ccusage-<platform>-<arch>）の sha256。
+// native バイナリはプラットフォームごとに内容が異なるため、単一固定値では照合できない。
+// 各プラットフォームの開発環境で再計算してテーブルに登録する。登録済みプラットフォームでは
+// 起動時に native 改ざんを検出し、未登録プラットフォームでは検証不可として WARN を出す
+// （検証不可のまま失敗し続けるとダッシュボードが常に空になり、改ざん検出の役割も失われる F4）
+export const CCUSAGE_NATIVE_SHA256_BY_PLATFORM: Record<string, string> = {
+  "linux-x64": "2dfeb9fef4617794b35ef14e934127dd3f4a29a2afc922868c0f5595e79b6188",
+};
+
+// プラットフォームキー（"linux-x64" 等）。native バイナリのハッシュ対象と期待値テーブルの
+// 解決を同一キーに揃える（platform と arch で別々に持ち回らず、1 箇所に集約する）
+export function ccusagePlatformKey(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string {
+  return `${platform}-${arch}`;
+}
+
+// 現在プラットフォームの native 期待ハッシュ。未登録なら null（検証不可）
+export function expectedNativeCcusageHash(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string | null {
+  return CCUSAGE_NATIVE_SHA256_BY_PLATFORM[ccusagePlatformKey(platform, arch)] ?? null;
+}
 
 // ccusage の native バイナリパッケージ名（@ccusage/ccusage-<platform>-<arch>）。
 // ccusage@20.0.19 の cli.js が持つ解決ロジックと同一のものを、実行せずにハッシュ対象を
@@ -135,34 +162,61 @@ function hashPackageFiles(root: string): string {
   return hash.digest("hex");
 }
 
-// 実行されるコード全体（node_modules/ccusage ラッパー + 実行プラットフォームの native バイナリ）を
-// ハッシュする。native パッケージはインストール済みなら必ず含める（cli.js 単体ではなく、実処理が
-// ある native バイナリの改ざんも検出するため）。インストール場所に依存しないよう、
-// ディレクトリのハッシュは識別子（ccusage / native）を付けて連結する
-export function computeCcusageHash(packageDir: string = PACKAGE_DIR): string {
-  const roots: Array<[string, string]> = [["ccusage", join(packageDir, "node_modules", "ccusage")]];
-  const nativeRoot = ccusageNativePackageDir(packageDir);
-  if (nativeRoot !== null) { roots.push(["native", nativeRoot]); }
-  const hash = createHash("sha256");
-  for (const [id, root] of roots) {
-    hash.update(id);
-    hash.update(":");
-    hash.update(hashPackageFiles(root));
-  }
-  return hash.digest("hex");
+// ラッパー（node_modules/ccusage）の sha256。プラットフォーム非依存のため、CCUSAGE_WRAPPER_SHA256 と
+// 全プラットフォームで照合できる
+export function computeWrapperHash(packageDir: string = PACKAGE_DIR): string {
+  return hashPackageFiles(join(packageDir, "node_modules", "ccusage"));
 }
 
+// 実行プラットフォームの native バイナリの sha256。native がインストールされていない場合は null。
+// 期待値（CCUSAGE_NATIVE_SHA256_BY_PLATFORM）と同じプラットフォームキーでハッシュ対象を解決する
+export function computeNativeHash(packageDir: string = PACKAGE_DIR): string | null {
+  const nativeRoot = ccusageNativePackageDir(packageDir);
+  if (nativeRoot === null) { return null; }
+  return hashPackageFiles(nativeRoot);
+}
+
+// 旧来の combined ハッシュ（ラッパー + native を連結）はプラットフォーム非依存ではないため、
+// 単一固定値として使えない。代わりに computeWrapperHash / computeNativeHash を
+// それぞれ CCUSAGE_WRAPPER_SHA256 / CCUSAGE_NATIVE_SHA256_BY_PLATFORM と照合する
+
 function assertCcusageIntegrity(packageDir: string = PACKAGE_DIR): void {
-  // インストール済みの ccusage（ラッパー + native バイナリ）が改ざんされていないかを起動ごとに検証する。
+  // インストール済みの ccusage が改ざんされていないかを起動ごとに検証する。
+  // ラッパーは全プラットフォームで固定値と照合し、native バイナリはプラットフォーム別テーブルが
+  // 登録済みのプラットフォームでのみ照合する（F4）。
   // 環境変数経由の秘密は allowlist で守れるが、ファイルベースの秘密（~/.claude 等）は
   // 依存が悪意を持つと読まれ得る（AGENTS.md 記載の残余リスク）。このチェックは
   // ローカル/レジストリ上での post-install 改ざんを検出する defense-in-depth であり、
   // 固定版そのものの悪意ある publish は検知できない（限界を明示）
-  const actual = computeCcusageHash(packageDir);
-  if (actual !== CCUSAGE_SHA256) {
+  const wrapperHash = computeWrapperHash(packageDir);
+  if (wrapperHash !== CCUSAGE_WRAPPER_SHA256) {
     throw new Error(
-      `ccusage integrity check failed (expected sha256 ${CCUSAGE_SHA256}, got ${actual}). ` +
+      `ccusage integrity check failed (expected wrapper sha256 ${CCUSAGE_WRAPPER_SHA256}, got ${wrapperHash}). ` +
         "The installed ccusage package differs from the pinned version. Re-run `bun install` to restore it.",
+    );
+  }
+
+  const nativeHash = computeNativeHash(packageDir);
+  if (nativeHash === null) {
+    // native が無い環境では cli.js が「native binary is not available」で失敗するため、
+    // ここで検証不可として fail させる必要はない
+    return;
+  }
+  const expected = expectedNativeCcusageHash();
+  if (expected === null) {
+    // native はプラットフォームごとに内容が異なるため、未登録プラットフォームでは照合できない。
+    // fail-closed にするとダッシュボードが常に空になり、改ざん検出の役割も失われるため、
+    // 検証不可であることを明示して続行する（登録方法はコメントを参照）
+    console.warn(
+      `WARN: ccusage native binary integrity is not verified on ${ccusagePlatformKey()} (no expected hash recorded). ` +
+        "Add the hash to CCUSAGE_NATIVE_SHA256_BY_PLATFORM to enable verification.",
+    );
+    return;
+  }
+  if (nativeHash !== expected) {
+    throw new Error(
+      `ccusage native binary integrity check failed (expected sha256 ${expected}, got ${nativeHash}). ` +
+        "The installed ccusage native binary differs from the pinned version. Re-run `bun install` to restore it.",
     );
   }
 }
