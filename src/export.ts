@@ -109,8 +109,8 @@ export function writeExportedHtml(outputPath: string, html: string, operations: 
     closeSync(fd);
     fd = null;
 
-    // Windows は既存ファイルへの rename を拒否するため、通常ファイルだけを除去して再試行する。
-    // 再検証により、最初の確認後に置かれた symlink をリンク先ごと上書きしない。
+    // 既存ファイルを先に削除しない。rename に失敗しても以前の export を保持するため。
+    // 再検証により、最初の確認後に置かれた symlink もリンク先ごと上書きしない。
     if (existsSync(outputPath)) {
       if (lstatSync(outputPath).isSymbolicLink()) {
         throw new Error(`refusing to replace symbolic link: ${outputPath}`);
