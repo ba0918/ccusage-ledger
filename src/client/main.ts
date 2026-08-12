@@ -309,6 +309,7 @@ async function main(): Promise<void> {
       "kpi-models",
       "kpi-agents-sub",
       "chart-cost-stacked",
+      "stacked-chart-title",
       "chart-model-mix",
       "chart-cache-hit",
       "chart-agent-donut",

@@ -240,6 +240,16 @@ describe("index.html の data-i18n キー", () => {
       expect(MESSAGE_KEYS).toContain(key as MessageKey);
     }
   });
+
+  test("積み上げグラフ見出しに翻訳・読み上げ対応した native button トグルを置く", () => {
+    const html = readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf-8");
+
+    expect(html).toContain('id="stacked-chart-title"');
+    expect(html).toContain('class="seg-toggle stacked-toggle" role="group" aria-label="Stacked chart display unit" data-i18n-aria="stackedMetricAria"');
+    expect(html).toContain('<button type="button" class="active" data-metric="cost" aria-pressed="true" data-i18n="cost">Cost</button>');
+    expect(html).toContain('<button type="button" data-metric="tokens" aria-pressed="false" data-i18n="tokens">Tokens</button>');
+    expect(html).toContain('id="chart-cost-stacked" aria-label="Cost stacked (by model)"');
+  });
 });
 
 describe("aggregate の既定ラベル", () => {

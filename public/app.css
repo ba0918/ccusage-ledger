@@ -108,6 +108,9 @@ main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
   display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
 }
 .card h2 .hint { color: var(--muted); font-size: 11px; font-weight: 400; display: flex; align-items: center; }
+.card h2.stacked-heading { align-items: center; flex-wrap: wrap; }
+.stacked-heading-copy { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.stacked-toggle { flex-shrink: 0; }
 .chart { position: relative; height: 260px; }
 .card.wide .chart { height: 300px; }
 canvas { width: 100% !important; height: 100% !important; }
