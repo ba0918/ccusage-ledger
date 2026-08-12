@@ -500,15 +500,21 @@ describe("main.ts の言語切替", () => {
     ]);
   });
 
-  test("Tokens 選択はモデルフィルタと言語の変更後も維持される", async () => {
+  test("Tokens 選択は期間・モデル・エージェント・言語の変更後も維持される", async () => {
     const dom = createFakeDom();
     await loadMain(dom, DATA_WITH_MODELS, false, "stacked-persistence");
 
     const buttons = dom.querySelectorAll(".stacked-toggle button");
     buttons[1]!.dispatch("click");
+    const section = dom.getElementById("section")!;
+    section.value = "daily";
+    section.dispatch("change");
     const model = dom.getElementById("model")!;
     model.value = "model-a";
     model.dispatch("change");
+    const agent = dom.getElementById("agent")!;
+    agent.value = "";
+    agent.dispatch("change");
     dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
 
     expect(buttons[1]!.classList.contains("active")).toBe(true);
