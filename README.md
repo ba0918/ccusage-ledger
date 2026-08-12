@@ -2,7 +2,7 @@
 
 エージェント CLI（Claude Code / Codex / OpenCode 等）の使用量・トークン量・金額を可視化する個人用ダッシュボード。
 
-`ccusage` が出力する JSON を元に、日別 / 月別 / 年別のコスト・トークン・キャッシュヒット率、モデル別・エージェント別の内訳をグラフと表で表示します。
+[ccusage](https://github.com/ccusage/ccusage) が出力する JSON を元に、日別 / 月別 / 年別のコスト・トークン・キャッシュヒット率、モデル別・エージェント別の内訳をグラフと表で表示します。
 
 ## スクリーンショット
 
@@ -70,7 +70,7 @@ bun run export
 
 ## データ
 
-サーバーは `ccusage`（依存として固定した `ccusage@20.0.19`）を直接実行して全履歴を取得し、`~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）にキャッシュします。API キー等の秘密は子プロセスに渡しません。
+サーバーは [ccusage](https://github.com/ccusage/ccusage)（依存として固定した `ccusage@20.0.19`）を直接実行して全履歴を取得し、`~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）にキャッシュします。API キー等の秘密は子プロセスに渡しません。
 
 ## 開発
 
