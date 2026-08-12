@@ -297,6 +297,7 @@ export interface ExitTimeoutOptions {
   timeoutMs: number;
   terminationGraceMs: number;
   forceKillWaitMs: number;
+  onTimeout?: () => void;
 }
 
 export function waitForExit(proc: ChildProcess, timeout?: ExitTimeoutOptions): Promise<number> {
@@ -325,6 +326,7 @@ export function waitForExit(proc: ChildProcess, timeout?: ExitTimeoutOptions): P
 
     if (timeout) {
       terminationTimer = setTimeout(() => {
+        timeout.onTimeout?.();
         proc.kill("SIGTERM");
         forceKillTimer = setTimeout(() => {
           proc.kill("SIGKILL");
@@ -336,6 +338,26 @@ export function waitForExit(proc: ChildProcess, timeout?: ExitTimeoutOptions): P
       }, timeout.timeoutMs);
     }
   });
+}
+
+export async function collectProcessOutput(
+  proc: ChildProcess,
+  timeout: ExitTimeoutOptions,
+): Promise<SpawnResult> {
+  const stdout = proc.stdout;
+  if (stdout === null) { throw new Error("ccusage stdout is not available"); }
+  const timeoutError = new Error("ccusage process timed out");
+  const [output, exitCode] = await Promise.all([
+    readStdoutWithLimit(stdout),
+    waitForExit(proc, {
+      ...timeout,
+      onTimeout: () => {
+        stdout.destroy(timeoutError);
+        timeout.onTimeout?.();
+      },
+    }),
+  ]);
+  return { stdout: output, exitCode };
 }
 
 async function defaultSpawn(args: string[]): Promise<SpawnResult> {
@@ -365,10 +387,6 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
       stdio: ["ignore", "pipe", "ignore"] as const,
     });
 
-    const stdoutStream = proc.stdout;
-    if (stdoutStream === null) {
-      throw new Error("ccusage stdout is not available");
-    }
     // stdout をバイト上限付きで収集する（readStdoutWithLimit と同一実装）。上限超過時は
     // readStdoutWithLimit が throw し、finally の kill で子プロセスを止めて読み止めのまま
     // 残留するのを防ぐ（Bun.spawn の頃のタイムアウト残留対策と同様）
@@ -376,11 +394,11 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     // 付けるため、片方が reject しても、もう片方が unhandled rejection にならない。
     // stdout の EOF は必ずしもプロセス終了と同時ではないため、exitCode は 'close' を
     // 待って読む（待たずに proc.exitCode を見ると null になり、失敗を成功と誤判定する）
-    const [stdout, exitCode] = await Promise.all([
-      readStdoutWithLimit(stdoutStream),
-      waitForExit(proc, { timeoutMs: 60_000, terminationGraceMs: 1_000, forceKillWaitMs: 1_000 }),
-    ]);
-    return { stdout, exitCode };
+    return await collectProcessOutput(proc, {
+      timeoutMs: 60_000,
+      terminationGraceMs: 1_000,
+      forceKillWaitMs: 1_000,
+    });
   } finally {
     if (proc !== null && proc.exitCode === null && !proc.killed) {
       proc.kill();

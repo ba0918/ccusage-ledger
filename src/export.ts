@@ -82,7 +82,12 @@ export function isForeignGitWorktree(outputDir: string, packageDir: string): boo
   return outputRoot !== packageRoot;
 }
 
-export function writeExportedHtml(outputPath: string, html: string): void {
+export interface ExportFileOperations {
+  rename?: (oldPath: string, newPath: string) => void;
+  write?: (fd: number, data: Uint8Array, offset: number, length: number) => number;
+}
+
+export function writeExportedHtml(outputPath: string, html: string, operations: ExportFileOperations = {}): void {
   const outputDir = dirname(outputPath);
   mkdirSync(outputDir, { recursive: true });
   if (existsSync(outputPath) && lstatSync(outputPath).isSymbolicLink()) {
@@ -93,7 +98,14 @@ export function writeExportedHtml(outputPath: string, html: string): void {
   let fd: number | null = null;
   try {
     fd = openSync(temporaryPath, "wx", 0o600);
-    writeSync(fd, html);
+    const data = Buffer.from(html);
+    const write = operations.write ?? ((targetFd, bytes, offset, length) => writeSync(targetFd, bytes, offset, length));
+    let offset = 0;
+    while (offset < data.byteLength) {
+      const written = write(fd, data, offset, data.byteLength - offset);
+      if (written <= 0) { throw new Error("failed to write exported HTML"); }
+      offset += written;
+    }
     closeSync(fd);
     fd = null;
 
@@ -103,11 +115,8 @@ export function writeExportedHtml(outputPath: string, html: string): void {
       if (lstatSync(outputPath).isSymbolicLink()) {
         throw new Error(`refusing to replace symbolic link: ${outputPath}`);
       }
-      if (process.platform === "win32") {
-        rmSync(outputPath);
-      }
     }
-    renameSync(temporaryPath, outputPath);
+    (operations.rename ?? renameSync)(temporaryPath, outputPath);
   } finally {
     if (fd !== null) { closeSync(fd); }
     rmSync(temporaryPath, { force: true });

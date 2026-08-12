@@ -93,6 +93,40 @@ describe("isForeignGitWorktree", () => {
 });
 
 describe("writeExportedHtml", () => {
+  test("置換に失敗しても既存ファイルを保持する", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    const out = join(dir, "dist", "ccusage-ledger.html");
+    try {
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out, "old");
+      expect(() => writeExportedHtml(out, "new", {
+        rename: () => { throw new Error("rename failed"); },
+      })).toThrow("rename failed");
+      expect(readFileSync(out, "utf-8")).toBe("old");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("短い書き込みを繰り返してHTML全体を保存する", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    const out = join(dir, "dist", "ccusage-ledger.html");
+    try {
+      let written = "";
+      writeExportedHtml(out, "complete", {
+        write: (_fd, data, offset, length) => {
+          const bytes = typeof data === "string" ? Buffer.from(data) : data;
+          const count = Math.min(2, length ?? bytes.byteLength);
+          written += Buffer.from(bytes).subarray(offset ?? 0, (offset ?? 0) + count).toString();
+          return count;
+        },
+      });
+      expect(written).toBe("complete");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("既存のシンボリックリンクを拒否し、リンク先を変更しない", () => {
     const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
     try {

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn as spawnProcess } from "node:child_process";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -97,6 +97,30 @@ describe("waitForExit", () => {
     const started = Date.now();
     expect(await waitForExit(proc, { timeoutMs: 20, terminationGraceMs: 20, forceKillWaitMs: 200 })).toBe(1);
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+});
+
+describe("collectProcessOutput", () => {
+  test("子孫が stdout を保持していても期限内に収集を終了する", async () => {
+    const proc = spawnProcess(
+      process.execPath,
+      ["-e", `
+        const { spawn } = require("node:child_process");
+        spawn(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], {
+          stdio: ["ignore", process.stdout, "ignore"],
+        });
+        process.exit(0);
+      `],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+
+    const started = Date.now();
+    await expect(collectProcessOutput(proc, {
+      timeoutMs: 30,
+      terminationGraceMs: 20,
+      forceKillWaitMs: 20,
+    })).rejects.toThrow(/timed out/i);
     expect(Date.now() - started).toBeLessThan(500);
   });
 });
