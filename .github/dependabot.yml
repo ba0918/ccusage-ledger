@@ -1,0 +1,14 @@
+# Dependabot で依存の定期更新を確認する
+# bun は npm レジストリ互換のため、エコシステムは npm として扱う
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+  # GitHub Actions の更新（SHA 固定は手動確認で実施）
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
