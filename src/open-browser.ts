@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+
 export interface OpenEnv {
   SSH_CONNECTION?: string;
   SSH_TTY?: string;
@@ -33,7 +35,9 @@ export interface OpenOptions {
 }
 
 function defaultOpen(command: string[]): { exitCode: number } {
-  return Bun.spawnSync(command);
+  // spawnSync の戻り値は status（signal で kill された場合は null）を exitCode として使う
+  const result = spawnSync(command[0]!, command.slice(1), { stdio: "ignore" });
+  return { exitCode: result.status ?? 1 };
 }
 
 export function openBrowser(url: string, options: OpenOptions = {}): void {

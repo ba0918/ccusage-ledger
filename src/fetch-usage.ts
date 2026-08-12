@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, closeSync, chmodSync } from "node:fs";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
@@ -42,8 +44,11 @@ export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
   return join(packageDir, "node_modules", "ccusage", "src", "cli.js");
 }
 
-export function buildCcusageCommand(cliPath: string, args: string[]): string[] {
-  return ["bun", "run", cliPath, ...args];
+// 実行中インタプリタ（process.execPath）で cli.js を直接起動する。
+// bunx / npx どちらで起動しても、process.execPath が bun / node を自動解決するため
+// ランタイム非依存になる（PATH ハイジャック対策も兼ねる）
+export function buildCcusageCommand(cliPath: string, args: string[], execPath: string = process.execPath): string[] {
+  return [execPath, cliPath, ...args];
 }
 
 // 子プロセスの stdout をバイト上限付きで読み切る（巨大出力でメモリを枯渇させない）
@@ -80,23 +85,52 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
   if (!existsSync(cliPath)) {
     throw new Error(`ccusage is not installed: ${cliPath} (run \`bun install\`)`);
   }
-  // bunx による毎回のレジストリ解決をやめ、依存として固定した cli.js を直接実行する。
+  // 依存として固定した cli.js を直接実行する。
   // 子プロセスには許可リストの環境変数だけを渡し、RCE された場合に環境変数経由の秘密を奪えないようにする。
   // （注意: HOME を渡すため、ccusage が悪意を持つ場合は ~/.claude 等のファイルは読まれ得る）
-  const proc = Bun.spawn(buildCcusageCommand(cliPath, args), {
+  // spawn の stdio タプル指定は戻り値型を never に縮約するため、ChildProcess として明示する
+  const command = buildCcusageCommand(cliPath, args);
+  const proc: ChildProcess = spawn(command[0]!, command.slice(1), {
     env: spawnEnv(process.env),
-    stdout: "pipe",
-    stderr: "ignore",
+    stdio: ["ignore", "pipe", "ignore"] as const,
     timeout: 60_000,
   });
+
+  // stdout をバイト上限付きで収集する。上限超過時は子プロセスを kill して
+  // 読み止めのまま残留するのを防ぐ（Bun.spawn の頃のタイムアウト残留対策と同様）
+  const stdout: Buffer[] = [];
+  let total = 0;
+  let limitExceeded = false;
   try {
-    const stdout = await readStdoutWithLimit(proc.stdout);
-    const exitCode = await proc.exited;
-    return { stdout, exitCode };
+    const stdoutStream = proc.stdout;
+    if (stdoutStream === null) {
+      throw new Error("ccusage stdout is not available");
+    }
+    const stdoutText = await new Promise<string>((resolve, reject) => {
+      stdoutStream.on("data", (chunk: Buffer) => {
+        total += chunk.byteLength;
+        if (total > MAX_STDOUT_BYTES) {
+          limitExceeded = true;
+          proc.kill();
+          reject(new Error(`ccusage stdout is too large (limit ${MAX_STDOUT_BYTES} bytes)`));
+          return;
+        }
+        stdout.push(chunk);
+      });
+      stdoutStream.on("error", reject);
+      proc.on("error", reject);
+      proc.on("close", (code) => {
+        if (limitExceeded) { return; }
+        resolve(Buffer.concat(stdout).toString("utf-8"));
+        void code;
+      });
+    });
+    const exitCode = proc.exitCode ?? proc.killed ? 1 : 0;
+    return { stdout: stdoutText, exitCode };
   } finally {
-    // stdout 上限超過などで throw した場合は、パイプを読み止めたままの子プロセスが
-    // タイムアウトまで残留するため、確実に終了させる
-    proc.kill();
+    if (proc.exitCode === null && !proc.killed) {
+      proc.kill();
+    }
   }
 }
 

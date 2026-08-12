@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { main } from "./server";
 
 if (import.meta.main) {

@@ -1,10 +1,9 @@
 import { readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isIP } from "node:net";
 import { join, normalize } from "node:path";
+import { Hono } from "hono";
+import type { Context } from "hono";
 
-interface RequestIPProvider {
-  requestIP(request: Request): { address: string } | null;
-}
 import { fetchUsage, DEFAULT_COMMAND } from "./fetch-usage";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
@@ -48,13 +47,6 @@ function withCommonHeaders(headers: Record<string, string>): Headers {
 
 function notFoundResponse(): Response {
   return new Response("Not Found", { status: 404, headers: withCommonHeaders({}) });
-}
-
-function badRequestResponse(): Response {
-  return new Response(JSON.stringify({ error: "bad request" }), {
-    status: 400,
-    headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
-  });
 }
 
 // ループバック判定はリテラル集合ではなく IP アドレスとして行う
@@ -155,7 +147,7 @@ export function createRateLimiter(limit: number, windowMs: number, maxKeys: numb
 }
 
 export interface AppWithUsage {
-  (request: Request, server?: RequestIPProvider): Promise<Response>;
+  (request: Request, server?: unknown): Promise<Response>;
   setUsageBody(body: string | null): void;
 }
 
@@ -188,61 +180,105 @@ export function createApp(options: {
   const rateLimiter = options.rateLimit ?? createRateLimiter(lanMode ? 120 : 600, 60_000);
   const staticCache = new Map<string, ArrayBuffer>();
 
-  const app = async (request: Request, server?: RequestIPProvider): Promise<Response> => {
-    const ip = server?.requestIP(request)?.address ?? "unknown";
+  const app = new Hono();
+
+  // rate limit と DNS rebinding 対策は全ルートに適用するミドルウェアで行う。
+  // IP は Hono の fetch 第二引数（env）経由で渡される接続情報から解決する
+  // （テストは { requestIP } を、Bun/Node の実サーバはサーバ固有の接続情報を env に渡す）
+  app.use("*", async (c, next) => {
+    const ip = resolveRequestIp(c);
     if (!rateLimiter(ip)) {
-      return new Response("Too Many Requests", {
-        status: 429,
-        headers: withCommonHeaders({ "content-type": "text/plain; charset=utf-8" }),
-      });
+      return c.text("Too Many Requests", 429);
     }
 
-    const url = parseUrl(request.url);
+    const url = parseUrl(c.req.url);
     if (url === null) {
-      return badRequestResponse();
+      return c.json({ error: "bad request" }, 400);
     }
 
     // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
     if (!hostAllowed(url.hostname, hostname)) {
-      return badRequestResponse();
+      return c.json({ error: "bad request" }, 400);
     }
 
     let pathname: string;
     try {
       pathname = decodeURIComponent(url.pathname);
     } catch {
-      return badRequestResponse();
+      return c.json({ error: "bad request" }, 400);
     }
 
-    if (pathname === "/api/usage") {
-      // 非ループバック bind ではデータを配信しない（SSH トンネル経由のループバック接続のみに限定）
-      if (!isLoopbackHost(hostname)) {
-        return new Response(JSON.stringify({ error: `forbidden: /api/usage is only served over loopback. Use an SSH tunnel: ${sshTunnelHint(port)}` }), {
-          status: 403,
-          headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
-        });
-      }
-      if (usageBody === null) {
-        // キャッシュなしでも 200 で空データを返す（キャッシュ有無を 404/200 で判別させない）
-        return new Response(JSON.stringify({ daily: [], monthly: [] }), {
-          status: 200,
-          headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
-        });
-      }
-      return new Response(usageBody, {
+    c.set("pathname", pathname);
+    return next();
+  });
+
+  app.get("/api/usage", (_c) => {
+    // 非ループバック bind ではデータを配信しない（SSH トンネル経由のループバック接続のみに限定）
+    if (!isLoopbackHost(hostname)) {
+      return new Response(JSON.stringify({ error: `forbidden: /api/usage is only served over loopback. Use an SSH tunnel: ${sshTunnelHint(port)}` }), {
+        status: 403,
+        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
+      });
+    }
+    if (usageBody === null) {
+      // キャッシュなしでも 200 で空データを返す（キャッシュ有無を 404/200 で判別させない）
+      return new Response(JSON.stringify({ daily: [], monthly: [] }), {
         status: 200,
         headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
       });
     }
+    return new Response(usageBody, {
+      status: 200,
+      headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
+    });
+  });
 
-    return serveStatic(rootDir, pathname, staticCache);
+  app.all("*", (c) => {
+    return serveStatic(rootDir, c.get("pathname"), staticCache);
+  });
+
+  // Hono の fetch(request, env) はテストの app(request, server) 契約（第二引数に接続情報）と一致する。
+  // fetch は同期 Response を返し得るため async で wrap して Promise<Response> に揃える
+  const handler = async (request: Request, server?: unknown): Promise<Response> => {
+    return app.fetch(request, server);
   };
-
-  return Object.assign(app, {
+  return Object.assign(handler, {
     setUsageBody(body: string | null): void {
       usageBody = body;
     },
-  });
+  }) as unknown as AppWithUsage;
+}
+
+// ミドルウェアで使う Context の型定義（get/set に pathname を保持する）
+declare module "hono" {
+  interface ContextVariableMap {
+    pathname: string;
+  }
+}
+
+// 接続元 IP を Context の env から解決する。優先順位:
+// 1. テストが渡す { requestIP(request) }（AppWithUsage の第二引数互換）
+// 2. Bun サーバが渡す server.requestIP(request)
+// 3. Node の @hono/node-server が渡す incoming.socket.remoteAddress
+interface ConnInfoEnv {
+  requestIP?: (request: Request) => { address: string } | null;
+  server?: { requestIP?: (request: Request) => { address: string } | null };
+  incoming?: { socket?: { remoteAddress?: string } };
+}
+function resolveRequestIp(c: Context): string {
+  const env = c.env as ConnInfoEnv;
+  if (env?.requestIP) {
+    const ip = env.requestIP(c.req.raw);
+    if (ip) { return ip.address; }
+  }
+  if (env?.server?.requestIP) {
+    const ip = env.server.requestIP(c.req.raw);
+    if (ip) { return ip.address; }
+  }
+  if (env?.incoming?.socket?.remoteAddress) {
+    return env.incoming.socket.remoteAddress;
+  }
+  return "unknown";
 }
 
 const STATIC_PREFIXES = ["/dist/", "/public/"];
@@ -307,10 +343,12 @@ async function serveStatic(rootDir: string, pathname: string, staticCache: Map<s
   const contentType = CONTENT_TYPES[extensionName(resolved)];
   try {
     // realpath で検証した実体パスを開いて読む（check と read の間で resolved が symlink に
-    // すり替わる TOCTOU を避け、real が検証済みの場所を指すことを保証する）
-    const body = await Bun.file(real).arrayBuffer();
-    staticCache.set(resolved, body);
-    return new Response(body, {
+    // すり替わる TOCTOU を避け、real が検証済みの場所を指すことを保証する）。
+    // 同期読込のため、検証と読込の間にパスが差し替わる競合面を持たない
+    const body = readFileSync(real);
+    const buffer = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
+    staticCache.set(resolved, buffer);
+    return new Response(buffer, {
       status: 200,
       headers: withCommonHeaders({ "content-type": contentType ?? "application/octet-stream" }),
     });
@@ -334,6 +372,38 @@ function confirmLanStart(): boolean {
   }
   const answer = new TextDecoder().decode(buf.subarray(0, n)).trim().toLowerCase();
   return answer === "y" || answer === "yes";
+}
+
+// ランタイム判定: Bun 実行時のみ process.versions.bun が存在する
+function isBun(): boolean {
+  return process.versions.bun !== undefined;
+}
+
+// サーバを bind して実際のポートを返す。Bun / Node どちらのランタイムでも動く
+async function startServer(app: AppWithUsage, hostname: string, port: number): Promise<number> {
+  if (isBun()) {
+    const server = Bun.serve({
+      hostname,
+      port,
+      // Bun サーバが接続情報（requestIP を含む）を fetch の第二引数で提供する
+      fetch: (request, server) => app(request, server as unknown),
+    });
+    return server.port ?? port;
+  }
+
+  // Node 実行時: @hono/node-server で起動する。serve が env に { incoming, outgoing } を渡すため、
+  // createApp のミドルウェアが incoming.socket.remoteAddress から IP を解決できる
+  const { serve } = await import("@hono/node-server");
+  serve(
+    {
+      hostname,
+      port,
+      fetch: (request, env) => app(request, env as unknown),
+    },
+    () => {},
+  );
+  // Node の serve は options.port で即時 bind するため、実際の port を返す
+  return port;
 }
 
 export async function main(): Promise<void> {
@@ -365,7 +435,9 @@ export async function main(): Promise<void> {
   }
 
   const app = createApp({ rootDir, cachePath, hostname, port });
-  const server = Bun.serve({ hostname, port, fetch: app });
+
+  // bind する。Bun 実行時は Bun.serve（requestIP を提供）、Node 実行時は @hono/node-server を使う
+  const boundPort = await startServer(app, hostname, port);
 
   // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）
   const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath });
@@ -373,7 +445,6 @@ export async function main(): Promise<void> {
     app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
   }
 
-  const boundPort = server.port ?? port;
   console.log(`ccusage ledger: http://${displayHostname(hostname)}:${boundPort}`);
   if (result === null) {
     console.warn("WARN: failed to fetch ccusage data and no cache exists. /api/usage will return an empty dataset.");

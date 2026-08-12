@@ -32,13 +32,18 @@ describe("ccusageCliPath", () => {
 });
 
 describe("buildCcusageCommand", () => {
-  test("bun run <cli.js> の後に引数を繋ぐ", () => {
-    expect(buildCcusageCommand("/pkg/node_modules/ccusage/src/cli.js", ["--json"])).toEqual([
-      "bun",
-      "run",
+  test("実行中インタプリタ（process.execPath）で <cli.js> の後に引数を繋ぐ", () => {
+    expect(buildCcusageCommand("/pkg/node_modules/ccusage/src/cli.js", ["--json"], "/usr/bin/bun")).toEqual([
+      "/usr/bin/bun",
       "/pkg/node_modules/ccusage/src/cli.js",
       "--json",
     ]);
+  });
+
+  test("execPath を指定しない場合は process.execPath を使う", () => {
+    const cmd = buildCcusageCommand("/pkg/node_modules/ccusage/src/cli.js", ["--json"]);
+    expect(cmd[0]).toBe(process.execPath);
+    expect(cmd.slice(1)).toEqual(["/pkg/node_modules/ccusage/src/cli.js", "--json"]);
   });
 });
 
