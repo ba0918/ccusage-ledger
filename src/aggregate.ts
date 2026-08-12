@@ -26,7 +26,8 @@ export const DEFAULT_LABELS: SeriesLabels = {
   cacheHit: "Cache hit rate",
 };
 
-// 末尾（最新）max 件を返す。描画行数のキャップに使う（Data 由来の巨大配列で DOM を固めない）
+// 末尾（最新）max 件を返す。現在はテストでのみ使われる（描画行数のキャップは table.ts の
+// latestPeriodsWithinRowBudget が担う）
 export function sliceLatest<T>(values: readonly T[], max: number): readonly T[] {
   if (values.length <= max) { return values; }
   return values.slice(values.length - max);
@@ -282,13 +283,18 @@ export type PeriodRange =
   | { kind: "all" }
   | { kind: "fixed"; year: number; month?: number };
 
+// 月を 2 桁ゼロ埋め文字列にする（YYYY-MM 表記の組み立てで main.ts と重複させない）
+export function formatMonth(month: number): string {
+  return String(month).padStart(2, "0");
+}
+
 export function filterByRange(entries: PeriodEntry[], range: PeriodRange | undefined): PeriodEntry[] {
   const target = range ?? { kind: "all" };
   if (target.kind === "all") { return entries; }
   const prefix =
     target.month === undefined
       ? `${target.year}`
-      : `${target.year}-${String(target.month).padStart(2, "0")}`;
+      : `${target.year}-${formatMonth(target.month)}`;
   return entries.filter((entry) => entry.period.startsWith(prefix));
 }
 
@@ -350,7 +356,7 @@ function costRatioOf(part: number, total: number): number {
 }
 
 // 期間エントリ / エージェント内訳のキャッシュヒット率。どちらもトークン 4 フィールドを持つため、
-// 構造的部分型で共用し、クライアント側の再実装（main.ts の cacheHitRateOf 相当）をここに集約する
+// 構造的部分型で共用し、クライアント側の再実装をここに 1 点集約する
 export function cacheHitRate(entry: {
   cacheReadTokens: number;
   inputTokens: number;
@@ -656,11 +662,7 @@ export function buildModelCostSeries(
 ): ChartSeries {
   return buildTopModelSeries(entries, otherLabel, (index, _entry, modelName, topSet) => {
     if (modelName === null) {
-      let sum = 0;
-      for (const breakdown of index.values()) {
-        if (!topSet.has(breakdown.modelName)) { sum += breakdown.cost; }
-      }
-      return sum;
+      return sumNonTopCost(index, topSet);
     }
     return index.get(modelName)?.cost ?? 0;
   }, top, modelCount);
@@ -676,14 +678,20 @@ export function buildModelMixSeries(
   return buildTopModelSeries(entries, otherLabel, (index, entry, modelName, topSet) => {
     if (entry.totalCost === 0) { return 0; }
     if (modelName === null) {
-      let sum = 0;
-      for (const breakdown of index.values()) {
-        if (!topSet.has(breakdown.modelName)) { sum += breakdown.cost; }
-      }
-      return costRatioOf(sum, entry.totalCost);
+      return costRatioOf(sumNonTopCost(index, topSet), entry.totalCost);
     }
     return costRatioOf(index.get(modelName)?.cost ?? 0, entry.totalCost);
   }, top, modelCount);
+}
+
+// top 集合に含まれないモデルの cost 合計（「その他」バケットの値）。
+// buildModelCostSeries / buildModelMixSeries で同じ走査を重複させないための共通ヘルパー
+function sumNonTopCost(index: EntryModelIndex, topSet: ReadonlySet<string>): number {
+  let sum = 0;
+  for (const breakdown of index.values()) {
+    if (!topSet.has(breakdown.modelName)) { sum += breakdown.cost; }
+  }
+  return sum;
 }
 
 export interface ModelUnitPrice {

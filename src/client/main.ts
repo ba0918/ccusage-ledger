@@ -5,6 +5,7 @@ import {
   allModels,
   buildAgentEfficiency,
   buildDashboardSeries,
+  formatMonth,
   type AgentEfficiency,
   type AgentShareData,
   type DashboardFilters,
@@ -81,7 +82,7 @@ function currentMonthAnchor(): void {
 
 function navLabel(): string {
   if (state.section === "yearly") { return `${navYear}`; }
-  return `${navYear}/${String(navMonth).padStart(2, "0")}`;
+  return `${navYear}/${formatMonth(navMonth)}`;
 }
 
 function stepNav(direction: 1 | -1): void {
@@ -131,7 +132,7 @@ function rangeDescription(): string {
   const range = state.range;
   if (range.kind === "all") { return t("allPeriodsTotal"); }
   const period = range.month !== undefined
-    ? `${range.year}/${String(range.month).padStart(2, "0")}`
+    ? `${range.year}/${formatMonth(range.month)}`
     : `${range.year}`;
   return t("periodTotal", { period });
 }

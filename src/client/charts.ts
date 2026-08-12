@@ -206,12 +206,18 @@ function modelBarRow(modelName: string, barWidth: number, barColor: string, cell
   </tr>`;
 }
 
+// 値 / 最大値 × 100 のバー幅。0 でも横棒が消えて見えなくならないよう最小幅 1% を保証する
+// （renderUnitPrice / renderCostRanking で同じ式を重複させない）
+function barWidth(value: number, max: number): number {
+  return Math.max((value / max) * 100, 1);
+}
+
 export function renderUnitPrice(prices: ModelUnitPrice[]): void {
   const maxPrice = maxFinite(prices.map((p) => p.unitPrice), 1);
   const tbody = document.getElementById("unit-price-body") as HTMLElement;
   tbody.innerHTML = prices
     .map((p) => {
-      const width = Math.max((p.unitPrice / maxPrice) * 100, 1);
+      const width = barWidth(p.unitPrice, maxPrice);
       return modelBarRow(p.modelName, width, hitRateColor(p.hitRate), [formatPercent(p.hitRate), formatCurrency(p.unitPrice)]);
     })
     .join("");
@@ -253,7 +259,7 @@ export function renderCostRanking(ranking: ModelCostRank[], models: string[]): v
   const tbody = document.getElementById("cost-ranking-body") as HTMLElement;
   tbody.innerHTML = ranking
     .map((r) => {
-      const width = Math.max((r.cost / maxCost) * 100, 1);
+      const width = barWidth(r.cost, maxCost);
       return modelBarRow(r.modelName, width, datasetColor(r.modelName, models), [formatCurrency(r.cost), `${Math.round(r.ratio)}%`]);
     })
     .join("");

@@ -216,8 +216,10 @@ export function createApp(options: {
   const apiLimiter = createRateLimiter(defaultApiLimit, 60_000);
   const staticLimiter = createRateLimiter(defaultStaticLimit, 60_000);
   const userLimiter = options.rateLimit;
-  const limitRequest = (key: string, isApi: boolean): boolean =>
-    userLimiter ? userLimiter(key) : (isApi ? apiLimiter(key) : staticLimiter(key));
+  const limitRequest = (key: string, isApi: boolean): boolean => {
+    if (userLimiter) { return userLimiter(key); }
+    return isApi ? apiLimiter(key) : staticLimiter(key);
+  };
   const staticCache = new Map<string, ArrayBuffer>();
 
   const app = new Hono();

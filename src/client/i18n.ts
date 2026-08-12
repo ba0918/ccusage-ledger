@@ -1,6 +1,5 @@
 export type Lang = "en" | "ja";
 
-export const LANGS: readonly Lang[] = ["en", "ja"];
 export const DEFAULT_LANG: Lang = "en";
 export const STORAGE_KEY = "ccusage-ledger:lang";
 

@@ -295,7 +295,8 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
       proc!.on("error", reject);
       readStdoutWithLimit(stdoutStream).then(resolve, reject);
     });
-    const exitCode = proc.exitCode ?? proc.killed ? 1 : 0;
+    // ?? は三項より先に評価されるため、exitCode が nullish のときだけ killed を見る
+    const exitCode = (proc.exitCode ?? proc.killed) ? 1 : 0;
     return { stdout: stdoutText, exitCode };
   } finally {
     if (proc !== null && proc.exitCode === null && !proc.killed) {
@@ -352,6 +353,12 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
   return readCache(cachePath);
 }
 
+// ディレクトリのパーミッションが 0700（所有者のみ読み書き可）かどうか。
+// assertSafeCacheDir（検証）と writeCache（修復）が同じ判定を使うための共通ヘルパー
+function isPrivateDirMode(mode: number): boolean {
+  return (mode & 0o777) === 0o700;
+}
+
 // キャッシュを読み書きする前にディレクトリの安全性を検証する。他人が書き込み可能な
 // ディレクトリでは、キャッシュの改ざん・偽造（表示データのスプーフィング）ができるため
 // 所有権と 0700 を確認できなければ fail-closed（キャッシュなし扱い）にする
@@ -360,7 +367,7 @@ export function assertSafeCacheDir(cacheDir: string): void {
   if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) {
     throw new Error(`cache directory is not owned by the current user: ${cacheDir}`);
   }
-  if ((dirStat.mode & 0o777) !== 0o700) {
+  if (!isPrivateDirMode(dirStat.mode)) {
     throw new Error(`cache directory is not private (mode ${(dirStat.mode & 0o777).toString(8)}, expected 0700): ${cacheDir}`);
   }
 }
@@ -377,7 +384,7 @@ function writeCache(cachePath: string, data: UsageData): void {
   // 自分所有でも 0700 でなければ 0700 に設定し直してから、所有権と 0700 を最終検証する
   // （攻撃者が書き込み可能なディレクトリでは、共有ディレクトリの owner 以外から 0600/0700 へ
   // 再設定できないため、assertSafeCacheDir が失敗して書き込みを中止する）
-  if ((statSync(cacheDir).mode & 0o777) !== 0o700) {
+  if (!isPrivateDirMode(statSync(cacheDir).mode)) {
     chmodSync(cacheDir, 0o700);
   }
   assertSafeCacheDir(cacheDir);
