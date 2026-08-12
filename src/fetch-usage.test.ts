@@ -15,7 +15,7 @@ function tempDir(): string {
 }
 
 function writeCacheFixture(cachePath: string): void {
-  mkdirSync(dirname(cachePath), { recursive: true });
+  mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
   writeFileSync(cachePath, JSON.stringify(FIXTURE));
 }
 
@@ -103,6 +103,16 @@ describe("spawnEnv", () => {
     );
     expect(env.CLAUDE_CONFIG_DIR).toBe("/home/u/.claude/projects");
   });
+
+  test("HOME に $ 置換パターンが含まれていてもデータディレクトリ env が壊れない", () => {
+    // String.replace の $ 置換（$& 等）を避けて連結しているため、HOME に $ があっても正しく解決する
+    const env = spawnEnv(
+      { PATH: "/usr/bin" },
+      { userHome: "/tmp/otaku$'PATH", emptyHome: "/tmp/empty" },
+    );
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/otaku$'PATH/.claude/projects");
+    expect(env.CODEX_HOME).toBe("/tmp/otaku$'PATH/.codex");
+  });
 });
 
 describe("userHomeDir", () => {
@@ -172,7 +182,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
   test("キャッシュ temp ファイル名はランダムで、攻撃者が事前に symlink を仕掛けても追わない", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    mkdirSync(dirname(cachePath), { recursive: true });
+    mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
 
     // 攻撃者が PID ベースの固定 temp 名に symlink を事前に仕掛けた状態
     const decoy = join(dirname(cachePath), "usage.json.tmp.12345");
@@ -305,13 +315,30 @@ describe("fetchUsage", () => {
   test("スキーマ不一致のキャッシュは無効として扱う", async () => {
     const dir = tempDir();
     const cachePath = join(dir, "data", "usage.json");
-    mkdirSync(dirname(cachePath), { recursive: true });
+    mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
     writeFileSync(cachePath, JSON.stringify({ daily: 1, monthly: 2 }));
     const spawn = async (): Promise<SpawnResult> => ({
       stdout: "",
       exitCode: 1,
     });
 
+    const result = await fetchUsage({ cachePath, spawn });
+
+    expect(result).toBeNull();
+  });
+
+  test("キャッシュディレクトリが 0700 でない場合は read 側も fail-closed（偽造キャッシュを配信しない）", async () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    mkdirSync(dirname(cachePath), { recursive: true });
+    chmodSync(dirname(cachePath), 0o755);
+    writeFileSync(cachePath, JSON.stringify(FIXTURE));
+    const spawn = async (): Promise<SpawnResult> => ({
+      stdout: "",
+      exitCode: 1,
+    });
+
+    // 書き込みと同じ安全条件（所有権・0700）を読込みにも適用し、他人に書かれたキャッシュは無視する
     const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).toBeNull();

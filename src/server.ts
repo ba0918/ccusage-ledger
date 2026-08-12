@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
-import { fetchUsage, DEFAULT_COMMAND } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, assertSafeCacheDir, MAX_CACHE_BYTES } from "./fetch-usage";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
 import { isUsageData, projectUsageData } from "./usage-data";
@@ -67,9 +67,12 @@ export function isLoopbackHost(hostname: string): boolean {
   return false;
 }
 
-// ::ffff:x.x.x.x または ::ffff:hhhh:hhhh（末尾 32bit が IPv4）から IPv4 文字列を復元する
+// ::ffff:x.x.x.x または ::ffff:hhhh:hhhh（末尾 32bit が IPv4）から IPv4 文字列を復元する。
+// IPv4-mapped IPv6 の canonical 形式のみを対象とし、:ffff: の前に非ゼロのグループがある
+// アドレス（1::ffff:127.0.0.1 や fe80::ffff:7f00:1 等）はマッチさせない
+// （非ループバック IPv6 をループバックと誤判定して /api/usage のゲートを迂回させない）
 function mappedIPv4(host: string): string | null {
-  const m = host.match(/^.*:ffff:([0-9a-f.:]+)$/);
+  const m = host.match(/^(?:(?:0:){5}ffff:|::ffff:)([0-9a-f.:]+)$/);
   if (!m) { return null; }
   const tail = m[1]!;
   if (tail.includes(".")) { return tail; }
@@ -190,9 +193,15 @@ export function createApp(options: {
   const { rootDir, cachePath, hostname = "127.0.0.1", port = 3000 } = options;
 
   // /api/usage は起動時にキャッシュを読み込んでメモリから配信する（リクエスト毎のファイル読込で DoS 面を作らない）。
-  // 検証 + 白リスト投影を通し、型不一致データや未知フィールドを配信しない
+  // 検証 + 白リスト投影を通し、型不一致データや未知フィールドを配信しない。
+  // 読み込み前にキャッシュディレクトリの所有権・0700 とファイルサイズを検証する（fail-closed）。
+  // 他人に書かれた/巨大なキャッシュを配信しない（書込み側と同じ安全条件を読込み側にも適用）
   let usageBody: string | null = null;
   try {
+    assertSafeCacheDir(dirname(cachePath));
+    if (statSync(cachePath).size > MAX_CACHE_BYTES) {
+      throw new Error(`usage cache is too large (limit ${MAX_CACHE_BYTES} bytes)`);
+    }
     const parsed: unknown = JSON.parse(readFileSync(cachePath, "utf-8"));
     if (isUsageData(parsed)) {
       usageBody = JSON.stringify(projectUsageData(parsed));
@@ -220,6 +229,12 @@ export function createApp(options: {
 
   const app = new Hono();
 
+  // ハンドラから例外が漏れた場合も共通セキュリティヘッダ付きの 500 を返す（CSP なしのエラーページを返さない）
+  app.onError((_c, error) => {
+    console.error(`ERROR: unhandled server error: ${error instanceof Error ? error.message : String(error)}`);
+    return new Response("Internal Server Error", { status: 500, headers: withCommonHeaders({}) });
+  });
+
   // rate limit と DNS rebinding 対策は全ルートに適用するミドルウェアで行う。
   // IP は Hono の fetch 第二引数（env）経由で渡される接続情報から解決する
   // （テストは { requestIP } を、Bun/Node の実サーバはサーバ固有の接続情報を env に渡す）
@@ -229,21 +244,25 @@ export function createApp(options: {
       return badRequest();
     }
 
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      return badRequest();
+    }
+
+    // Hono はパスセグメントをデコードしてルーティングするため、/api 判定・rate limit の
+    // バケット分類もデコード後のパスで行う（/%61pi/usage 等のパーセントエンコードで
+    // /api/usage のゲートや API バケットを迂回できないようにする）
+    const isApiPath = pathname.startsWith("/api/");
+
     const ip = resolveRequestIp(c);
-    const isApiPath = url.pathname.startsWith("/api/");
     if (!limitRequest(ip, isApiPath)) {
       return tooManyRequests();
     }
 
     // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
     if (!hostAllowed(url.hostname, hostname)) {
-      return badRequest();
-    }
-
-    let pathname: string;
-    try {
-      pathname = decodeURIComponent(url.pathname);
-    } catch {
       return badRequest();
     }
 
@@ -280,7 +299,13 @@ export function createApp(options: {
       if (c.get("pathname") === "/") {
         return new Response(lanOnlyPage(port), {
           status: 200,
-          headers: withCommonHeaders({ "content-type": "text/html; charset=utf-8" }),
+          headers: withCommonHeaders({
+            "content-type": "text/html; charset=utf-8",
+            // この静的案内ページは script を持たずインライン style のみのため、style-src を
+            // 個別に許可する（共通 CSP の style-src 'self' がページ自身の <style> を止めないように）
+            "content-security-policy":
+              "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          }),
         });
       }
       return notFoundResponse();
@@ -341,7 +366,6 @@ interface ConnInfoEnv {
   server?: { requestIP?: (request: Request) => { address: string } | null };
   incoming?: { socket?: { remoteAddress?: string } };
 }
-let unresolvedIpCounter = 0;
 function resolveRequestIp(c: Context): string {
   const env = c.env as ConnInfoEnv;
   if (env?.requestIP) {
@@ -355,11 +379,12 @@ function resolveRequestIp(c: Context): string {
   if (env?.incoming?.socket?.remoteAddress) {
     return env.incoming.socket.remoteAddress;
   }
-  // IP を解決できないリクエストは単一の共有キーに集約しない（同じバケットに押し込まれると
-  // 攻撃者がバケットを共有して制限をかわしたり、逆に混雑して自分だけが制限される）。
-  // ここで返る値はループバック判定で false になるため、/api/* は fail-closed で拒否される
-  unresolvedIpCounter += 1;
-  return `unresolved:${unresolvedIpCounter}`;
+  // IP を解決できないリクエストは単一の固定キーに集約する。unique キーだと rate limit を
+  // 素通りし、Map の最古キー回収（maxKeys 超過時）で他クライアントのバケットを追い出せる
+  // （unresolved リクエストによる rate-limit リセット）。実運用では Bun/Node が必ず接続 IP を
+  // 提供するためこの分岐は通常到達しない。ループバック判定で false になるため /api/* は
+  // fail-closed で拒否される
+  return "unresolved";
 }
 
 // 配信するのはブラウザが必要とする固定ファイルのみ。URL からパスを組み立てないため、

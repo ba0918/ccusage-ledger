@@ -12,9 +12,10 @@
   "files": [
     "bun.lock",
     "index.html",
-    "dist",
-    "public",
-    "!dist/ccusage-ledger.html"
+    "dist/bundle.js",
+    "dist/ccusage-ledger.js",
+    "public/app.css",
+    "public/vendor/chart.umd.min.js"
   ],
   "publishConfig": {
     "access": "public"

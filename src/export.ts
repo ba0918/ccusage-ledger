@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fetchUsage } from "./fetch-usage";
 import { PACKAGE_DIR } from "./paths";
@@ -27,8 +27,11 @@ export function exportOutputPath(cwd: string): string {
 
 export function writeExportedHtml(outputPath: string, html: string): void {
   mkdirSync(dirname(outputPath), { recursive: true });
-  // 個人データ埋め込みファイルを他のローカルユーザーから読めないよう 0600 に制限する
+  // 個人データ埋め込みファイルを他のローカルユーザーから読めないよう 0600 に制限する。
+  // writeFileSync の mode は既存ファイルには適用されないため、書き込み後に chmod で
+  // 明示的に 0600 を再適用する（既存ファイルのモードが緩んでいても毎回 0600 に戻す）
   writeFileSync(outputPath, html, { mode: 0o600 });
+  chmodSync(outputPath, 0o600);
 }
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, css: string, data: UsageData): string {
@@ -40,7 +43,11 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
   if (!html.includes(EMBEDDED_TAG)) { throw new Error("index.html is missing the embedded data script tag"); }
   if (!html.includes(APP_CSS_TAG)) { throw new Error("index.html is missing the app.css link tag"); }
 
-  const dataJson = JSON.stringify(projectUsageData(data)).replace(/</g, "\\u003c");
+  // < を \u003c に置換して </script> / <!-- の script 終了を防ぐ。加えて U+2028 / U+2029
+  // （ES2019 より前の JS エンジンで文字列リテラルを終端する）をエスケープする
+  const dataJson = JSON.stringify(projectUsageData(data))
+    .replace(/</g, "\\u003c")
+    .replace(/[\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16)}`);
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
   const out = html
     .replace("</head>", `${cspMeta}${EXPORT_FRAME_BUSTER}</head>`)

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isUsageData, MAX_SECTION_ENTRIES, MAX_MODELS_USED, MAX_MODEL_BREAKDOWNS, MAX_AGENTS, MAX_STRING_LENGTH } from "./usage-data";
+import { isUsageData, projectUsageData, MAX_SECTION_ENTRIES, MAX_MODELS_USED, MAX_MODEL_BREAKDOWNS, MAX_AGENTS, MAX_STRING_LENGTH } from "./usage-data";
 
 const VALID_ENTRY = {
   period: "2026-08-11",
@@ -107,5 +107,29 @@ describe("isUsageData", () => {
       modelBreakdowns: [],
     }));
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, agents: manyAgents }], monthly: [] })).toBe(false);
+  });
+
+  test("metadata.agents も agents と同じ上限で検証する（キャップ迂回の DoS を拒否）", () => {
+    const many = Array.from({ length: MAX_AGENTS + 1 }, () => "agent");
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: many } }], monthly: [] })).toBe(false);
+    const long = "x".repeat(MAX_STRING_LENGTH + 1);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: [long] } }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: ["ok"] } }], monthly: [] })).toBe(true);
+  });
+
+  test("NaN / Infinity の数値は false（集計が Infinity/NaN に化けて描画が壊れるのを防ぐ）", () => {
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: Number.NaN }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalTokens: Number.POSITIVE_INFINITY }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: "m", cost: Number.NEGATIVE_INFINITY, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }] }], monthly: [] })).toBe(false);
+  });
+});
+
+describe("projectUsageData", () => {
+  test("device はクライアントが未消費のため投影から落とす（totals と同様の白リスト原則）", () => {
+    const entry = { ...VALID_ENTRY, device: "my-hostname", metadata: { agents: ["claude"] } };
+    const projected = projectUsageData({ daily: [entry], monthly: [] });
+    expect(projected.daily![0]!.device).toBeUndefined();
+    // 検証は維持しつつ、投影で公開する既知フィールド（metadata.agents）は残す
+    expect(projected.daily![0]!.metadata).toEqual({ agents: ["claude"] });
   });
 });

@@ -61,6 +61,8 @@ ssh -L 3000:127.0.0.1:3000 your-server
 ```
 
 > Authentication is intentionally not implemented. This server assumes single-user local use; the boundary is enforced by limiting who can reach the screen (loopback / SSH tunnel).
+>
+> A local reverse proxy that forwards to `127.0.0.1:3000` (e.g. nginx `proxy_pass`) makes every proxied connection appear to come from loopback, so `/api/usage` is served to anyone the proxy is reachable from without triggering any LAN-bind warning. Do not put the dashboard behind a LAN-facing reverse proxy unless that is exactly what you want.
 
 ## HTML Export
 
@@ -75,6 +77,10 @@ Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working 
 ## Data
 
 The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.19`) directly to fetch the full history and caches it at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
+
+The child process gets an empty temporary `HOME` and only the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. The installed ccusage package (wrapper + platform native binary) is sha256-verified against a pinned value at every startup.
+
+> This guards against accidental access and post-install tampering. The hash constant ships inside the artifact it verifies, so a supply-chain compromise of the pinned release itself (or a same-user attacker) is out of scope for this control.
 
 ## Development
 

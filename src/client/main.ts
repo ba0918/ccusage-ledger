@@ -75,7 +75,7 @@ function assertElements(ids: readonly string[]): void {
 
 function fillSelect(id: string, values: string[], selected: string | null = null): void {
   const select = document.getElementById(id) as HTMLSelectElement;
-  select.innerHTML = `<option value="">${t("all")}</option>`;
+  select.innerHTML = `<option value="">${htmlText(t("all"))}</option>`;
   for (const value of values) {
     const option = document.createElement("option");
     option.value = value;
@@ -418,7 +418,7 @@ function renderAgentDonut(share: ReturnType<typeof buildDashboardSeriesFromEntri
   if (!share.hasDetail || share.agents.length === 0) {
     charts["chart-agent-donut"]?.destroy();
     delete charts["chart-agent-donut"];
-    effBody.innerHTML = `<tr><td colspan="5" class="donut-note">${t("noAgentDetail")}</td></tr>`;
+    effBody.innerHTML = `<tr><td colspan="5" class="donut-note">${htmlText(t("noAgentDetail"))}</td></tr>`;
     return;
   }
 
@@ -495,7 +495,7 @@ function renderTable(entries: PeriodEntry[]): void {
 
   if (entries.length === 0) {
     el("table-count").textContent = t("periodCount", { count: 0 });
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${t("noDataForPeriod")}</td></tr>`;
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${htmlText(t("noDataForPeriod"))}</td></tr>`;
     return;
   }
 
@@ -531,7 +531,7 @@ function renderTable(entries: PeriodEntry[]): void {
         <td>${hasDetail
           ? `<button type="button" class="expand-btn" aria-expanded="${isFirstOpen ? "true" : "false"}"><span class="caret">▶</span></button>`
           : ""}${htmlText(entry.period)}</td>
-        <td>${t("all")}</td>
+        <td>${htmlText(t("all"))}</td>
         <td class="models"></td>
         <td class="num">${formatTokensFull(entry.inputTokens)}</td>
         <td class="num">${formatTokensFull(entry.outputTokens)}</td>
@@ -555,7 +555,7 @@ function renderTable(entries: PeriodEntry[]): void {
   });
 
   rows.push(`<tr class="total-row">
-      <td>${t("total")}</td>
+      <td>${htmlText(t("total"))}</td>
       <td></td>
       <td></td>
       <td class="num">${formatTokensFull(totalInput)}</td>

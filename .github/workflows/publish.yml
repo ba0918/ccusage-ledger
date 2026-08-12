@@ -24,12 +24,13 @@ jobs:
       # prepublishOnly がテスト・型チェック・lint・build を実行し、publish を publish 直前に走らせる
       # npm pack --dry-run で配布物を検証する。files リストに必要な成果物が含まれること、
       # 秘密ファイル（.env / *.key 等）や個人データ埋め込みのエクスポート HTML が混入しないことを
-      # 確認してから公開する（エクスポート成果物は files の "!dist/ccusage-ledger.html" で除外済み。
-      # ここでは除外が効いていること自体を検証する defense-in-depth）
+      # 確認してから公開する（files は明示ファイルリストで、エクスポート成果物や dist/ に
+      # 置いた未知のファイルはそもそもパックされない。ここでは除外が効いていること自体を
+      # 検証する defense-in-depth）
       - run: |
           output=$(npm pack --dry-run 2>&1)
           echo "$output"
-          for expected in dist/bundle.js public/app.css index.html; do
+          for expected in dist/bundle.js dist/ccusage-ledger.js public/app.css index.html; do
             if ! echo "$output" | grep -q "$expected"; then
               echo "ERROR: 配布物に $expected が含まれていません" >&2
               exit 1

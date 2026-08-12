@@ -40,18 +40,23 @@ function isStringArray(value: unknown, maxLength: number): boolean {
   return Array.isArray(value) && value.length <= maxLength && value.every((item) => isBoundedString(item));
 }
 
+// NaN / Infinity は型上 number だが、集計が Infinity/NaN に化けて描画が壊れるため弾く
+function isFiniteNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function isModelBreakdown(value: unknown): boolean {
   if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   if (!isBoundedString(record.modelName)) { return false; }
-  return BREAKDOWN_NUMERIC_FIELDS.every((field) => typeof record[field] === "number");
+  return BREAKDOWN_NUMERIC_FIELDS.every((field) => isFiniteNumber(record[field]));
 }
 
 function isAgentBreakdown(value: unknown): boolean {
   if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   if (!isBoundedString(record.agent)) { return false; }
-  if (!NUMERIC_FIELDS.every((field) => typeof record[field] === "number")) { return false; }
+  if (!NUMERIC_FIELDS.every((field) => isFiniteNumber(record[field]))) { return false; }
   if (!isStringArray(record.modelsUsed, MAX_MODELS_USED)) { return false; }
   if (!Array.isArray(record.modelBreakdowns) || record.modelBreakdowns.length > MAX_MODEL_BREAKDOWNS) { return false; }
   if (!record.modelBreakdowns.every(isModelBreakdown)) { return false; }
@@ -62,13 +67,20 @@ function isValidPeriodEntry(value: unknown): boolean {
   if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   if (!STRING_FIELDS.every((field) => isBoundedString(record[field]))) { return false; }
-  if (!NUMERIC_FIELDS.every((field) => typeof record[field] === "number")) { return false; }
+  if (!NUMERIC_FIELDS.every((field) => isFiniteNumber(record[field]))) { return false; }
   // modelsUsed / modelBreakdowns は PeriodEntry 型で必須。optional 扱いだと
   // projectUsageData や集計が undefined に触れて描画途中でクラッシュする
   if (!isStringArray(record.modelsUsed, MAX_MODELS_USED)) { return false; }
   if (!Array.isArray(record.modelBreakdowns) || record.modelBreakdowns.length > MAX_MODEL_BREAKDOWNS) { return false; }
   if (!record.modelBreakdowns.every(isModelBreakdown)) { return false; }
   if (record.agents !== undefined && (!Array.isArray(record.agents) || record.agents.length > MAX_AGENTS || !record.agents.every(isAgentBreakdown))) { return false; }
+  // metadata.agents はモデル/エージェント名と同様に扱うフリー文字列配列。
+  // 検証されないとキャップを迂回してサーバ OOM / クライアント freeze を起こせるため、
+  // agents と同じ MAX_AGENTS / MAX_STRING_LENGTH で検証する（fail-closed）
+  if (record.metadata !== undefined) {
+    const metadata = record.metadata as Record<string, unknown>;
+    if (metadata.agents !== undefined && !isStringArray(metadata.agents, MAX_AGENTS)) { return false; }
+  }
   // device は将来の描画候補（フリー形式文字列）。型と長さだけはここで検証して
   // 異常値を流さない（描画側で必ず htmlText を通すことも合わせて必須）
   if (record.device !== undefined && !isBoundedString(record.device)) { return false; }
@@ -122,7 +134,9 @@ export function projectUsageData(value: UsageData): UsageData {
         modelsUsed: a.modelsUsed,
         modelBreakdowns: a.modelBreakdowns.map(projectModelBreakdown),
       })),
-      device: entry.device,
+      // device は型定義には残す（将来の複数デバイス対応）が、クライアントがまだ消費していない
+      // ため投影からは落とす（totals と同様。未使用フィールドを配信してフィンガープリントに
+      // 使われるのを防ぐ。将来描画するときに投影へ追加する）
     }));
 
   return {

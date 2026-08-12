@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, type AppWithUsage } from "./server";
@@ -12,7 +12,8 @@ let cachePath: string;
 beforeEach(() => {
   rootDir = mkdtempSync(join(tmpdir(), "ccusage-server-"));
   cachePath = join(rootDir, "cache", "usage.json");
-  mkdirSync(dirname(cachePath), { recursive: true });
+  // キャッシュディレクトリは実運用と同じく自分所有 0700 で作る（assertSafeCacheDir の前提）
+  mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
   mkdirSync(join(rootDir, "dist"), { recursive: true });
   mkdirSync(join(rootDir, "public", "vendor"), { recursive: true });
   writeFileSync(join(rootDir, "index.html"), "<!doctype html><title>ccusage</title>");
@@ -88,6 +89,22 @@ describe("server /api/usage", () => {
     expect((await res.json() as { daily: unknown[] }).daily.length).toBeGreaterThan(0);
   });
 
+  test("パーセントエンコードした /api/usage（/%61pi/usage）もループバック以外の接続には配信しない", async () => {
+    // Hono はパスセグメントをデコードしてルーティングするため、エンコードでゲートを迂回できない
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    for (const path of ["/%61pi/usage", "/%61pi/%75sage", "/%61p%69/usage", "/api%2fusage"]) {
+      const res = await call(app, path, "192.168.1.10");
+      expect(res.status).toBe(403);
+    }
+  });
+
+  test("ループバックからパーセントエンコードした /api/usage は配信する（Hono のデコードルーティング経由）", async () => {
+    const app = createApp({ rootDir, cachePath });
+    const res = await call(app, "/%61pi/usage", "127.0.0.1");
+    expect(res.status).toBe(200);
+    expect((await res.json() as { daily: unknown[] }).daily.length).toBeGreaterThan(0);
+  });
+
   test("403 は generic ボディを返し、bind ポートやトンネルコマンドを含めない", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0", port: 5000 });
     const res = await call(app, "/api/usage", "192.168.1.10");
@@ -111,6 +128,15 @@ describe("server /api/usage", () => {
 
   test("起動時に読み込んだキャッシュがスキーマ不一致なら空データを返す", async () => {
     writeFileSync(cachePath, JSON.stringify({ daily: "not-array", monthly: [] }));
+    const app = createApp({ rootDir, cachePath });
+    const res = await call(app, "/api/usage");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ daily: [], monthly: [] });
+  });
+
+  test("キャッシュディレクトリが 0700 でない場合はキャッシュを読み込まない（read 側の fail-closed）", async () => {
+    // write 側と対称に、read 側も所有権・0700 を検証してから読む。0755 なら空データ扱い
+    chmodSync(dirname(cachePath), 0o755);
     const app = createApp({ rootDir, cachePath });
     const res = await call(app, "/api/usage");
     expect(res.status).toBe(200);
@@ -452,6 +478,17 @@ describe("server isLoopbackHost", () => {
   test("非ループバックのホストは false", () => {
     for (const host of ["0.0.0.0", "192.168.1.10", "::", "evil.example.com", "::ffff:192.168.1.10"]) {
       expect(isLoopbackHost(host)).toBe(false);
+    }
+  });
+
+  test(":ffff:127.x で終わる非ループバック IPv6 はループバックと誤判定しない（IPv4-mapped のみ対象）", () => {
+    // プレフィックスに非ゼロのグループを含むアドレスは IPv4-mapped ではないため false
+    for (const host of ["1::ffff:127.0.0.1", "2001:db8::ffff:7f00:1", "fe80::ffff:7f00:1", "0:0:0:0:1:ffff:7f00:1"]) {
+      expect(isLoopbackHost(host)).toBe(false);
+    }
+    // canonical な IPv4-mapped loopback は引き続き true
+    for (const host of ["::ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1"]) {
+      expect(isLoopbackHost(host)).toBe(true);
     }
   });
 });

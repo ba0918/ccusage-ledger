@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { UsageData } from "./types";
 import { buildExportedHtml, exportOutputPath, writeExportedHtml } from "./export";
 
@@ -62,6 +62,18 @@ describe("writeExportedHtml", () => {
     writeExportedHtml(out, "<html>test</html>");
     const mode = statSync(out).mode & 0o777;
     expect(mode).toBe(0o600);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("既存ファイルが 0644 でも上書き時に 0600 へ戻す（mode は作成時のみ適用されるため）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    const out = join(dir, "dist", "ccusage-ledger.html");
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, "<html>old</html>", { mode: 0o644 });
+    chmodSync(out, 0o644);
+    writeExportedHtml(out, "<html>new</html>");
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    expect(readFileSync(out, "utf-8")).toBe("<html>new</html>");
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -167,6 +179,22 @@ describe("buildExportedHtml", () => {
     expect(out).not.toContain(payload);
     // embedded-data スクリプト内にリテラルの < を残さない
     expect(embeddedScriptContent(out)).not.toContain("<");
+  });
+
+  test("データに U+2028 / U+2029 が含まれても埋め込みに生バイトを残さない（旧 JS エンジンで script が壊れない）", () => {
+    const data: UsageData = {
+      ...DATA,
+      daily: [
+        {
+          ...DATA.daily![0]!,
+          modelsUsed: ["claude\u2028-4", "gpt\u2029-5"],
+        },
+      ],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
+    expect(embeddedScriptContent(out)).not.toContain("\u2028");
+    expect(embeddedScriptContent(out)).not.toContain("\u2029");
+    expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
   });
 
   test("エクスポート HTML に CSP を注入する（ネットワーク送信を遮断）", () => {

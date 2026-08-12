@@ -77,9 +77,12 @@ export function spawnEnv(env: Record<string, string | undefined>, options: Spawn
   // データソースは上記のデータディレクトリ env でのみ渡す
   result.HOME = options.emptyHome;
   for (const key of Object.keys(AGENT_DATA_DIR_DEFAULTS) as Array<keyof typeof AGENT_DATA_DIR_DEFAULTS>) {
-    // ユーザーが明示的に設定している場合はそれを尊重し、未設定のときだけデフォルトを解決する
+    // ユーザーが明示的に設定している場合はそれを尊重し、未設定のときだけデフォルトを解決する。
+    // slice(1) で "~" を除いた後置換して連結する（String.replace の $ パターン置換を避ける。
+    // HOME に "$&" 等が含まれても置換が壊れない）
     if (result[key] === undefined) {
-      result[key] = AGENT_DATA_DIR_DEFAULTS[key]!.replace(/^~/, options.userHome);
+      const suffix = AGENT_DATA_DIR_DEFAULTS[key]!.slice(1);
+      result[key] = options.userHome + suffix;
     }
   }
   return result;
@@ -258,8 +261,13 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     if (proc.exitCode === null && !proc.killed) {
       proc.kill();
     }
-    // 一時 HOME は子プロセス終了後に掃除する（失敗しても起動を妨げない）
-    rmSync(emptyHome, { recursive: true, force: true });
+    // 一時 HOME は子プロセス終了後に掃除する。掃除の失敗で fetch 自体を失敗させず、
+    // 取得済みの結果をキャッシュフォールバックで上書きしない（best-effort）
+    try {
+      rmSync(emptyHome, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`WARN: failed to remove temporary HOME: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }
 
@@ -285,28 +293,46 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
         return { data: projected, source: "fresh" };
       }
     }
-  } catch {
-    // コマンド実行・パース失敗はキャッシュフォールバックへ
+  } catch (error) {
+    // コマンド実行・パース失敗はキャッシュフォールバックへ。ただし integrity check の失敗は
+    // 改ざん検出という性質上、WARN ではなく明示的な ERROR でオペレータに知らせる
+    // （キャッシュフォールバックで stale データを配信し続けても気づかないのを防ぐ）
+    if (error instanceof Error && error.message.includes("integrity check failed")) {
+      console.error(`ERROR: ${error.message}`);
+    }
   }
 
   return readCache(cachePath);
 }
 
-function writeCache(cachePath: string, data: UsageData): void {
-  const cacheDir = dirname(cachePath);
-  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-  // 共有ディレクトリ（例: 0755 の ~/.cache）にキャッシュを書くと他ユーザーから読まれる/改ざんされる。
-  // ディレクトリが自分所有かつ 0700 であることを確認できない場合は書き込まない（fail-closed）。
-  // 攻撃者が書き込み可能なディレクトリでは、共有ディレクトリの owner 以外から 0600/0700 へ
-  // 再設定できないため、所有者とパーミッションを明示的に検証してから一時ファイルを作る
+// キャッシュを読み書きする前にディレクトリの安全性を検証する。他人が書き込み可能な
+// ディレクトリでは、キャッシュの改ざん・偽造（表示データのスプーフィング）ができるため
+// 所有権と 0700 を確認できなければ fail-closed（キャッシュなし扱い）にする
+export function assertSafeCacheDir(cacheDir: string): void {
   const dirStat = statSync(cacheDir);
   if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) {
     throw new Error(`cache directory is not owned by the current user: ${cacheDir}`);
   }
   if ((dirStat.mode & 0o777) !== 0o700) {
-    // 自分所有でも 0700 でなければ 0700 に設定し直す。失敗すればここで throw して書き込みを中止する
+    throw new Error(`cache directory is not private (mode ${(dirStat.mode & 0o777).toString(8)}, expected 0700): ${cacheDir}`);
+  }
+}
+
+// キャッシュファイルのサイズ上限。ccusage の stdout 上限（MAX_STDOUT_BYTES）と同量に揃え、
+// 巨大なキャッシュによる起動時 JSON.parse / メモリ消費を抑える
+export const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+
+function writeCache(cachePath: string, data: UsageData): void {
+  const cacheDir = dirname(cachePath);
+  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  // 共有ディレクトリ（例: 0755 の ~/.cache）にキャッシュを書くと他ユーザーから読まれる/改ざんされる。
+  // 自分所有でも 0700 でなければ 0700 に設定し直してから、所有権と 0700 を最終検証する
+  // （攻撃者が書き込み可能なディレクトリでは、共有ディレクトリの owner 以外から 0600/0700 へ
+  // 再設定できないため、assertSafeCacheDir が失敗して書き込みを中止する）
+  if ((statSync(cacheDir).mode & 0o777) !== 0o700) {
     chmodSync(cacheDir, 0o700);
   }
+  assertSafeCacheDir(cacheDir);
   // temp 名をランダムにして、PID ベースの予測可能な名前への symlink 仕掛けを防ぐ。
   // openSync の 'wx'（O_CREAT|O_EXCL）により既存の symlink を追わない
   // キャッシュは JSON.parse で読むだけなので、可読性のためのインデントを付けない
@@ -325,6 +351,12 @@ function writeCache(cachePath: string, data: UsageData): void {
 
 function readCache(cachePath: string): FetchUsageResult | null {
   try {
+    // 読み込み側も書込み側と同じ安全条件（所有権・0700・サイズ）で検証してから読む。
+    // 他人に書かれた/偽造されたキャッシュを配信しない（fail-closed）
+    assertSafeCacheDir(dirname(cachePath));
+    if (statSync(cachePath).size > MAX_CACHE_BYTES) {
+      throw new Error("usage cache is too large");
+    }
     const parsed: unknown = JSON.parse(readFileSync(cachePath, "utf-8"));
     if (!isUsageData(parsed)) { throw new Error("invalid usage data shape"); }
     // キャッシュは投影済みで保存されているが、旧形式のキャッシュへの安全策として再投影する（冪等）
