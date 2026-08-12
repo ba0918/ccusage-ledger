@@ -24,6 +24,8 @@ bun run dev
 From the npm distribution:
 
 ```sh
+npx ccusage-ledger
+# or
 bunx ccusage-ledger
 ```
 

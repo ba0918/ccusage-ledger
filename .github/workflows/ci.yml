@@ -45,14 +45,47 @@ jobs:
       - run: |
           mkdir -p /tmp/smoke && cd /tmp/smoke && npm init -y >/dev/null
           npm install /home/runner/work/ccusage-ledger/ccusage-ledger/ccusage-ledger-*.tgz
+          # 実ユーザーに近い経路（データディレクトリ env を実際に渡して ccusage を実行する）を
+          # 通すため、空のデータディレクトリを用意する。存在しない場合は env を渡さない挙動に
+          # なるので、この mkdir が無くても起動自体は成功する
+          mkdir -p "$HOME/.claude/projects"
           node ./node_modules/.bin/ccusage-ledger > server.log 2>&1 &
           SERVER_PID=$!
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:3000/ >/dev/null 2>&1; then break; fi
             sleep 1
           done
           curl -sf -o /dev/null http://127.0.0.1:3000/
           curl -sf -o /dev/null http://127.0.0.1:3000/dist/bundle.js
           curl -sf -o /dev/null http://127.0.0.1:3000/api/usage
+
+          # ccusage の解決や整合性検証に失敗しても /api/usage は空データで 200 を返すため、
+          # ステータスだけでは「Node ではデータが取れない」不具合を検知できない。
+          # 起動ログでデータ取得と整合性検証の成否を確認する
+          cat server.log
+          if ! grep -q "Data source:" server.log; then
+            echo "ERROR: Node ランタイムで ccusage からデータを取得できていません" >&2
+            exit 1
+          fi
+          if grep -qE "ccusage is not installed|integrity check failed" server.log; then
+            echo "ERROR: 配布物から ccusage を解決・検証できていません" >&2
+            exit 1
+          fi
+
+          # ミドルウェア・フレームワーク組み込みの応答でセキュリティヘッダが抜けないことを確認する
+          headers=$(curl -s -D- -o /dev/null -H "Host: evil.example.com" http://127.0.0.1:3000/)
+          # ステータス行そのものを見る（ヘッダ値に偶然 400 が含まれても通らないようにする）
+          echo "$headers" | grep -qE "^HTTP/[0-9.]+ 400" || { echo "ERROR: Host 検証が効いていません" >&2; exit 1; }
+          for header in content-security-policy x-frame-options x-content-type-options; do
+            if ! echo "$headers" | grep -qi "^$header:"; then
+              echo "ERROR: 400 応答に $header が付いていません" >&2
+              exit 1
+            fi
+          done
+
+          # 許可リスト外のパスが配信されないことを確認する
+          status=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3000/..%2fpackage.json")
+          [ "$status" = "404" ] || { echo "ERROR: トラバーサルが 404 になりません ($status)" >&2; exit 1; }
+
           kill $SERVER_PID
           echo "node smoke: OK"
