@@ -70,6 +70,19 @@ describe("getMessage", () => {
     expect(getMessage("ja", "all")).toBe("すべて");
   });
 
+  test("積み上げグラフの切替・タイトル・軸・トークン内訳を英語と日本語で返す", () => {
+    expect(getMessage("en", "stackedMetricAria")).toBe("Stacked chart display unit");
+    expect(getMessage("ja", "stackedMetricAria")).toBe("積み上げグラフの表示単位");
+    expect(getMessage("en", "tokensStackedTitle")).toBe("Tokens stacked (by model)");
+    expect(getMessage("ja", "tokensStackedTitle")).toBe("トークン積み上げ（モデル別）");
+    expect(getMessage("en", "tokenCount")).toBe("Token count");
+    expect(getMessage("ja", "tokenCount")).toBe("トークン数");
+    expect(getMessage("en", "cacheRead")).toBe("Cache Read");
+    expect(getMessage("ja", "cacheRead")).toBe("キャッシュ読み取り");
+    expect(getMessage("en", "cacheCreation")).toBe("Cache Creation");
+    expect(getMessage("ja", "cacheCreation")).toBe("キャッシュ作成");
+  });
+
   test("全キーが両言語で undefined にならない", () => {
     for (const key of MESSAGE_KEYS) {
       expect(getMessage("en", key)).toBeTypeOf("string");
@@ -227,6 +240,16 @@ describe("index.html の data-i18n キー", () => {
       expect(MESSAGE_KEYS).toContain(key as MessageKey);
     }
   });
+
+  test("積み上げグラフ見出しに翻訳・読み上げ対応した native button トグルを置く", () => {
+    const html = readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf-8");
+
+    expect(html).toContain('id="stacked-chart-title"');
+    expect(html).toContain('class="seg-toggle stacked-toggle" role="group" aria-label="Stacked chart display unit" data-i18n-aria="stackedMetricAria"');
+    expect(html).toContain('<button type="button" class="active" data-metric="cost" aria-pressed="true" data-i18n="cost">Cost</button>');
+    expect(html).toContain('<button type="button" data-metric="tokens" aria-pressed="false" data-i18n="tokens">Tokens</button>');
+    expect(html).toContain('id="chart-cost-stacked" aria-label="Cost stacked (by model)"');
+  });
 });
 
 describe("aggregate の既定ラベル", () => {
@@ -337,9 +360,16 @@ function makeLangButton(lang: string): FakeElement {
   return button;
 }
 
+function makeStackedButton(metric: string): FakeElement {
+  const button = new FakeElement();
+  button.dataset.metric = metric;
+  return button;
+}
+
 function createFakeDom(): FakeDom {
   const elements = new Map<string, FakeElement>();
   const langButtons = [makeLangButton("en"), makeLangButton("ja")];
+  const stackedButtons = [makeStackedButton("cost"), makeStackedButton("tokens")];
   return {
     documentElement: { lang: "" },
     getElementById(id: string): FakeElement | null {
@@ -353,6 +383,9 @@ function createFakeDom(): FakeDom {
     querySelectorAll(selector: string): FakeElement[] {
       if (selector === ".lang-toggle button") {
         return langButtons;
+      }
+      if (selector === ".stacked-toggle button") {
+        return stackedButtons;
       }
       return [];
     },
@@ -375,30 +408,56 @@ function createFakeStorage(): Storage {
 }
 
 class FakeChart {
-  data: unknown;
-  options: unknown;
+  static instances: FakeChart[] = [];
+  data: ChartData;
+  options: ChartOptions;
+  constructor(_canvas: HTMLCanvasElement, config: ChartConfig) {
+    this.data = config.data;
+    this.options = config.options ?? {};
+    FakeChart.instances.push(this);
+  }
   update(): void {}
   destroy(): void {}
 }
 
 function makeEntry(period: string, breakdowns: [string, number][]): PeriodEntry {
+  const modelBreakdowns = breakdowns.map(([name, cost]) => ({
+    modelName: name,
+    cost,
+    inputTokens: cost * 1000,
+    outputTokens: cost * 100,
+    cacheReadTokens: cost * 10,
+    cacheCreationTokens: cost,
+  }));
   return {
     period,
     totalCost: breakdowns.reduce((sum, [, cost]) => sum + cost, 0),
-    totalTokens: breakdowns.length * 1000,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
+    totalTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.inputTokens + breakdown.outputTokens + breakdown.cacheReadTokens + breakdown.cacheCreationTokens, 0),
+    inputTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.inputTokens, 0),
+    outputTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.outputTokens, 0),
+    cacheReadTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.cacheReadTokens, 0),
+    cacheCreationTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.cacheCreationTokens, 0),
     modelsUsed: breakdowns.map(([name]) => name),
-    modelBreakdowns: breakdowns.map(([name, cost]) => ({
-      modelName: name,
-      cost,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-    })),
+    modelBreakdowns,
+  };
+}
+
+function makeAgentEntry(period: string, agent: string, breakdowns: [string, number][]): PeriodEntry {
+  const entry = makeEntry(period, breakdowns);
+  return {
+    ...entry,
+    metadata: { agents: [agent] },
+    agents: [{
+      agent,
+      totalCost: entry.totalCost,
+      totalTokens: entry.totalTokens,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      cacheReadTokens: entry.cacheReadTokens,
+      cacheCreationTokens: entry.cacheCreationTokens,
+      modelsUsed: entry.modelsUsed,
+      modelBreakdowns: entry.modelBreakdowns,
+    }],
   };
 }
 
@@ -409,6 +468,19 @@ const DATA_WITH_MODELS: UsageData = {
     makeEntry("2026-03-15", [["model-b", 0.4]]),
   ],
   monthly: [],
+};
+const DATA_WITH_OTHER_MODEL: UsageData = {
+  daily: [
+    makeEntry("2026-01-10", [["Others", 10], ["m2", 5], ["m3", 4], ["m4", 3], ["m5", 2], ["m6", 1]]),
+  ],
+  monthly: [],
+};
+const DATA_WITH_FILTER_CHANGES: UsageData = {
+  daily: DATA_WITH_MODELS.daily,
+  monthly: [
+    makeAgentEntry("2026-04", "claude", [["model-a", 2]]),
+    makeAgentEntry("2026-05", "codex", [["model-b", 3]]),
+  ],
 };
 const EMPTY_DATA: UsageData = { daily: [], monthly: [] };
 
@@ -434,6 +506,74 @@ async function loadMain(dom: FakeDom, data: UsageData, brokenStorage: boolean, v
 }
 
 describe("main.ts の言語切替", () => {
+  test("初期状態は Cost で、Tokens 選択により系列・タイトル・軸・ツールチップが切り替わる", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_MODELS, false, "stacked-toggle");
+
+    const chart = FakeChart.instances[0]!;
+    const buttons = dom.querySelectorAll(".stacked-toggle button");
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("Cost stacked (by model)");
+    expect(chart.data.datasets[0]!.data[0]).toBeCloseTo(0.3);
+    expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("Cost (USD)");
+
+    buttons[1]!.dispatch("click");
+
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("Tokens stacked (by model)");
+    expect(chart.data.datasets[0]!.data[0]).toBeCloseTo(333.3);
+    expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("Token count");
+    const label = (chart.options.plugins as { tooltip: { callbacks: { label: (item: unknown) => string[] } } }).tooltip.callbacks.label;
+    expect(label({ parsed: { y: 333.3 }, dataset: { label: "model-a" }, dataIndex: 0 })).toEqual([
+      "model-a: 333",
+      "  Total: 333",
+      "  Input: 300",
+      "  Output: 30",
+      "  Cache Read: 3",
+      "  Cache Creation: 0",
+    ]);
+  });
+
+  test("翻訳済みの Others と同名の実モデルを集約バケットとして扱わない", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_OTHER_MODEL, false, "other-model-collision");
+
+    const chart = FakeChart.instances[0]!;
+    const datasets = chart.data.datasets.filter((dataset) => dataset.label === "Others");
+    expect(datasets).toHaveLength(2);
+    expect(datasets[0]!.backgroundColor).not.toBe(datasets[1]!.backgroundColor);
+
+    const label = (chart.options.plugins as { tooltip: { callbacks: { label: (item: unknown) => string[] } } }).tooltip.callbacks.label;
+    expect(label({ parsed: { y: 10 }, dataset: datasets[0], dataIndex: 0 })).toEqual(["Others: $10.0"]);
+    expect(label({ parsed: { y: 1 }, dataset: datasets[1], dataIndex: 0 })).toEqual(["Others: $1.0", "  m6: $1.0"]);
+  });
+
+  test("Tokens 選択は期間・モデル・エージェント・言語の変更後も維持される", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_FILTER_CHANGES, false, "stacked-persistence");
+
+    const buttons = dom.querySelectorAll(".stacked-toggle button");
+    buttons[1]!.dispatch("click");
+    const section = dom.getElementById("section")!;
+    section.value = "monthly";
+    section.dispatch("change");
+    const model = dom.getElementById("model")!;
+    model.value = "model-a";
+    model.dispatch("change");
+    const agent = dom.getElementById("agent")!;
+    agent.value = "claude";
+    agent.dispatch("change");
+    dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
+
+    expect(buttons[1]!.classList.contains("active")).toBe(true);
+    expect(buttons[1]!.getAttribute("aria-pressed")).toBe("true");
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("トークン積み上げ（モデル別）");
+    const chart = FakeChart.instances[0]!;
+    expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("トークン数");
+    expect(section.value).toBe("monthly");
+    expect(agent.value).toBe("claude");
+    expect(chart.data.labels).toEqual(["2026-04"]);
+    expect(chart.data.datasets.map((dataset) => dataset.label)).toEqual(["model-a"]);
+  });
+
   test("モデルフィルタ適用中に言語切替しても選択が維持され、絞り込みと一致する", async () => {
     const dom = createFakeDom();
     await loadMain(dom, DATA_WITH_MODELS, false, "filter");
@@ -460,6 +600,27 @@ describe("main.ts の言語切替", () => {
     dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
     expect(status.textContent).toBe("データがありません");
     expect(kpiCost.textContent).toBe("");
+  });
+
+  test("データ 0 状態でも Tokens 選択に見出しと canvas の読み上げラベルが追従する", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, EMPTY_DATA, false, "empty-stacked-toggle");
+
+    dom.querySelectorAll(".stacked-toggle button")[1]!.dispatch("click");
+
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("Tokens stacked (by model)");
+    expect(dom.getElementById("chart-cost-stacked")!.getAttribute("aria-label")).toBe("Tokens stacked (by model)");
+  });
+
+  test("データ 0 状態で Tokens 選択後に言語切替しても見出しと canvas の読み上げラベルを翻訳する", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, EMPTY_DATA, false, "empty-stacked-language");
+
+    dom.querySelectorAll(".stacked-toggle button")[1]!.dispatch("click");
+    dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
+
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("トークン積み上げ（モデル別）");
+    expect(dom.getElementById("chart-cost-stacked")!.getAttribute("aria-label")).toBe("トークン積み上げ（モデル別）");
   });
 
   test("データ 0 状態で言語切替すると KPI サブとドーナツ中央ラベルも言語に追従する", async () => {

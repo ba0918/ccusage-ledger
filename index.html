@@ -72,7 +72,10 @@
 
       <section class="grid">
         <div class="card wide">
-          <h2><span data-i18n="costStackedTitle">Cost stacked (by model)</span> <span class="hint" data-i18n="costStackedHint">Switch daily / monthly / yearly with the period filter</span></h2>
+          <h2 class="stacked-heading">
+            <span class="stacked-heading-copy"><span id="stacked-chart-title" data-i18n="costStackedTitle">Cost stacked (by model)</span> <span class="hint" data-i18n="costStackedHint">Switch daily / monthly / yearly with the period filter</span></span>
+            <span class="seg-toggle stacked-toggle" role="group" aria-label="Stacked chart display unit" data-i18n-aria="stackedMetricAria"><button type="button" class="active" data-metric="cost" aria-pressed="true" data-i18n="cost">Cost</button><button type="button" data-metric="tokens" aria-pressed="false" data-i18n="tokens">Tokens</button></span>
+          </h2>
           <div class="chart"><canvas id="chart-cost-stacked" aria-label="Cost stacked (by model)" data-i18n-aria="costStackedTitle"></canvas></div>
         </div>
 
