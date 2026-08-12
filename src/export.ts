@@ -1,5 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { messageOf } from "./errors";
 import { fetchUsage } from "./fetch-usage";
 import { PACKAGE_DIR } from "./paths";
 import type { UsageData } from "./types";
@@ -88,7 +89,7 @@ async function main(): Promise<void> {
 if (import.meta.main) {
   main().catch((error) => {
     // dist/bundle.js や vendored Chart.js が無い場合はそのまま build を促す
-    console.error(`ERROR: export failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`ERROR: export failed: ${messageOf(error)}`);
     console.error("Hint: run `bun run build` first to generate dist/bundle.js.");
     process.exit(1);
   });

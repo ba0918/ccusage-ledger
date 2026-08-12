@@ -4,6 +4,7 @@ import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { messageOf } from "./errors";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
 import { SECTIONS, isUsageData, projectUsageData } from "./usage-data";
@@ -173,32 +174,28 @@ export function buildCcusageCommand(cliPath: string, args: string[], execPath: s
   return [execPath, cliPath, ...args];
 }
 
-// 子プロセスの stdout をバイト上限付きで読み切る（巨大出力でメモリを枯渇させない）
+// 子プロセスの stdout をバイト上限付きで読み切る（巨大出力でメモリを枯渇させない）。
+// Web ReadableStream と Node の Readable の両方が async iteration に対応しているため、
+// defaultSpawn の stdout（node:child_process の Readable）とテストの ReadableStream の
+// 両方でこの 1 実装を使える（stdout 上限のロジックを 1 箇所に集約する）
 export const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 
 export async function readStdoutWithLimit(
-  stream: ReadableStream<Uint8Array>,
+  stream: AsyncIterable<Uint8Array>,
   maxBytes: number = MAX_STDOUT_BYTES,
 ): Promise<string> {
   // TextDecoder をストリーミングで使うと、全チャンク保持 + マージコピーの二重メモリを回避できる
-  const reader = stream.getReader();
   const decoder = new TextDecoder();
   const parts: string[] = [];
   let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) { break; }
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new Error(`ccusage stdout is too large (limit ${maxBytes} bytes)`);
-      }
-      parts.push(decoder.decode(value, { stream: true }));
+  for await (const chunk of stream) {
+    total += chunk.byteLength;
+    if (total > maxBytes) {
+      throw new Error(`ccusage stdout is too large (limit ${maxBytes} bytes)`);
     }
-    parts.push(decoder.decode());
-  } finally {
-    reader.releaseLock();
+    parts.push(decoder.decode(chunk, { stream: true }));
   }
+  parts.push(decoder.decode());
   return parts.join("");
 }
 
@@ -218,47 +215,36 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
   // （HOME は渡さず空の一時ディレクトリを設定するため、ccusage が読めるのは明示指定した
   //   データディレクトリのみ。ただし実行ユーザーが同じなので、改ざんされたバイナリが
   //   ファイルシステムを直接探索することは防げない。integrity check が主防衛）
-  // spawn の stdio タプル指定は戻り値型を never に縮約するため、ChildProcess として明示する
   const command = buildCcusageCommand(cliPath, args);
-  const proc: ChildProcess = spawn(command[0]!, command.slice(1), {
-    env: spawnEnv(process.env, { userHome: userHomeDir(process.env), emptyHome }),
-    stdio: ["ignore", "pipe", "ignore"] as const,
-    timeout: 60_000,
-  });
-
-  // stdout をバイト上限付きで収集する。上限超過時は子プロセスを kill して
-  // 読み止めのまま残留するのを防ぐ（Bun.spawn の頃のタイムアウト残留対策と同様）
-  const stdout: Buffer[] = [];
-  let total = 0;
-  let limitExceeded = false;
+  // spawn は同期 throw し得るため、spawn 自体を try の内側で行う。これにより mkdtempSync で
+  // 作った一時 HOME が、spawn 失敗時に finally の掃除から漏れずに残らない
+  let proc: ChildProcess | null = null;
   try {
+    // spawn の stdio タプル指定は戻り値型を never に縮約するため、ChildProcess として明示する
+    proc = spawn(command[0]!, command.slice(1), {
+      env: spawnEnv(process.env, { userHome: userHomeDir(process.env), emptyHome }),
+      stdio: ["ignore", "pipe", "ignore"] as const,
+      timeout: 60_000,
+    });
+
     const stdoutStream = proc.stdout;
     if (stdoutStream === null) {
       throw new Error("ccusage stdout is not available");
     }
+    // stdout をバイト上限付きで収集する（readStdoutWithLimit と同一実装）。上限超過時は
+    // readStdoutWithLimit が throw し、finally の kill で子プロセスを止めて読み止めのまま
+    // 残留するのを防ぐ（Bun.spawn の頃のタイムアウト残留対策と同様）
     const stdoutText = await new Promise<string>((resolve, reject) => {
-      stdoutStream.on("data", (chunk: Buffer) => {
-        total += chunk.byteLength;
-        if (total > MAX_STDOUT_BYTES) {
-          limitExceeded = true;
-          proc.kill();
-          reject(new Error(`ccusage stdout is too large (limit ${MAX_STDOUT_BYTES} bytes)`));
-          return;
-        }
-        stdout.push(chunk);
-      });
-      stdoutStream.on("error", reject);
-      proc.on("error", reject);
-      proc.on("close", (code) => {
-        if (limitExceeded) { return; }
-        resolve(Buffer.concat(stdout).toString("utf-8"));
-        void code;
-      });
+      // spawn 失敗（ENOENT 等）は child の 'error' で通知される。stdout ストリーム側にも
+      // error が流れることが多いが保証されないため、child 側でも明示的に拒否して
+      // 読み込みがハングしないようにする
+      proc!.on("error", reject);
+      readStdoutWithLimit(stdoutStream).then(resolve, reject);
     });
     const exitCode = proc.exitCode ?? proc.killed ? 1 : 0;
     return { stdout: stdoutText, exitCode };
   } finally {
-    if (proc.exitCode === null && !proc.killed) {
+    if (proc !== null && proc.exitCode === null && !proc.killed) {
       proc.kill();
     }
     // 一時 HOME は子プロセス終了後に掃除する。掃除の失敗で fetch 自体を失敗させず、
@@ -266,7 +252,7 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     try {
       rmSync(emptyHome, { recursive: true, force: true });
     } catch (error) {
-      console.warn(`WARN: failed to remove temporary HOME: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(`WARN: failed to remove temporary HOME: ${messageOf(error)}`);
     }
   }
 }
@@ -288,10 +274,15 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
           writeCache(cachePath, projected);
         } catch (error) {
           // キャッシュ書き込み失敗はベストエフォートで扱う。取得済みの新鮮データを捨てずに返す
-          console.warn(`WARN: failed to write usage cache: ${error instanceof Error ? error.message : String(error)}`);
+          console.warn(`WARN: failed to write usage cache: ${messageOf(error)}`);
         }
         return { data: projected, source: "fresh" };
       }
+      // スキーマ不一致の出力はキャッシュへフォールバックする。警告なしで静かに stale を
+      // 配信し続けないよう、ここで WARN を出す（integrity check の失敗は下の catch で ERROR）
+      console.warn("WARN: ccusage produced invalid usage data; falling back to cache");
+    } else {
+      console.warn(`WARN: ccusage exited with code ${result.exitCode}; falling back to cache`);
     }
   } catch (error) {
     // コマンド実行・パース失敗はキャッシュフォールバックへ。ただし integrity check の失敗は
@@ -299,6 +290,8 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
     // （キャッシュフォールバックで stale データを配信し続けても気づかないのを防ぐ）
     if (error instanceof Error && error.message.includes("integrity check failed")) {
       console.error(`ERROR: ${error.message}`);
+    } else {
+      console.warn(`WARN: ccusage fetch failed; falling back to cache: ${messageOf(error)}`);
     }
   }
 
@@ -319,8 +312,9 @@ export function assertSafeCacheDir(cacheDir: string): void {
 }
 
 // キャッシュファイルのサイズ上限。ccusage の stdout 上限（MAX_STDOUT_BYTES）と同量に揃え、
-// 巨大なキャッシュによる起動時 JSON.parse / メモリ消費を抑える
-export const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+// 巨大なキャッシュによる起動時 JSON.parse / メモリ消費を抑える。stdout と別値にすると
+// 片方だけが変わる事故を防ぐため、MAX_STDOUT_BYTES から導出する
+export const MAX_CACHE_BYTES = MAX_STDOUT_BYTES;
 
 function writeCache(cachePath: string, data: UsageData): void {
   const cacheDir = dirname(cachePath);
@@ -349,7 +343,10 @@ function writeCache(cachePath: string, data: UsageData): void {
   renameSync(tmpPath, cachePath);
 }
 
-function readCache(cachePath: string): FetchUsageResult | null {
+// キャッシュを安全条件（所有権・0700・サイズ上限）付きで読み込む単一実装。
+// server.ts の createApp もこの関数を共用するため、起動時読み込みと fetchUsage の
+// フォールバックで同一の検証列が走る（検証ロジックの二重実装を避ける）
+export function readCache(cachePath: string): FetchUsageResult | null {
   try {
     // 読み込み側も書込み側と同じ安全条件（所有権・0700・サイズ）で検証してから読む。
     // 他人に書かれた/偽造されたキャッシュを配信しない（fail-closed）

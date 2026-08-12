@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { isIP } from "node:net";
 
 export interface OpenEnv {
   SSH_CONNECTION?: string;
@@ -19,10 +20,12 @@ export function shouldAutoOpen(env: OpenEnv): boolean {
   return false;
 }
 
-// ワイルドカード bind（0.0.0.0）をブラウザで開けるアドレスに読み替える。
+// ワイルドカード bind（0.0.0.0 / ::）をブラウザで開けるループバックアドレスに読み替える。
+// IPv6 ホストは URL では [..] で括る（::1 を http://:::3000 のような不正 URL にしない）。
 // 表示用 URL の組み立て（browserUrl）とサーバーの起動ログで同じ読み替えを使う
 export function displayHostname(hostname: string): string {
-  return hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
+  if (hostname === "0.0.0.0" || hostname === "::") { return "127.0.0.1"; }
+  return isIP(hostname) === 6 ? `[${hostname}]` : hostname;
 }
 
 export function browserUrl(hostname: string, port: number): string {

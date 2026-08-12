@@ -4,20 +4,19 @@ import { dirname, join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
-import { fetchUsage, DEFAULT_COMMAND, assertSafeCacheDir, MAX_CACHE_BYTES } from "./fetch-usage";
+import { messageOf } from "./errors";
+import { fetchUsage, DEFAULT_COMMAND, readCache } from "./fetch-usage";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
-import { isUsageData, projectUsageData } from "./usage-data";
+import { projectUsageData } from "./usage-data";
 
+// 静的配信 allowlist（STATIC_ALLOWLIST）が配信するファイルの拡張子だけを持つ。
+// allowlist 外の拡張子（.json / .svg / .png / .ico / .mjs 等）を宣言すると死んだ設定になるため、
+// 実際に配信される .html / .js / .css に限定する
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
 };
 
 const COMMON_HEADERS: Record<string, string> = {
@@ -37,8 +36,8 @@ const COMMON_HEADERS: Record<string, string> = {
   "permissions-policy": "camera=(), microphone=(), geolocation=()",
 };
 
-// LAN 公開時・/api/usage 拒否時に案内する推奨トンネルコマンド（3 箇所で同一文言を使う）。
-// ポートは実際の bind ポート（PORT 環境変数）を反映する
+// LAN 公開時・/api/usage 拒否時に案内する推奨トンネルコマンド。ポートは実際の bind ポート
+// （PORT 環境変数）を反映する。起動時警告・LAN 案内ページ・拒否メッセージが同一文言を使う
 function sshTunnelHint(port: number): string {
   return `ssh -L ${port}:127.0.0.1:${port}`;
 }
@@ -130,17 +129,20 @@ export interface RateLimiter {
 }
 
 export function createRateLimiter(limit: number, windowMs: number, maxKeys: number = 4096): RateLimiter {
-  // Map は挿入順を保持するため、上限超過時に先頭（最古）から削除できる
+  // Map は挿入順を保持する。ヒット時に delete してから set し直すことでアクセス時刻順
+  // （LRU 順）に保ち、上限超過時の回収で頻繁にヒットするキーを残す
   const hits = new Map<string, number[]>();
   const limiter = (key: string, now: number = Date.now()): boolean => {
     const recent = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
     if (recent.length >= limit) {
+      hits.delete(key);
       hits.set(key, recent);
       return false;
     }
     recent.push(now);
+    hits.delete(key);
     hits.set(key, recent);
-    // 大量の source IP で Map が無制限に育たないよう、最古キーから回収する
+    // 大量の source IP で Map が無制限に育たないよう、最古（最も使われていない）キーから回収する
     while (hits.size > maxKeys) {
       const oldest = hits.keys().next().value;
       if (oldest === undefined) { break; }
@@ -160,7 +162,7 @@ export interface AppWithUsage {
 // ネットワークに配信しないことで、平文 HTTP 上で on-path 攻撃者が改ざん・注入できる JS の
 // 攻撃面をなくす（/api/usage も非ループバック接続では配信しないため、LAN からはデータに触れない）
 function lanOnlyPage(port: number): string {
-  const hint = `ssh -L ${port}:127.0.0.1:${port}`;
+  const hint = sshTunnelHint(port);
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -193,21 +195,12 @@ export function createApp(options: {
   const { rootDir, cachePath, hostname = "127.0.0.1", port = 3000 } = options;
 
   // /api/usage は起動時にキャッシュを読み込んでメモリから配信する（リクエスト毎のファイル読込で DoS 面を作らない）。
-  // 検証 + 白リスト投影を通し、型不一致データや未知フィールドを配信しない。
-  // 読み込み前にキャッシュディレクトリの所有権・0700 とファイルサイズを検証する（fail-closed）。
-  // 他人に書かれた/巨大なキャッシュを配信しない（書込み側と同じ安全条件を読込み側にも適用）
+  // 読み込みは fetchUsage の readCache を共用する（所有権・0700・サイズ検証 + スキーマ検証 + 白リスト投影が
+  // 1 箇所に集約され、起動時読み込みと fetch フォールバックの安全条件がずれない。fail-closed: 検証失敗は空データ）
   let usageBody: string | null = null;
-  try {
-    assertSafeCacheDir(dirname(cachePath));
-    if (statSync(cachePath).size > MAX_CACHE_BYTES) {
-      throw new Error(`usage cache is too large (limit ${MAX_CACHE_BYTES} bytes)`);
-    }
-    const parsed: unknown = JSON.parse(readFileSync(cachePath, "utf-8"));
-    if (isUsageData(parsed)) {
-      usageBody = JSON.stringify(projectUsageData(parsed));
-    }
-  } catch {
-    usageBody = null;
+  const cached = readCache(cachePath);
+  if (cached !== null) {
+    usageBody = JSON.stringify(cached.data);
   }
 
   // rate limit は常に適用する。loopback は寛大な上限（static 600/分・/api 300/分）、
@@ -231,7 +224,7 @@ export function createApp(options: {
 
   // ハンドラから例外が漏れた場合も共通セキュリティヘッダ付きの 500 を返す（CSP なしのエラーページを返さない）
   app.onError((_c, error) => {
-    console.error(`ERROR: unhandled server error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`ERROR: unhandled server error: ${messageOf(error)}`);
     return new Response("Internal Server Error", { status: 500, headers: withCommonHeaders({}) });
   });
 
@@ -296,19 +289,7 @@ export function createApp(options: {
     // 非ループバック接続（LAN 公開時）には案内ページのみ配信し、クライアント資産を配らない。
     // ループバック接続（ローカル + SSH トンネル）は通常のダッシュボードを配信する
     if (!isLoopbackHost(c.get("clientIp"))) {
-      if (c.get("pathname") === "/") {
-        return new Response(lanOnlyPage(port), {
-          status: 200,
-          headers: withCommonHeaders({
-            "content-type": "text/html; charset=utf-8",
-            // この静的案内ページは script を持たずインライン style のみのため、style-src を
-            // 個別に許可する（共通 CSP の style-src 'self' がページ自身の <style> を止めないように）
-            "content-security-policy":
-              "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-          }),
-        });
-      }
-      return notFoundResponse();
+      return lanOnlyResponse(port, c.get("pathname"));
     }
     return serveStatic(rootDir, c.get("pathname"), staticCache);
   });
@@ -330,6 +311,24 @@ function badRequest(): Response {
   return new Response(JSON.stringify({ error: "bad request" }), {
     status: 400,
     headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
+  });
+}
+
+// 非ループバック接続への応答。トンネル案内ページは " / " のみに配信し、それ以外のパスは 404
+// （クライアント資産を LAN に配らない）。CSP はこの案内ページ用に個別設定する:
+// script を持たずインライン style のみのため、style-src を許可する
+// （共通 CSP の style-src 'self' がページ自身の <style> を止めないように）
+function lanOnlyResponse(port: number, pathname: string): Response {
+  if (pathname !== "/") {
+    return notFoundResponse();
+  }
+  return new Response(lanOnlyPage(port), {
+    status: 200,
+    headers: withCommonHeaders({
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    }),
   });
 }
 
@@ -507,11 +506,26 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
   return port;
 }
 
+// PORT は 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、
+// bind 失敗が「判りにくいエラー」になるため、設定ミスを起動時に明確なメッセージで報告する
+// （cli.ts の catch が `ERROR: <message>` を出力して exit 1 する）
+function parsePort(value: string | undefined): number {
+  const raw = value ?? "3000";
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`Invalid PORT=${raw}: expected an integer between 1 and 65535`);
+  }
+  const port = Number(raw);
+  if (port < 1 || port > 65535) {
+    throw new Error(`Invalid PORT=${raw}: expected an integer between 1 and 65535`);
+  }
+  return port;
+}
+
 export async function main(): Promise<void> {
   const rootDir = PACKAGE_DIR;
   const cachePath = defaultCachePath(process.env);
 
-  const port = Number(process.env.PORT ?? 3000);
+  const port = parsePort(process.env.PORT);
   const hostname = process.env.HOST ?? "127.0.0.1";
 
   const lanPolicy = lanStartPolicy(hostname, Boolean(process.stdin.isTTY), isLanAllowed(process.env));
@@ -550,9 +564,11 @@ export async function main(): Promise<void> {
     );
   }
 
-  // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）
+  // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）。
+  // fresh のときだけ usageBody を差し替える。cache フォールバック時は createApp が起動時に
+  // 同じ readCache で既に読み込んでいるため、重複読み込み・再設定をしない
   const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath });
-  if (result !== null) {
+  if (result !== null && result.source === "fresh") {
     app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
   }
 
@@ -578,7 +594,7 @@ export async function main(): Promise<void> {
 
 if (import.meta.main) {
   main().catch((error) => {
-    console.error(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`ERROR: ${messageOf(error)}`);
     process.exit(1);
   });
 }
