@@ -54,7 +54,7 @@ By default the server binds only to `127.0.0.1`. With a non-loopback bind such a
 - On a non-TTY, startup is refused unless `CCUSAGE_LEDGER_ALLOW_LAN=1` is set
 - On a non-loopback bind, `/api/usage` returns 403 (the data body is not served)
 
-To view from another device, use an **SSH tunnel**. The tunnel itself acts as access control, and the connection source becomes loopback, so `/api/usage` works as well.
+To view from another device, use an **SSH tunnel**. The tunnel itself acts as access control, and the connection source becomes loopback, so `/api/usage` works as well. The SSH tunnel encrypts the network segment, but the connection between the tunnel endpoint and the dashboard on the server still uses plain HTTP end-to-end (the encryption boundary is the SSH connection, not the dashboard itself).
 
 ```sh
 ssh -L 3000:127.0.0.1:3000 your-server

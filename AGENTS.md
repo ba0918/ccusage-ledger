@@ -4,7 +4,7 @@
 
 ## 技術スタック
 
-- **サーバ**: Bun + TypeScript (`Bun.serve`)。外部フレームワークなし
+- **サーバ**: Bun + TypeScript。HTTP レイヤーは Hono（`hono`）を使用し、Bun 実行時は `Bun.serve`、Node 実行時は `@hono/node-server` で起動する
 - **データ取得**: dependencies で固定した `ccusage@20.0.19`（bun.lock で integrity 固定）を `bun run node_modules/ccusage/src/cli.js --json --sections daily,monthly --by-agent` で spawn して全履歴を取得
 - **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
