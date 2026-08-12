@@ -30,6 +30,24 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalTokens: null }], monthly: [] })).toBe(false);
   });
 
+  test("period・model・agent の全 cost/token 数値フィールドで負値を拒否する", () => {
+    const periodFields = ["totalCost", "totalTokens", "inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"] as const;
+    for (const field of periodFields) {
+      expect(isUsageData({ daily: [{ ...VALID_ENTRY, [field]: -1 }], monthly: [] })).toBe(false);
+    }
+
+    const model = { modelName: "m", cost: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheCreationTokens: 1 };
+    const modelFields = ["cost", "inputTokens", "outputTokens", "cacheReadTokens", "cacheCreationTokens"] as const;
+    for (const field of modelFields) {
+      expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ ...model, [field]: -1 }] }], monthly: [] })).toBe(false);
+    }
+
+    const agent = { agent: "codex", totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheCreationTokens: 1, modelsUsed: [], modelBreakdowns: [] };
+    for (const field of periodFields) {
+      expect(isUsageData({ daily: [{ ...VALID_ENTRY, agents: [{ ...agent, [field]: -1 }] }], monthly: [] })).toBe(false);
+    }
+  });
+
   test("配列フィールドが配列でないエントリは false", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: "claude" }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: {} }], monthly: [] })).toBe(false);
@@ -117,6 +135,13 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: { agents: ["ok"] } }], monthly: [] })).toBe(true);
   });
 
+  test("metadata が存在する場合は非 null のオブジェクトだけを受理する", () => {
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: null }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: [] }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: "agents" }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, metadata: {} }], monthly: [] })).toBe(true);
+  });
+
   test("NaN / Infinity の数値は false（集計が Infinity/NaN に化けて描画が壊れるのを防ぐ）", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: Number.NaN }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalTokens: Number.POSITIVE_INFINITY }], monthly: [] })).toBe(false);
@@ -127,9 +152,8 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: 1e308 }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalTokens: Number.MAX_VALUE }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: "m", cost: 1e308, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }] }], monthly: [] })).toBe(false);
-    // 上限ちょうど / 負値（将来の返金等）は通す
+    // 上限ちょうどは通す
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: 1e12 }], monthly: [] })).toBe(true);
-    expect(isUsageData({ daily: [{ ...VALID_ENTRY, totalCost: -5 }], monthly: [] })).toBe(true);
   });
 
   test("全期間を通した distinct モデル名が上限を超えるデータは false（クライアントの選択肢生成 OOM を防ぐ）", () => {

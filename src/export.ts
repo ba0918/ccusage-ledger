@@ -1,5 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { messageOf } from "./errors";
@@ -83,13 +82,52 @@ export function isForeignGitWorktree(outputDir: string, packageDir: string): boo
   return outputRoot !== packageRoot;
 }
 
-export function writeExportedHtml(outputPath: string, html: string): void {
-  mkdirSync(dirname(outputPath), { recursive: true });
-  // 個人データ埋め込みファイルを他のローカルユーザーから読めないよう 0600 に制限する。
-  // writeFileSync の mode は既存ファイルには適用されないため、書き込み後に chmod で
-  // 明示的に 0600 を再適用する（既存ファイルのモードが緩んでいても毎回 0600 に戻す）
-  writeFileSync(outputPath, html, { mode: 0o600 });
-  chmodSync(outputPath, 0o600);
+export interface ExportFileOperations {
+  rename?: (oldPath: string, newPath: string) => void;
+  write?: (fd: number, data: Uint8Array, offset: number, length: number) => number;
+}
+
+function isSymbolicLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") { return false; }
+    throw error;
+  }
+}
+
+export function writeExportedHtml(outputPath: string, html: string, operations: ExportFileOperations = {}): void {
+  const outputDir = dirname(outputPath);
+  mkdirSync(outputDir, { recursive: true });
+  if (isSymbolicLink(outputPath)) {
+    throw new Error(`refusing to replace symbolic link: ${outputPath}`);
+  }
+
+  const temporaryPath = `${outputPath}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  let fd: number | null = null;
+  try {
+    fd = openSync(temporaryPath, "wx", 0o600);
+    const data = Buffer.from(html);
+    const write = operations.write ?? ((targetFd, bytes, offset, length) => writeSync(targetFd, bytes, offset, length));
+    let offset = 0;
+    while (offset < data.byteLength) {
+      const written = write(fd, data, offset, data.byteLength - offset);
+      if (written <= 0) { throw new Error("failed to write exported HTML"); }
+      offset += written;
+    }
+    closeSync(fd);
+    fd = null;
+
+    // 既存ファイルを先に削除しない。rename に失敗しても以前の export を保持するため。
+    // 再検証により、最初の確認後に置かれた symlink もリンク先ごと上書きしない。
+    if (isSymbolicLink(outputPath)) {
+      throw new Error(`refusing to replace symbolic link: ${outputPath}`);
+    }
+    (operations.rename ?? renameSync)(temporaryPath, outputPath);
+  } finally {
+    if (fd !== null) { closeSync(fd); }
+    rmSync(temporaryPath, { force: true });
+  }
 }
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, css: string, data: UsageData, nonce: string = generateNonce()): string {
