@@ -1,5 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { messageOf } from "./errors";
@@ -84,12 +83,35 @@ export function isForeignGitWorktree(outputDir: string, packageDir: string): boo
 }
 
 export function writeExportedHtml(outputPath: string, html: string): void {
-  mkdirSync(dirname(outputPath), { recursive: true });
-  // 個人データ埋め込みファイルを他のローカルユーザーから読めないよう 0600 に制限する。
-  // writeFileSync の mode は既存ファイルには適用されないため、書き込み後に chmod で
-  // 明示的に 0600 を再適用する（既存ファイルのモードが緩んでいても毎回 0600 に戻す）
-  writeFileSync(outputPath, html, { mode: 0o600 });
-  chmodSync(outputPath, 0o600);
+  const outputDir = dirname(outputPath);
+  mkdirSync(outputDir, { recursive: true });
+  if (existsSync(outputPath) && lstatSync(outputPath).isSymbolicLink()) {
+    throw new Error(`refusing to replace symbolic link: ${outputPath}`);
+  }
+
+  const temporaryPath = `${outputPath}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  let fd: number | null = null;
+  try {
+    fd = openSync(temporaryPath, "wx", 0o600);
+    writeSync(fd, html);
+    closeSync(fd);
+    fd = null;
+
+    // Windows は既存ファイルへの rename を拒否するため、通常ファイルだけを除去して再試行する。
+    // 再検証により、最初の確認後に置かれた symlink をリンク先ごと上書きしない。
+    if (existsSync(outputPath)) {
+      if (lstatSync(outputPath).isSymbolicLink()) {
+        throw new Error(`refusing to replace symbolic link: ${outputPath}`);
+      }
+      if (process.platform === "win32") {
+        rmSync(outputPath);
+      }
+    }
+    renameSync(temporaryPath, outputPath);
+  } finally {
+    if (fd !== null) { closeSync(fd); }
+    rmSync(temporaryPath, { force: true });
+  }
 }
 
 export function buildExportedHtml(html: string, chartJs: string, bundle: string, css: string, data: UsageData, nonce: string = generateNonce()): string {

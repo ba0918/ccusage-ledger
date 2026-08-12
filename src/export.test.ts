@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UsageData } from "./types";
@@ -93,6 +93,22 @@ describe("isForeignGitWorktree", () => {
 });
 
 describe("writeExportedHtml", () => {
+  test("既存のシンボリックリンクを拒否し、リンク先を変更しない", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const out = join(dir, "dist", "ccusage-ledger.html");
+      const target = join(dir, "keep.txt");
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(target, "unchanged");
+      symlinkSync(target, out);
+
+      expect(() => writeExportedHtml(out, "<html>attack</html>")).toThrow(/symbolic link/i);
+      expect(readFileSync(target, "utf-8")).toBe("unchanged");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("出力ファイルのパーミッションを 0600 にする", () => {
     const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
     const out = join(dir, "dist", "ccusage-ledger.html");
@@ -112,6 +128,17 @@ describe("writeExportedHtml", () => {
     expect(statSync(out).mode & 0o777).toBe(0o600);
     expect(readFileSync(out, "utf-8")).toBe("<html>new</html>");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("書き込みに失敗した場合は一時ファイルを残さない", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    const out = join(dir, "dist", "ccusage-ledger.html");
+    try {
+      expect(() => writeExportedHtml(out, Symbol("invalid") as unknown as string)).toThrow();
+      expect(readdirSync(dirname(out))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
