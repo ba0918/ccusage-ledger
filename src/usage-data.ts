@@ -50,24 +50,22 @@ function isStringArray(value: unknown, maxLength: number): boolean {
   return Array.isArray(value) && value.length <= maxLength && value.every((item) => isBoundedString(item));
 }
 
-// NaN / Infinity は型上 number だが、集計が Infinity/NaN に化けて描画が壊れるため弾く。
-// 加えて絶対値が MAX_NUMERIC_MAGNITUDE を超える有限値も弾く（巨大値の加算で Infinity に溢れるのを防ぐ）
-function isFiniteNumber(value: unknown): boolean {
-  return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= MAX_NUMERIC_MAGNITUDE;
+function isValidUsageNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= MAX_NUMERIC_MAGNITUDE;
 }
 
 function isModelBreakdown(value: unknown): boolean {
   if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   if (!isBoundedString(record.modelName)) { return false; }
-  return BREAKDOWN_NUMERIC_FIELDS.every((field) => isFiniteNumber(record[field]));
+  return BREAKDOWN_NUMERIC_FIELDS.every((field) => isValidUsageNumber(record[field]));
 }
 
 function isAgentBreakdown(value: unknown): boolean {
   if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   if (!isBoundedString(record.agent)) { return false; }
-  if (!NUMERIC_FIELDS.every((field) => isFiniteNumber(record[field]))) { return false; }
+  if (!NUMERIC_FIELDS.every((field) => isValidUsageNumber(record[field]))) { return false; }
   if (!isStringArray(record.modelsUsed, MAX_MODELS_USED)) { return false; }
   if (!Array.isArray(record.modelBreakdowns) || record.modelBreakdowns.length > MAX_MODEL_BREAKDOWNS) { return false; }
   if (!record.modelBreakdowns.every(isModelBreakdown)) { return false; }
@@ -78,7 +76,7 @@ function isValidPeriodEntry(value: unknown): boolean {
   if (typeof value !== "object" || value === null) { return false; }
   const record = value as Record<string, unknown>;
   if (!STRING_FIELDS.every((field) => isBoundedString(record[field]))) { return false; }
-  if (!NUMERIC_FIELDS.every((field) => isFiniteNumber(record[field]))) { return false; }
+  if (!NUMERIC_FIELDS.every((field) => isValidUsageNumber(record[field]))) { return false; }
   // modelsUsed / modelBreakdowns は PeriodEntry 型で必須。optional 扱いだと
   // projectUsageData や集計が undefined に触れて描画途中でクラッシュする
   if (!isStringArray(record.modelsUsed, MAX_MODELS_USED)) { return false; }
@@ -89,6 +87,7 @@ function isValidPeriodEntry(value: unknown): boolean {
   // 検証されないとキャップを迂回してサーバ OOM / クライアント freeze を起こせるため、
   // agents と同じ MAX_AGENTS / MAX_STRING_LENGTH で検証する（fail-closed）
   if (record.metadata !== undefined) {
+    if (typeof record.metadata !== "object" || record.metadata === null || Array.isArray(record.metadata)) { return false; }
     const metadata = record.metadata as Record<string, unknown>;
     if (metadata.agents !== undefined && !isStringArray(metadata.agents, MAX_AGENTS)) { return false; }
   }
