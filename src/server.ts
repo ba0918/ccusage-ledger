@@ -501,18 +501,34 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
   }
 
   // Node 実行時: @hono/node-server で起動する。serve が env に { incoming, outgoing } を渡すため、
-  // createApp のミドルウェアが incoming.socket.remoteAddress から IP を解決できる
+  // createApp のミドルウェアが incoming.socket.remoteAddress から IP を解決できる。
+  // bind エラー（EADDRINUSE 等）は Node では非同期に飛ぶため、Promise で待ち受けて
+  // 同期 throw する Bun.serve と同じく main() のエラーハンドラに載せる
   const { serve } = await import("@hono/node-server");
-  serve(
-    {
-      hostname,
-      port,
-      fetch: (request, env) => app(request, env as unknown),
-    },
-    () => {},
-  );
-  // Node の serve は options.port で即時 bind するため、実際の port を返す
-  return port;
+  return new Promise<number>((resolve, reject) => {
+    let listening = false;
+    const server = serve(
+      {
+        hostname,
+        port,
+        fetch: (request, env) => app(request, env as unknown),
+      },
+      // 実際に bind されたポートを返す（PORT=0 での自動採番にも対応する）
+      (info) => {
+        listening = true;
+        resolve(info.port);
+      },
+    );
+    server.on("error", (error: Error) => {
+      // bind 後のサーバーエラーで reject しても解決済みで無視されるため、起動後は明示的に
+      // ログへ出す（error リスナーがある間 Node は throw しないので、黙って消える）
+      if (listening) {
+        console.error(`ERROR: server error: ${messageOf(error)}`);
+        return;
+      }
+      reject(error);
+    });
+  });
 }
 
 // PORT は 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、

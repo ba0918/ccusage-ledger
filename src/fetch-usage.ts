@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, c
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { messageOf } from "./errors";
@@ -65,6 +66,8 @@ export function userHomeDir(env: Record<string, string | undefined>): string {
 export interface SpawnEnvOptions {
   userHome: string;
   emptyHome: string;
+  // ディレクトリの存在判定（テストから差し替える）
+  dirExists?: (path: string) => boolean;
 }
 
 export function spawnEnv(env: Record<string, string | undefined>, options: SpawnEnvOptions): Record<string, string> {
@@ -83,14 +86,37 @@ export function spawnEnv(env: Record<string, string | undefined>, options: Spawn
     // HOME に "$&" 等が含まれても置換が壊れない）
     if (result[key] === undefined) {
       const suffix = AGENT_DATA_DIR_DEFAULTS[key]!.slice(1);
-      result[key] = options.userHome + suffix;
+      const path = options.userHome + suffix;
+      // 存在しないディレクトリは渡さない。ccusage は指定されたディレクトリが無いと
+      // エラー終了するため、使っていないエージェント（例: Claude Code 未使用）の
+      // デフォルトを常に渡すと、取得が丸ごと失敗して常に空のダッシュボードになる
+      const exists = options.dirExists ?? ((target: string) => existsSync(target));
+      if (exists(path)) { result[key] = path; }
     }
   }
   return result;
 }
 
+// npm / bun のフラットな node_modules では依存が兄弟にホイストされるため、
+// 配布物の <packageDir>/node_modules/<name> は存在しない。ここを決め打ちにすると、
+// npx / bunx で入れた配布版では cli.js が見つからず、データ取得も整合性検証も必ず失敗する。
+// Node の解決規則で実際の位置を求め、解決できない場合のみネストパスにフォールバックする。
+// createRequire は Bun / Node どちらでも動く（Bun.resolveSync は Node 実行時に使えない）
+export function resolvePackageRoot(name: string, packageDir: string = PACKAGE_DIR): string {
+  try {
+    const requireFrom = createRequire(join(packageDir, "package.json"));
+    return dirname(requireFrom.resolve(`${name}/package.json`));
+  } catch {
+    return join(packageDir, "node_modules", ...name.split("/"));
+  }
+}
+
+export function ccusagePackageRoot(packageDir: string = PACKAGE_DIR): string {
+  return resolvePackageRoot("ccusage", packageDir);
+}
+
 export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
-  return join(packageDir, "node_modules", "ccusage", "src", "cli.js");
+  return join(ccusagePackageRoot(packageDir), "src", "cli.js");
 }
 
 // ccusage@20.0.19 のラッパー（node_modules/ccusage = cli.js + config-schema.json）の sha256。
@@ -143,8 +169,8 @@ export function ccusageNativePackageName(
 export function ccusageNativePackageDir(packageDir: string = PACKAGE_DIR): string | null {
   const name = ccusageNativePackageName();
   if (name === null) { return null; }
-  // name は "@ccusage/ccusage-<platform>-<arch>" のスコープ付きなので、node_modules/ に直接連結する
-  const root = join(packageDir, "node_modules", name);
+  // native パッケージもホイストされ得るため、ラッパーと同じ解決規則で位置を求める
+  const root = resolvePackageRoot(name, packageDir);
   return existsSync(root) ? root : null;
 }
 
@@ -176,7 +202,7 @@ function hashPackageFiles(root: string): string {
 // ラッパー（node_modules/ccusage）の sha256。プラットフォーム非依存のため、CCUSAGE_WRAPPER_SHA256 と
 // 全プラットフォームで照合できる
 export function computeWrapperHash(packageDir: string = PACKAGE_DIR): string {
-  return hashPackageFiles(join(packageDir, "node_modules", "ccusage"));
+  return hashPackageFiles(ccusagePackageRoot(packageDir));
 }
 
 // 実行プラットフォームの native バイナリの sha256。native がインストールされていない場合は null。
@@ -264,6 +290,16 @@ export async function readStdoutWithLimit(
   return parts.join("");
 }
 
+// 子プロセスの終了コードを待つ。timeout や kill でシグナル終了した場合は code が null に
+// なるため、失敗（1）として扱う（呼び出し側は exitCode === 0 のみを成功とみなす）。
+// spawn 失敗（ENOENT 等）は 'error' で通知されるため、reject して読み込みのハングを防ぐ
+export function waitForExit(proc: ChildProcess): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    proc.on("error", reject);
+    proc.on("close", (code) => resolve(code ?? 1));
+  });
+}
+
 async function defaultSpawn(args: string[]): Promise<SpawnResult> {
   const cliPath = ccusageCliPath();
   if (!existsSync(cliPath)) {
@@ -299,16 +335,15 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     // stdout をバイト上限付きで収集する（readStdoutWithLimit と同一実装）。上限超過時は
     // readStdoutWithLimit が throw し、finally の kill で子プロセスを止めて読み止めのまま
     // 残留するのを防ぐ（Bun.spawn の頃のタイムアウト残留対策と同様）
-    const stdoutText = await new Promise<string>((resolve, reject) => {
-      // spawn 失敗（ENOENT 等）は child の 'error' で通知される。stdout ストリーム側にも
-      // error が流れることが多いが保証されないため、child 側でも明示的に拒否して
-      // 読み込みがハングしないようにする
-      proc!.on("error", reject);
-      readStdoutWithLimit(stdoutStream).then(resolve, reject);
-    });
-    // ?? は三項より先に評価されるため、exitCode が nullish のときだけ killed を見る
-    const exitCode = (proc.exitCode ?? proc.killed) ? 1 : 0;
-    return { stdout: stdoutText, exitCode };
+    // stdout の読み切りと終了待ちを同時に開始する。Promise.all は両方に即座にハンドラを
+    // 付けるため、片方が reject しても、もう片方が unhandled rejection にならない。
+    // stdout の EOF は必ずしもプロセス終了と同時ではないため、exitCode は 'close' を
+    // 待って読む（待たずに proc.exitCode を見ると null になり、失敗を成功と誤判定する）
+    const [stdout, exitCode] = await Promise.all([
+      readStdoutWithLimit(stdoutStream),
+      waitForExit(proc),
+    ]);
+    return { stdout, exitCode };
   } finally {
     if (proc !== null && proc.exitCode === null && !proc.killed) {
       proc.kill();

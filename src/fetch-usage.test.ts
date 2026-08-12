@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync, symlinkSync, lstatSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, type SpawnResult } from "./fetch-usage";
+import { spawn as spawnProcess } from "node:child_process";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -26,8 +27,57 @@ describe("DEFAULT_COMMAND", () => {
 });
 
 describe("ccusageCliPath", () => {
-  test("node_modules/ccusage/src/cli.js を指す", () => {
+  test("解決できない基準ディレクトリではネストした node_modules パスにフォールバックする", () => {
     expect(ccusageCliPath("/pkg")).toBe(join("/pkg", "node_modules", "ccusage", "src", "cli.js"));
+  });
+
+  test("ホイストされた node_modules でも実在する cli.js を指す（配布版で取得が失敗しない）", () => {
+    // npm / bun のフラットな node_modules では依存が兄弟にホイストされるため、
+    // ネストパス決め打ちだと npx / bunx 配布版で cli.js が見つからずデータが常に空になる
+    const cliPath = ccusageCliPath();
+    expect(existsSync(cliPath)).toBe(true);
+    expect(toPosixRelPath(cliPath).endsWith("ccusage/src/cli.js")).toBe(true);
+  });
+});
+
+describe("resolvePackageRoot", () => {
+  test("スコープ付きパッケージも解決できる（native バイナリの整合性検証で使う）", () => {
+    const root = resolvePackageRoot("@ccusage/ccusage-linux-x64");
+    expect(toPosixRelPath(root).endsWith("@ccusage/ccusage-linux-x64")).toBe(true);
+  });
+
+  test("解決できない場合はスコープを分割してネストパスを組み立てる", () => {
+    expect(resolvePackageRoot("@scope/pkg", "/pkg")).toBe(join("/pkg", "node_modules", "@scope", "pkg"));
+  });
+});
+
+describe("waitForExit", () => {
+  test("正常終了した子プロセスの終了コードを返す", async () => {
+    const proc = spawnProcess(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    expect(await waitForExit(proc)).toBe(0);
+  });
+
+  test("非ゼロ終了の終了コードをそのまま返す（ログに実際のコードが出る）", async () => {
+    const proc = spawnProcess(process.execPath, ["-e", "process.exit(3)"], { stdio: "ignore" });
+    expect(await waitForExit(proc)).toBe(3);
+  });
+
+  test("シグナルで終了した場合（code が null）は失敗として 1 を返す", async () => {
+    const proc = spawnProcess(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    const exited = waitForExit(proc);
+    proc.kill("SIGKILL");
+    expect(await exited).toBe(1);
+  });
+
+  test("stdout を閉じてから遅れて非ゼロ終了しても失敗として扱う（close を待たない誤判定の防止）", async () => {
+    // stdout の EOF はプロセス終了と同時とは限らない。終了を待たずに proc.exitCode を
+    // 読むと null になり、失敗が成功として扱われてしまう
+    const proc = spawnProcess(
+      process.execPath,
+      ["-e", "process.stdout.write('x'); process.stdout.end(); setTimeout(() => process.exit(2), 150);"],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    expect(await waitForExit(proc)).toBe(2);
   });
 });
 
@@ -51,7 +101,7 @@ describe("spawnEnv", () => {
   test("許可リストのキーのみを残し、HOME は空の一時ディレクトリに置き換える", () => {
     expect(spawnEnv(
       { PATH: "/usr/bin", HOME: "/home/u", XDG_CACHE_HOME: "/tmp/c" },
-      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty", dirExists: () => true },
     )).toEqual({
       PATH: "/usr/bin",
       XDG_CACHE_HOME: "/tmp/c",
@@ -73,7 +123,7 @@ describe("spawnEnv", () => {
         SSH_AUTH_SOCK: "/run/user/1000/ssh-agent.sock",
         AWS_SECRET_ACCESS_KEY: "secret",
       },
-      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty", dirExists: () => true },
     );
     expect(env.PATH).toBe("/usr/bin");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
@@ -87,7 +137,7 @@ describe("spawnEnv", () => {
   test("ユーザーがデータディレクトリ env を設定している場合はそれを尊重する", () => {
     const env = spawnEnv(
       { CLAUDE_CONFIG_DIR: "/custom/claude", CODEX_HOME: "/custom/codex" },
-      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty", dirExists: () => true },
     );
     expect(env.CLAUDE_CONFIG_DIR).toBe("/custom/claude");
     expect(env.CODEX_HOME).toBe("/custom/codex");
@@ -99,7 +149,7 @@ describe("spawnEnv", () => {
   test("データディレクトリ env が空文字の場合はデフォルトにフォールバックする", () => {
     const env = spawnEnv(
       { CLAUDE_CONFIG_DIR: "" },
-      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty", dirExists: () => true },
     );
     expect(env.CLAUDE_CONFIG_DIR).toBe("/home/u/.claude/projects");
   });
@@ -108,10 +158,38 @@ describe("spawnEnv", () => {
     // String.replace の $ 置換（$& 等）を避けて連結しているため、HOME に $ があっても正しく解決する
     const env = spawnEnv(
       { PATH: "/usr/bin" },
-      { userHome: "/tmp/otaku$'PATH", emptyHome: "/tmp/empty" },
+      { userHome: "/tmp/otaku$'PATH", emptyHome: "/tmp/empty", dirExists: () => true },
     );
     expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/otaku$'PATH/.claude/projects");
     expect(env.CODEX_HOME).toBe("/tmp/otaku$'PATH/.codex");
+  });
+});
+
+describe("spawnEnv データディレクトリの存在判定", () => {
+  test("存在しないデフォルトのデータディレクトリは渡さない（未使用エージェントで取得が丸ごと失敗しない）", () => {
+    // ccusage は指定されたディレクトリが無いとエラー終了する。Claude Code を使っていない
+    // 環境で ~/.claude/projects を常に渡すと、Codex 等のデータがあっても取得が失敗し、
+    // ダッシュボードが常に空になる
+    const env = spawnEnv(
+      { PATH: "/usr/bin" },
+      {
+        userHome: "/home/u",
+        emptyHome: "/tmp/empty",
+        dirExists: (path) => path === "/home/u/.codex",
+      },
+    );
+    expect(env.CODEX_HOME).toBe("/home/u/.codex");
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(env.GEMINI_DATA_DIR).toBeUndefined();
+    expect(env.OPENCODE_DATA_DIR).toBeUndefined();
+  });
+
+  test("ユーザーが明示指定した値は存在しなくてもそのまま渡す（設定ミスを黙って握り潰さない）", () => {
+    const env = spawnEnv(
+      { CLAUDE_CONFIG_DIR: "/custom/claude" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty", dirExists: () => false },
+    );
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/custom/claude");
   });
 });
 
