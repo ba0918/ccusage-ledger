@@ -87,10 +87,19 @@ export interface ExportFileOperations {
   write?: (fd: number, data: Uint8Array, offset: number, length: number) => number;
 }
 
+function isSymbolicLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") { return false; }
+    throw error;
+  }
+}
+
 export function writeExportedHtml(outputPath: string, html: string, operations: ExportFileOperations = {}): void {
   const outputDir = dirname(outputPath);
   mkdirSync(outputDir, { recursive: true });
-  if (existsSync(outputPath) && lstatSync(outputPath).isSymbolicLink()) {
+  if (isSymbolicLink(outputPath)) {
     throw new Error(`refusing to replace symbolic link: ${outputPath}`);
   }
 
@@ -111,10 +120,8 @@ export function writeExportedHtml(outputPath: string, html: string, operations: 
 
     // 既存ファイルを先に削除しない。rename に失敗しても以前の export を保持するため。
     // 再検証により、最初の確認後に置かれた symlink もリンク先ごと上書きしない。
-    if (existsSync(outputPath)) {
-      if (lstatSync(outputPath).isSymbolicLink()) {
-        throw new Error(`refusing to replace symbolic link: ${outputPath}`);
-      }
+    if (isSymbolicLink(outputPath)) {
+      throw new Error(`refusing to replace symbolic link: ${outputPath}`);
     }
     (operations.rename ?? renameSync)(temporaryPath, outputPath);
   } finally {

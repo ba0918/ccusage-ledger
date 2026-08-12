@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, readFileSync, readdirSync, symlinkSync, lstatSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UsageData } from "./types";
@@ -138,6 +138,22 @@ describe("writeExportedHtml", () => {
 
       expect(() => writeExportedHtml(out, "<html>attack</html>")).toThrow(/symbolic link/i);
       expect(readFileSync(target, "utf-8")).toBe("unchanged");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("リンク先が存在しないシンボリックリンクも拒否する", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const out = join(dir, "dist", "ccusage-ledger.html");
+      const missingTarget = join(dir, "missing.html");
+      mkdirSync(dirname(out), { recursive: true });
+      symlinkSync(missingTarget, out);
+
+      expect(() => writeExportedHtml(out, "<html>new</html>")).toThrow(/symbolic link/i);
+      expect(lstatSync(out).isSymbolicLink()).toBe(true);
+      expect(existsSync(missingTarget)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
