@@ -42,18 +42,22 @@ function createChart(id: string, type: string, data: ChartData, options: ChartOp
   charts[id] = new Chart(canvas, { type, data, options: fullOptions });
 }
 
-function datasetColor(label: string, models: string[]): string {
-  return label === t("other") ? OTHER_COLOR : modelColor(label, models);
+function datasetColor(label: string, models: string[], isOther = false): string {
+  return isOther ? OTHER_COLOR : modelColor(label, models);
 }
 
-function colorize(series: ChartSeries, colorFor: (label: string) => string, fill: boolean | "origin" = false): ChartData {
+function colorize(
+  series: ChartSeries,
+  colorFor: (label: string, isOther: boolean) => string,
+  fill: boolean | "origin" = false,
+): ChartData {
   return {
     labels: series.labels,
     datasets: series.datasets.map((dataset) => ({
       ...dataset,
       fill,
-      backgroundColor: colorFor(dataset.label),
-      borderColor: colorFor(dataset.label),
+      backgroundColor: colorFor(dataset.label, dataset.isOther === true),
+      borderColor: colorFor(dataset.label, dataset.isOther === true),
     })),
   };
 }
@@ -65,13 +69,13 @@ function tooltipLabel(
   return (item: unknown) => {
     const { parsed, dataset, dataIndex } = item as {
       parsed: { x?: number; y?: number };
-      dataset: { label?: string };
+      dataset: { label?: string; isOther?: boolean };
       dataIndex: number;
     };
     const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
     if (opts?.excludeZero && value === 0) { return ""; }
     const lines: string[] = [fmt(value, dataset.label ?? "")];
-    if (dataset.label === t("other") && opts?.entries && opts.top) {
+    if (dataset.isOther === true && opts?.entries && opts.top) {
       const entry = opts.entries[dataIndex];
       if (entry) {
         const inner = opts.inner ?? ((item: OtherBreakdownItem) => `${item.modelName}: ${Math.round(item.ratio)}%`);
@@ -135,7 +139,7 @@ function renderStackedBar(spec: StackedBarSpec): void {
   createChart(
     spec.id,
     "bar",
-    colorize(spec.series, (label) => datasetColor(label, spec.models)),
+    colorize(spec.series, (label, isOther) => datasetColor(label, spec.models, isOther)),
     {
       interaction: { mode: "index", intersect: false },
       scales: { x: xScale, y: yScale },
@@ -181,7 +185,7 @@ function tokenTooltipLabel(tooltipCtx: TooltipContext): (item: unknown) => strin
   return (item: unknown) => {
     const { parsed, dataset, dataIndex } = item as {
       parsed: { x?: number; y?: number };
-      dataset: { label?: string };
+      dataset: { label?: string; isOther?: boolean };
       dataIndex: number;
     };
     const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
@@ -189,7 +193,7 @@ function tokenTooltipLabel(tooltipCtx: TooltipContext): (item: unknown) => strin
     const label = dataset.label ?? "";
     const entry = tooltipCtx.entries[dataIndex];
     if (!entry) { return `${label}: ${formatTokens(value)}`; }
-    const isOther = label === t("other");
+    const isOther = dataset.isOther === true;
     const breakdowns = modelTokenBreakdown(entry, isOther ? null : label, tooltipCtx.top);
     return [
       `${label}: ${formatTokens(value)}`,

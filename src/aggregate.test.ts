@@ -663,6 +663,19 @@ describe("buildModelCostSeries", () => {
     expect(other.data[1]).toBeCloseTo(0.5);
   });
 
+  test("実モデル名が otherLabel と同じでも集約バケットだけを意味情報で識別できる", () => {
+    const entries = [
+      entryWithModels("2026-01", [["Others", 10], ["m2", 5], ["m3", 1]]),
+    ];
+
+    const series = buildModelCostSeries(entries, 1, "Others");
+
+    expect(series.datasets).toEqual([
+      { label: "Others", data: [10] },
+      { label: "Others", data: [6], isOther: true },
+    ]);
+  });
+
   test("モデルが5件以下なら「その他」を作らない", () => {
     const entries = [entryWithModels("2026-01", [["m3", 3], ["m1", 1], ["m2", 2]])];
     const series = buildModelCostSeries(entries);
@@ -711,7 +724,7 @@ describe("buildModelTokenSeries", () => {
 
     expect(series.datasets).toEqual([
       { label: "expensive", data: [1] },
-      { label: "Others", data: [1000] },
+      { label: "Others", data: [1000], isOther: true },
     ]);
   });
 });

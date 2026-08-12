@@ -158,10 +158,7 @@ function render(): void {
   const tooltipCtx: TooltipContext = { entries, top: new Set(series.topModels), excludeZero: true };
 
   renderKpis(series.kpi, entries, rangeDescription());
-  const stackedTitle = t(stackedMetric === "cost" ? "costStackedTitle" : "tokensStackedTitle");
-  const stackedTitleElement = document.getElementById("stacked-chart-title");
-  if (stackedTitleElement) { stackedTitleElement.textContent = stackedTitle; }
-  el("chart-cost-stacked").setAttribute("aria-label", stackedTitle);
+  syncStackedTitle();
   renderUsageStacked(stackedMetric, series.costStacked, series.tokensStacked, models, tooltipCtx);
   renderModelMix(series.modelMix, models, tooltipCtx);
   renderUnitPrice(series.unitPrices);
@@ -247,6 +244,13 @@ function syncStackedToggle(): void {
     btn.classList.toggle("active", isActive);
     btn.setAttribute("aria-pressed", String(isActive));
   });
+  syncStackedTitle();
+}
+
+function syncStackedTitle(): void {
+  const title = t(stackedMetric === "cost" ? "costStackedTitle" : "tokensStackedTitle");
+  el("stacked-chart-title").textContent = title;
+  el("chart-cost-stacked").setAttribute("aria-label", title);
 }
 
 function bindLangToggle(): void {

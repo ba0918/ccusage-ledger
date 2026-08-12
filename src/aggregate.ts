@@ -373,7 +373,7 @@ function effectiveUnitPrice(cost: number, tokens: number): number {
 
 export interface ChartSeries {
   labels: string[];
-  datasets: { label: string; data: (number | null)[] }[];
+  datasets: { label: string; data: (number | null)[]; isOther?: true }[];
 }
 
 export function topModelsByCost(entries: PeriodEntry[], topN: number): string[] {
@@ -669,7 +669,7 @@ function buildTopModelSeries(
     for (const breakdown of entry.modelBreakdowns) { byModel.set(breakdown.modelName, breakdown); }
     return byModel;
   });
-  const datasets = top.map((model) => ({
+  const datasets: ChartSeries["datasets"] = top.map((model) => ({
     label: model,
     data: entries.map((entry, i) => valueFor(index[i]!, entry, model, topSet)),
   }));
@@ -677,6 +677,7 @@ function buildTopModelSeries(
     datasets.push({
       label: otherLabel,
       data: entries.map((entry, i) => valueFor(index[i]!, entry, null, topSet)),
+      isOther: true,
     });
   }
   return { labels, datasets };

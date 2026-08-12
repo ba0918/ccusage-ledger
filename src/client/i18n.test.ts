@@ -442,6 +442,25 @@ function makeEntry(period: string, breakdowns: [string, number][]): PeriodEntry 
   };
 }
 
+function makeAgentEntry(period: string, agent: string, breakdowns: [string, number][]): PeriodEntry {
+  const entry = makeEntry(period, breakdowns);
+  return {
+    ...entry,
+    metadata: { agents: [agent] },
+    agents: [{
+      agent,
+      totalCost: entry.totalCost,
+      totalTokens: entry.totalTokens,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      cacheReadTokens: entry.cacheReadTokens,
+      cacheCreationTokens: entry.cacheCreationTokens,
+      modelsUsed: entry.modelsUsed,
+      modelBreakdowns: entry.modelBreakdowns,
+    }],
+  };
+}
+
 const DATA_WITH_MODELS: UsageData = {
   daily: [
     makeEntry("2026-01-10", [["model-a", 0.3], ["model-b", 0.2]]),
@@ -449,6 +468,19 @@ const DATA_WITH_MODELS: UsageData = {
     makeEntry("2026-03-15", [["model-b", 0.4]]),
   ],
   monthly: [],
+};
+const DATA_WITH_OTHER_MODEL: UsageData = {
+  daily: [
+    makeEntry("2026-01-10", [["Others", 10], ["m2", 5], ["m3", 4], ["m4", 3], ["m5", 2], ["m6", 1]]),
+  ],
+  monthly: [],
+};
+const DATA_WITH_FILTER_CHANGES: UsageData = {
+  daily: DATA_WITH_MODELS.daily,
+  monthly: [
+    makeAgentEntry("2026-04", "claude", [["model-a", 2]]),
+    makeAgentEntry("2026-05", "codex", [["model-b", 3]]),
+  ],
 };
 const EMPTY_DATA: UsageData = { daily: [], monthly: [] };
 
@@ -500,20 +532,34 @@ describe("main.ts の言語切替", () => {
     ]);
   });
 
+  test("翻訳済みの Others と同名の実モデルを集約バケットとして扱わない", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_OTHER_MODEL, false, "other-model-collision");
+
+    const chart = FakeChart.instances[0]!;
+    const datasets = chart.data.datasets.filter((dataset) => dataset.label === "Others");
+    expect(datasets).toHaveLength(2);
+    expect(datasets[0]!.backgroundColor).not.toBe(datasets[1]!.backgroundColor);
+
+    const label = (chart.options.plugins as { tooltip: { callbacks: { label: (item: unknown) => string[] } } }).tooltip.callbacks.label;
+    expect(label({ parsed: { y: 10 }, dataset: datasets[0], dataIndex: 0 })).toEqual(["Others: $10.0"]);
+    expect(label({ parsed: { y: 1 }, dataset: datasets[1], dataIndex: 0 })).toEqual(["Others: $1.0", "  m6: $1.0"]);
+  });
+
   test("Tokens 選択は期間・モデル・エージェント・言語の変更後も維持される", async () => {
     const dom = createFakeDom();
-    await loadMain(dom, DATA_WITH_MODELS, false, "stacked-persistence");
+    await loadMain(dom, DATA_WITH_FILTER_CHANGES, false, "stacked-persistence");
 
     const buttons = dom.querySelectorAll(".stacked-toggle button");
     buttons[1]!.dispatch("click");
     const section = dom.getElementById("section")!;
-    section.value = "daily";
+    section.value = "monthly";
     section.dispatch("change");
     const model = dom.getElementById("model")!;
     model.value = "model-a";
     model.dispatch("change");
     const agent = dom.getElementById("agent")!;
-    agent.value = "";
+    agent.value = "claude";
     agent.dispatch("change");
     dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
 
@@ -522,6 +568,9 @@ describe("main.ts の言語切替", () => {
     expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("トークン積み上げ（モデル別）");
     const chart = FakeChart.instances[0]!;
     expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("トークン数");
+    expect(section.value).toBe("monthly");
+    expect(agent.value).toBe("claude");
+    expect(chart.data.labels).toEqual(["2026-04"]);
     expect(chart.data.datasets.map((dataset) => dataset.label)).toEqual(["model-a"]);
   });
 
@@ -551,6 +600,16 @@ describe("main.ts の言語切替", () => {
     dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
     expect(status.textContent).toBe("データがありません");
     expect(kpiCost.textContent).toBe("");
+  });
+
+  test("データ 0 状態でも Tokens 選択に見出しと canvas の読み上げラベルが追従する", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, EMPTY_DATA, false, "empty-stacked-toggle");
+
+    dom.querySelectorAll(".stacked-toggle button")[1]!.dispatch("click");
+
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("Tokens stacked (by model)");
+    expect(dom.getElementById("chart-cost-stacked")!.getAttribute("aria-label")).toBe("Tokens stacked (by model)");
   });
 
   test("データ 0 状態で言語切替すると KPI サブとドーナツ中央ラベルも言語に追従する", async () => {
