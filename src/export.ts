@@ -8,6 +8,7 @@ import { projectUsageData } from "./usage-data";
 export const CHART_TAG = '<script src="/public/vendor/chart.umd.min.js"></script>';
 export const BUNDLE_TAG = '<script src="/dist/bundle.js"></script>';
 export const EMBEDDED_TAG = '<script id="embedded-data"></script>';
+export const APP_CSS_TAG = '<link rel="stylesheet" href="/public/app.css" />';
 
 export const EXPORT_CSP =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -30,13 +31,14 @@ export function writeExportedHtml(outputPath: string, html: string): void {
   writeFileSync(outputPath, html, { mode: 0o600 });
 }
 
-export function buildExportedHtml(html: string, chartJs: string, bundle: string, data: UsageData): string {
+export function buildExportedHtml(html: string, chartJs: string, bundle: string, css: string, data: UsageData): string {
   // CSP・警告バナーの注入が無効な HTML で静かに失われないよう、挿入ポイントの存在を検証する
   if (!html.includes("</head>")) { throw new Error("index.html is missing </head>"); }
   if (!html.includes("<body>")) { throw new Error("index.html is missing <body>"); }
   if (!html.includes(CHART_TAG)) { throw new Error("index.html is missing the Chart.js script tag"); }
   if (!html.includes(BUNDLE_TAG)) { throw new Error("index.html is missing the bundle script tag"); }
   if (!html.includes(EMBEDDED_TAG)) { throw new Error("index.html is missing the embedded data script tag"); }
+  if (!html.includes(APP_CSS_TAG)) { throw new Error("index.html is missing the app.css link tag"); }
 
   const dataJson = JSON.stringify(projectUsageData(data)).replace(/</g, "\\u003c");
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`;
@@ -45,10 +47,11 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
     .replace("<body>", `<body>${EXPORT_WARNING_BANNER}`)
     .replace(CHART_TAG, `<script>${chartJs}</script>`)
     .replace(BUNDLE_TAG, `<script>${bundle}</script>`)
-    .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`);
+    .replace(EMBEDDED_TAG, `<script id="embedded-data">window.CCUSAGE_DATA = ${dataJson};</script>`)
+    .replace(APP_CSS_TAG, `<style>${css}</style>`);
 
   // タグ表記が index.html とずれた場合、replace が効かず壊れた HTML が静かに出力されるのを防ぐ
-  for (const tag of [CHART_TAG, BUNDLE_TAG, EMBEDDED_TAG]) {
+  for (const tag of [CHART_TAG, BUNDLE_TAG, EMBEDDED_TAG, APP_CSS_TAG]) {
     if (out.includes(tag)) { throw new Error(`failed to replace ${tag} in index.html`); }
   }
   return out;
@@ -65,8 +68,9 @@ async function main(): Promise<void> {
   const html = readFileSync(join(rootDir, "index.html"), "utf-8");
   const chartJs = readFileSync(join(rootDir, "public", "vendor", "chart.umd.min.js"), "utf-8");
   const bundle = readFileSync(join(rootDir, "dist", "bundle.js"), "utf-8");
+  const css = readFileSync(join(rootDir, "public", "app.css"), "utf-8");
 
-  const exported = buildExportedHtml(html, chartJs, bundle, usage.data);
+  const exported = buildExportedHtml(html, chartJs, bundle, css, usage.data);
   const outputPath = exportOutputPath(process.cwd());
   writeExportedHtml(outputPath, exported);
 

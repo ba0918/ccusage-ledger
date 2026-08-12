@@ -1,6 +1,6 @@
 import type { AgentBreakdown, PeriodEntry, UsageData } from "../types";
 import { loadUsageData } from "./load-data";
-import { escapeHtml } from "./escape";
+import { htmlAttr, htmlText } from "./escape";
 import { applyStaticTranslations, createSafeStorage, getLang, setLang, t, type Lang } from "./i18n";
 import {
   agentDonutData,
@@ -337,9 +337,10 @@ function hitRateColor(hitRate: number): string {
 }
 
 // 「モデル名 + 横棒 + 数値セル」の行を組み立てる（renderUnitPrice / renderCostRanking で共通）
+// データ由来の文字列（modelName）は必ず htmlAttr / htmlText を通す（stored XSS 防止の choke point）
 function modelBarRow(modelName: string, barWidth: number, barColor: string, cells: string[]): string {
   return `<tr>
-    <td class="model" title="${escapeHtml(modelName)}">${escapeHtml(shortModelName(modelName))}</td>
+    <td class="model" title="${htmlAttr(modelName)}">${htmlText(shortModelName(modelName))}</td>
     <td class="bar-cell"><div class="bar" style="width:${barWidth}%;background:${barColor}"></div></td>
     ${cells.map((cell) => `<td class="num">${cell}</td>`).join("")}
   </tr>`;
@@ -445,7 +446,7 @@ function renderAgentDonut(share: ReturnType<typeof buildDashboardSeriesFromEntri
       const formatted = formatSegValue(value);
       const ratio = total === 0 ? 0 : value / total;
       return `<tr>
-        <td><span class="a-name"><span class="swatch" style="background:${colors[index] ?? AGENT_PALETTE[0]}"></span>${escapeHtml(e.agent)}</span></td>
+        <td><span class="a-name"><span class="swatch" style="background:${colors[index] ?? AGENT_PALETTE[0]}"></span>${htmlText(e.agent)}</span></td>
         <td class="num">${formatted} <span style="color:var(--muted);font-size:11px">${formatPercent(ratio)}</span></td>
         <td class="num">${formatTokens(e.tokens)}</td>
         <td class="num">${formatCurrency(e.unitPrice)}</td>
@@ -529,7 +530,7 @@ function renderTable(entries: PeriodEntry[]): void {
     rows.push(`<tr class="period-row${isFirstOpen ? " open" : ""}">
         <td>${hasDetail
           ? `<button type="button" class="expand-btn" aria-expanded="${isFirstOpen ? "true" : "false"}"><span class="caret">▶</span></button>`
-          : ""}${escapeHtml(entry.period)}</td>
+          : ""}${htmlText(entry.period)}</td>
         <td>${t("all")}</td>
         <td class="models"></td>
         <td class="num">${formatTokensFull(entry.inputTokens)}</td>
@@ -543,8 +544,8 @@ function renderTable(entries: PeriodEntry[]): void {
       const collapsed = isFirstOpen ? "" : " hidden";
       rows.push(`<tr class="agent-row${isLast ? " last" : ""}${collapsed}">
         <td></td>
-        <td class="a-label">${escapeHtml(agent.agent)}</td>
-        <td class="models">${agentModelNames(agent).map((model) => `<b>${escapeHtml(model)}</b>`).join(" · ")}</td>
+        <td class="a-label">${htmlText(agent.agent)}</td>
+        <td class="models">${agentModelNames(agent).map((model) => `<b>${htmlText(model)}</b>`).join(" · ")}</td>
         <td class="num">${formatTokensFull(agent.inputTokens)}</td>
         <td class="num">${formatTokensFull(agent.outputTokens)}</td>
         <td class="num">${formatPercent(cacheHitRateOf(agent))}</td>

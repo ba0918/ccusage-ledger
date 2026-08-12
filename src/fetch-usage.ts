@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, closeSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, closeSync, chmodSync, readdirSync, statSync, mkdtempSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PACKAGE_DIR, defaultCachePath } from "./paths";
 import type { UsageData } from "./types";
@@ -28,20 +29,138 @@ export interface FetchUsageResult {
 // セクション集合は usage-data.ts の SECTIONS と常に一致させる（検証と取得がずれるとキャッシュが常に無効化される）
 export const DEFAULT_COMMAND = ["--json", "--sections", SECTIONS.join(","), "--by-agent"];
 
-// 子プロセスに渡す環境変数の許可リスト（API キー・トークン等の秘密は渡さない）
-const ALLOWED_ENV_KEYS = ["PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP", "TERM", "SHELL"] as const;
+// 子プロセスに渡す環境変数の許可リスト（API キー・トークン等の秘密は渡さない）。
+// HOME は含めない（後述: 空の一時ディレクトリに置き換えて渡す）
+const ALLOWED_ENV_KEYS = [
+  "PATH",
+  "XDG_CACHE_HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "TERM",
+  "SHELL",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "GEMINI_DATA_DIR",
+  "OPENCODE_DATA_DIR",
+] as const;
 
-export function spawnEnv(env: Record<string, string | undefined>): Record<string, string> {
+// ccusage が各エージェントのデータを読むための env。HOME を渡さない代わりにこの env で
+// データソースを明示的に指定し、「ccusage が読める入口」をデータディレクトリだけに絞る
+// （~/.ssh や ~/.aws 等のエージェント以外の秘密にはデフォルト探索で触れない）。
+// デフォルトは現在のユーザーの HOME ベース。claude は projects/、gemini は tmp/ まで絞れるが、
+// codex / opencode は認証情報（auth.json 等）と履歴が同一ディレクトリのためディレクトリ単位で妥協する
+const AGENT_DATA_DIR_DEFAULTS: Record<string, string> = {
+  CLAUDE_CONFIG_DIR: "~/.claude/projects",
+  CODEX_HOME: "~/.codex",
+  GEMINI_DATA_DIR: "~/.gemini/tmp",
+  OPENCODE_DATA_DIR: "~/.local/share/opencode",
+};
+
+export function userHomeDir(env: Record<string, string | undefined>): string {
+  return env.HOME ?? homedir();
+}
+
+export interface SpawnEnvOptions {
+  userHome: string;
+  emptyHome: string;
+}
+
+export function spawnEnv(env: Record<string, string | undefined>, options: SpawnEnvOptions): Record<string, string> {
   const result: Record<string, string> = {};
   for (const key of ALLOWED_ENV_KEYS) {
     const value = env[key];
-    if (value !== undefined) { result[key] = value; }
+    // 空文字は未設定と同等に扱う（データディレクトリ env のデフォルト解決を正しく働かせる）
+    if (value !== undefined && value !== "") { result[key] = value; }
+  }
+  // HOME は渡さない。ccusage がデフォルトで ~/.claude 等を探索しないよう、空の一時ディレクトリを設定する。
+  // データソースは上記のデータディレクトリ env でのみ渡す
+  result.HOME = options.emptyHome;
+  for (const key of Object.keys(AGENT_DATA_DIR_DEFAULTS) as Array<keyof typeof AGENT_DATA_DIR_DEFAULTS>) {
+    // ユーザーが明示的に設定している場合はそれを尊重し、未設定のときだけデフォルトを解決する
+    if (result[key] === undefined) {
+      result[key] = AGENT_DATA_DIR_DEFAULTS[key]!.replace(/^~/, options.userHome);
+    }
   }
   return result;
 }
 
 export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
   return join(packageDir, "node_modules", "ccusage", "src", "cli.js");
+}
+
+// ccusage@20.0.19 の実行コード全体（ラッパー + 実行プラットフォームの native バイナリ）の sha256。
+// 依存を更新した場合や別プラットフォーム（darwin / win32 等）で開発する場合は再計算して必ず更新する
+// （vendor-integrity.test.ts の固定値と同一アルゴリズムで算出する）
+export const CCUSAGE_SHA256 = "69e6fd78a1296a269e6a750b8497a6c06b8233bb85d6a418a99c42639ee8612a";
+
+// ccusage の native バイナリパッケージ名（@ccusage/ccusage-<platform>-<arch>）。
+// ccusage@20.0.19 の cli.js が持つ解決ロジックと同一のものを、実行せずにハッシュ対象を
+// 特定するために直接持つ（cli.js はラッパーで、実処理はこの native バイナリが担う）
+export function ccusageNativePackageName(
+  platform: string = process.platform,
+  arch: string = process.arch,
+): string | null {
+  const table: Record<string, Record<string, string>> = {
+    darwin: { arm64: "@ccusage/ccusage-darwin-arm64", x64: "@ccusage/ccusage-darwin-x64" },
+    linux: { arm64: "@ccusage/ccusage-linux-arm64", x64: "@ccusage/ccusage-linux-x64" },
+    win32: { arm64: "@ccusage/ccusage-win32-arm64", x64: "@ccusage/ccusage-win32-x64" },
+  };
+  return table[platform]?.[arch] ?? null;
+}
+
+export function ccusageNativePackageDir(packageDir: string = PACKAGE_DIR): string | null {
+  const name = ccusageNativePackageName();
+  if (name === null) { return null; }
+  // name は "@ccusage/ccusage-<platform>-<arch>" のスコープ付きなので、node_modules/ に直接連結する
+  const root = join(packageDir, "node_modules", name);
+  return existsSync(root) ? root : null;
+}
+
+// ディレクトリ配下の全ファイルを「相対パス + ':' + 内容」の連結でハッシュする
+function hashPackageFiles(root: string): string {
+  const files = (readdirSync(root, { recursive: true, encoding: "utf8" }) as string[])
+    .filter((name) => statSync(join(root, name)).isFile())
+    .sort();
+  const hash = createHash("sha256");
+  for (const rel of files) {
+    hash.update(rel);
+    hash.update(":");
+    hash.update(readFileSync(join(root, rel)));
+  }
+  return hash.digest("hex");
+}
+
+// 実行されるコード全体（node_modules/ccusage ラッパー + 実行プラットフォームの native バイナリ）を
+// ハッシュする。native パッケージはインストール済みなら必ず含める（cli.js 単体ではなく、実処理が
+// ある native バイナリの改ざんも検出するため）。インストール場所に依存しないよう、
+// ディレクトリのハッシュは識別子（ccusage / native）を付けて連結する
+export function computeCcusageHash(packageDir: string = PACKAGE_DIR): string {
+  const roots: Array<[string, string]> = [["ccusage", join(packageDir, "node_modules", "ccusage")]];
+  const nativeRoot = ccusageNativePackageDir(packageDir);
+  if (nativeRoot !== null) { roots.push(["native", nativeRoot]); }
+  const hash = createHash("sha256");
+  for (const [id, root] of roots) {
+    hash.update(id);
+    hash.update(":");
+    hash.update(hashPackageFiles(root));
+  }
+  return hash.digest("hex");
+}
+
+function assertCcusageIntegrity(packageDir: string = PACKAGE_DIR): void {
+  // インストール済みの ccusage（ラッパー + native バイナリ）が改ざんされていないかを起動ごとに検証する。
+  // 環境変数経由の秘密は allowlist で守れるが、ファイルベースの秘密（~/.claude 等）は
+  // 依存が悪意を持つと読まれ得る（AGENTS.md 記載の残余リスク）。このチェックは
+  // ローカル/レジストリ上での post-install 改ざんを検出する defense-in-depth であり、
+  // 固定版そのものの悪意ある publish は検知できない（限界を明示）
+  const actual = computeCcusageHash(packageDir);
+  if (actual !== CCUSAGE_SHA256) {
+    throw new Error(
+      `ccusage integrity check failed (expected sha256 ${CCUSAGE_SHA256}, got ${actual}). ` +
+        "The installed ccusage package differs from the pinned version. Re-run `bun install` to restore it.",
+    );
+  }
 }
 
 // 実行中インタプリタ（process.execPath）で cli.js を直接起動する。
@@ -85,13 +204,21 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
   if (!existsSync(cliPath)) {
     throw new Error(`ccusage is not installed: ${cliPath} (run \`bun install\`)`);
   }
+  // 依存として固定した cli.js を実行する前に、インストール済みパッケージの完全性を検証する
+  assertCcusageIntegrity();
+
+  // HOME を渡さないための空の一時ディレクトリ。ccusage がデフォルトで ~/.claude 等を
+  // 探索しないようにし、データソースは spawnEnv が渡すデータディレクトリ env に限定する
+  const emptyHome = mkdtempSync(join(tmpdir(), "ccusage-home-"));
   // 依存として固定した cli.js を直接実行する。
   // 子プロセスには許可リストの環境変数だけを渡し、RCE された場合に環境変数経由の秘密を奪えないようにする。
-  // （注意: HOME を渡すため、ccusage が悪意を持つ場合は ~/.claude 等のファイルは読まれ得る）
+  // （HOME は渡さず空の一時ディレクトリを設定するため、ccusage が読めるのは明示指定した
+  //   データディレクトリのみ。ただし実行ユーザーが同じなので、改ざんされたバイナリが
+  //   ファイルシステムを直接探索することは防げない。integrity check が主防衛）
   // spawn の stdio タプル指定は戻り値型を never に縮約するため、ChildProcess として明示する
   const command = buildCcusageCommand(cliPath, args);
   const proc: ChildProcess = spawn(command[0]!, command.slice(1), {
-    env: spawnEnv(process.env),
+    env: spawnEnv(process.env, { userHome: userHomeDir(process.env), emptyHome }),
     stdio: ["ignore", "pipe", "ignore"] as const,
     timeout: 60_000,
   });
@@ -131,6 +258,8 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     if (proc.exitCode === null && !proc.killed) {
       proc.kill();
     }
+    // 一時 HOME は子プロセス終了後に掃除する（失敗しても起動を妨げない）
+    rmSync(emptyHome, { recursive: true, force: true });
   }
 }
 
@@ -164,13 +293,19 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
 }
 
 function writeCache(cachePath: string, data: UsageData): void {
-  mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
-  // 攻撃者が書き込み可能なディレクトリでは、共有ディレクトリの owner 以外から
-  // 0600 へ再設定できない場合があるため、mkdir 後にも 0700 を再適用して担保する
-  try {
-    chmodSync(dirname(cachePath), 0o700);
-  } catch {
-    // ディレクトリを所有していない場合はエラーになるが、書き込み自体は続行する
+  const cacheDir = dirname(cachePath);
+  mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  // 共有ディレクトリ（例: 0755 の ~/.cache）にキャッシュを書くと他ユーザーから読まれる/改ざんされる。
+  // ディレクトリが自分所有かつ 0700 であることを確認できない場合は書き込まない（fail-closed）。
+  // 攻撃者が書き込み可能なディレクトリでは、共有ディレクトリの owner 以外から 0600/0700 へ
+  // 再設定できないため、所有者とパーミッションを明示的に検証してから一時ファイルを作る
+  const dirStat = statSync(cacheDir);
+  if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) {
+    throw new Error(`cache directory is not owned by the current user: ${cacheDir}`);
+  }
+  if ((dirStat.mode & 0o777) !== 0o700) {
+    // 自分所有でも 0700 でなければ 0700 に設定し直す。失敗すればここで throw して書き込みを中止する
+    chmodSync(cacheDir, 0o700);
   }
   // temp 名をランダムにして、PID ベースの予測可能な名前への symlink 仕掛けを防ぐ。
   // openSync の 'wx'（O_CREAT|O_EXCL）により既存の symlink を追わない

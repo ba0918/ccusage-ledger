@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isUsageData } from "./usage-data";
+import { isUsageData, MAX_SECTION_ENTRIES, MAX_MODELS_USED, MAX_MODEL_BREAKDOWNS, MAX_AGENTS, MAX_STRING_LENGTH } from "./usage-data";
 
 const VALID_ENTRY = {
   period: "2026-08-11",
@@ -61,5 +61,51 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, period: "2026-01" }], monthly: [] })).toBe(false);
     expect(isUsageData({ daily: [], monthly: [{ ...VALID_ENTRY, period: "2026-01-10" }] })).toBe(false);
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, period: "2026-01-10" }], monthly: [{ ...VALID_ENTRY, period: "2026-01" }] })).toBe(true);
+  });
+
+  test("セクションのエントリ数が上限を超えるデータは false（巨大キャッシュによる DoS を拒否）", () => {
+    const many = Array.from({ length: MAX_SECTION_ENTRIES + 1 }, (_, i) => ({
+      ...VALID_ENTRY,
+      period: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
+    }));
+    expect(isUsageData({ daily: many, monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: many.slice(0, MAX_SECTION_ENTRIES), monthly: [] })).toBe(true);
+  });
+
+  test("modelName / agent / device の文字列長が上限を超えるデータは false", () => {
+    const long = "x".repeat(MAX_STRING_LENGTH + 1);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: [long] }], monthly: [] })).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: long, cost: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }] }], monthly: [] })).toBe(false);
+    const withAgent = (agent: unknown) => ({ daily: [{ ...VALID_ENTRY, agents: [{ agent, totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }] }], monthly: [] });
+    expect(isUsageData(withAgent(long))).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, device: long }], monthly: [] })).toBe(false);
+  });
+
+  test("modelBreakdowns / modelsUsed / agents の件数が上限を超えるデータは false", () => {
+    const manyModels = Array.from({ length: MAX_MODELS_USED + 1 }, (_, i) => `model-${i}`);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelsUsed: manyModels }], monthly: [] })).toBe(false);
+
+    const manyBreakdowns = Array.from({ length: MAX_MODEL_BREAKDOWNS + 1 }, (_, i) => ({
+      modelName: `model-${i}`,
+      cost: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    }));
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: manyBreakdowns }], monthly: [] })).toBe(false);
+
+    const manyAgents = Array.from({ length: MAX_AGENTS + 1 }, (_, i) => ({
+      agent: `agent-${i}`,
+      totalCost: 1,
+      totalTokens: 1,
+      inputTokens: 1,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      modelsUsed: [],
+      modelBreakdowns: [],
+    }));
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, agents: manyAgents }], monthly: [] })).toBe(false);
   });
 });

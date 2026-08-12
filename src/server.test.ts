@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl } from "./server";
+import { createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -16,6 +16,7 @@ beforeEach(() => {
   mkdirSync(join(rootDir, "dist"), { recursive: true });
   mkdirSync(join(rootDir, "public", "vendor"), { recursive: true });
   writeFileSync(join(rootDir, "index.html"), "<!doctype html><title>ccusage</title>");
+  writeFileSync(join(rootDir, "public", "app.css"), "body { color: #000; }");
   writeFileSync(join(rootDir, "dist", "bundle.js"), "console.log('bundle');");
   writeFileSync(join(rootDir, "public", "vendor", "chart.umd.min.js"), "// chart.js");
   writeFileSync(join(rootDir, "secret.txt"), "TOP-SECRET");
@@ -26,9 +27,18 @@ afterEach(() => {
   rmSync(rootDir, { recursive: true, force: true });
 });
 
-async function get(path: string): Promise<Response> {
+// 実サーバの接続情報を模す（Bun の requestIP 相当）。source IP はループバックで与える
+function appEnv(ip: string): { requestIP: () => { address: string } } {
+  return { requestIP: () => ({ address: ip }) };
+}
+
+async function get(path: string, ip = "127.0.0.1"): Promise<Response> {
   const app = createApp({ rootDir, cachePath });
-  return app(new Request(`http://127.0.0.1${path}`));
+  return app(new Request(`http://127.0.0.1${path}`), appEnv(ip));
+}
+
+async function call(app: AppWithUsage, path: string, ip = "127.0.0.1"): Promise<Response> {
+  return app(new Request(`http://127.0.0.1${path}`), appEnv(ip));
 }
 
 describe("server /api/usage", () => {
@@ -57,25 +67,34 @@ describe("server /api/usage", () => {
   test("/api/usage は起動時に読み込んだ内容を配信し、ファイルを再読込しない", async () => {
     const app = createApp({ rootDir, cachePath });
     rmSync(cachePath);
-    const res = await app(new Request("http://127.0.0.1/api/usage"));
+    const res = await call(app, "/api/usage");
     expect(res.status).toBe(200);
     const expected = { ...JSON.parse(FIXTURE) };
     delete expected.totals;
     expect(await res.json()).toEqual(expected);
   });
 
-  test("LAN bind（非ループバック）では /api/usage を配信しない（SSH トンネルを強制）", async () => {
+  test("LAN bind（非ループバック）の非ループバック接続には /api/usage を配信しない", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
-    const res = await app(new Request("http://192.168.1.10/api/usage"));
+    const res = await call(app, "/api/usage", "192.168.1.10");
     expect(res.status).toBe(403);
     expect(res.headers.get("content-type")).toContain("application/json");
   });
 
-  test("403 の SSH トンネル案内に実際の bind ポートを使う", async () => {
+  test("LAN bind でもループバック接続（SSH トンネル）からは /api/usage を配信する", async () => {
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const res = await call(app, "/api/usage", "127.0.0.1");
+    expect(res.status).toBe(200);
+    expect((await res.json() as { daily: unknown[] }).daily.length).toBeGreaterThan(0);
+  });
+
+  test("403 は generic ボディを返し、bind ポートやトンネルコマンドを含めない", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0", port: 5000 });
-    const res = await app(new Request("http://192.168.1.10/api/usage"));
-    const body = await res.json();
-    expect(body.error).toContain("ssh -L 5000:127.0.0.1:5000");
+    const res = await call(app, "/api/usage", "192.168.1.10");
+    const body = await res.json() as { error: string };
+    expect(body.error).toContain("loopback");
+    expect(body.error).not.toContain("ssh");
+    expect(body.error).not.toContain("5000");
   });
 
   test("スキーマ外のフィールドは /api/usage で配信しない（curated projection）", async () => {
@@ -84,16 +103,16 @@ describe("server /api/usage", () => {
     raw.totals = { totalCost: 999 };
     writeFileSync(cachePath, JSON.stringify(raw));
     const app = createApp({ rootDir, cachePath });
-    const res = await app(new Request("http://127.0.0.1/api/usage"));
-    const body = await res.json();
-    expect(body.daily[0].agent).toBeUndefined();
+    const res = await call(app, "/api/usage");
+    const body = await res.json() as { daily: Record<string, unknown>[]; totals?: unknown };
+    expect(body.daily[0]!.agent).toBeUndefined();
     expect(body.totals).toBeUndefined();
   });
 
   test("起動時に読み込んだキャッシュがスキーマ不一致なら空データを返す", async () => {
     writeFileSync(cachePath, JSON.stringify({ daily: "not-array", monthly: [] }));
     const app = createApp({ rootDir, cachePath });
-    const res = await app(new Request("http://127.0.0.1/api/usage"));
+    const res = await call(app, "/api/usage");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ daily: [], monthly: [] });
   });
@@ -120,6 +139,13 @@ describe("server 静的配信", () => {
     expect(await res.text()).toContain("chart.js");
   });
 
+  test("public/app.css を text/css で返す", async () => {
+    const res = await get("/public/app.css");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/css");
+    expect(await res.text()).toContain("color: #000");
+  });
+
   test("存在しないパスは 404 を返す", async () => {
     const res = await get("/nope");
     expect(res.status).toBe(404);
@@ -136,6 +162,14 @@ describe("server 静的配信", () => {
     const res = await get("/");
     expect(res.headers.get("content-security-policy")).toContain("base-uri 'none'");
     expect(res.headers.get("content-security-policy")).toContain("form-action 'none'");
+  });
+
+  test("CSP は style-src-attr のみに unsafe-inline を許し、style-src（<style> 要素）には含めない", async () => {
+    const res = await get("/");
+    const csp = res.headers.get("content-security-policy")!;
+    expect(csp).toContain("style-src 'self'");
+    expect(csp).toContain("style-src-attr 'unsafe-inline'");
+    expect(csp).not.toContain("style-src 'self' 'unsafe-inline'");
   });
 
   test("静的レスポンスにクロスオリジン・プライバシーヘッダを付与する", async () => {
@@ -162,7 +196,7 @@ describe("server セキュリティ", () => {
     const app = createApp({ rootDir, cachePath });
     const request = new Request("http://127.0.0.1/");
     Object.defineProperty(request, "url", { value: "http://[", configurable: true });
-    const res = await app(request);
+    const res = await app(request, appEnv("127.0.0.1"));
     expect(res.status).toBe(400);
   });
 
@@ -218,6 +252,12 @@ describe("server セキュリティ", () => {
     expect(res.status).toBe(404);
   });
 
+  test("サーバ CLI バンドル（dist/ccusage-ledger.js）は配信しない", async () => {
+    writeFileSync(join(rootDir, "dist", "ccusage-ledger.js"), "#!/usr/bin/env bun\n");
+    const res = await get("/dist/ccusage-ledger.js");
+    expect(res.status).toBe(404);
+  });
+
   test("末尾にドット・スペースの付いた .html は 404 を返す（Windows の trailing-dot 迂回対策）", async () => {
     writeFileSync(join(rootDir, "dist", "ccusage-ledger.html"), "<html>embedded data</html>");
     const resDot = await get("/dist/ccusage-ledger.html.");
@@ -226,24 +266,31 @@ describe("server セキュリティ", () => {
     expect(resSpace.status).toBe(404);
   });
 
+  test("固定 allowlist のため、hardlink を仕掛けても許可リスト外のファイルは配信できない", async () => {
+    // 攻撃者が dist/ に秘密ファイルの hardlink を作っても、allowlist に無いパスは 404
+    linkSync(join(rootDir, "secret.txt"), join(rootDir, "dist", "leak"));
+    const res = await get("/dist/leak");
+    expect(res.status).toBe(404);
+  });
+
   test("静的配信は一度読み込んだ内容をキャッシュし、ファイルを再読込しない", async () => {
     const app = createApp({ rootDir, cachePath });
-    const first = await app(new Request("http://127.0.0.1/dist/bundle.js"));
+    const first = await call(app, "/dist/bundle.js");
     expect(first.status).toBe(200);
     rmSync(join(rootDir, "dist", "bundle.js"));
-    const second = await app(new Request("http://127.0.0.1/dist/bundle.js"));
+    const second = await call(app, "/dist/bundle.js");
     expect(second.status).toBe(200);
     expect(await second.text()).toContain("console.log");
   });
 
-  test("symlink が許可リスト外を指す場合、読む直前に差し替えても配信しない（TOCTOU 対策）", async () => {
+  test("symlink が許可リスト内（同ディレクトリ内）を指す場合、読む直前に差し替えても配信する（TOCTOU 対策）", async () => {
     const bundle = join(rootDir, "dist", "bundle.js");
     const realTarget = join(rootDir, "dist", "bundle.js.real");
     writeFileSync(realTarget, "console.log('bundle');");
     rmSync(bundle);
     symlinkSync(realTarget, bundle);
     const app = createApp({ rootDir, cachePath });
-    const res = await app(new Request("http://127.0.0.1/dist/bundle.js"));
+    const res = await call(app, "/dist/bundle.js");
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("bundle");
   });
@@ -263,9 +310,9 @@ describe("server セキュリティ", () => {
       hostname: "0.0.0.0",
       rateLimit: () => ++count <= 2,
     });
-    const r1 = await app(new Request("http://192.168.1.10/"));
-    const r2 = await app(new Request("http://192.168.1.10/"));
-    const r3 = await app(new Request("http://192.168.1.10/"));
+    const r1 = await call(app, "/", "192.168.1.10");
+    const r2 = await call(app, "/", "192.168.1.10");
+    const r3 = await call(app, "/", "192.168.1.10");
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
     expect(r3.status).toBe(429);
@@ -278,23 +325,65 @@ describe("server セキュリティ", () => {
       cachePath,
       rateLimit: () => ++count <= 2,
     });
-    const r1 = await app(new Request("http://127.0.0.1/"));
-    const r2 = await app(new Request("http://127.0.0.1/"));
-    const r3 = await app(new Request("http://127.0.0.1/"));
+    const r1 = await call(app, "/");
+    const r2 = await call(app, "/");
+    const r3 = await call(app, "/");
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
     expect(r3.status).toBe(429);
   });
 
-  test("ループバック bind のデフォルト rate limit は寛大な上限（600/分）を使う", async () => {
+  test("ループバック bind のデフォルト static rate limit は寛大な上限（600/分）を使う", async () => {
     const app = createApp({ rootDir, cachePath });
     const statuses: number[] = [];
     for (let i = 0; i < 601; i++) {
-      const res = await app(new Request("http://127.0.0.1/"));
+      const res = await call(app, "/");
       statuses.push(res.status);
     }
     expect(statuses[599]).toBe(200);
     expect(statuses[600]).toBe(429);
+  });
+
+  test("/api/usage は静的リソースと別の rate limit バケットを持つ（静的洪水で枯渇しない）", async () => {
+    // /api/usage のデフォルト上限（ループバック 300/分）を超えても、静的リソースは別バケットで配信される
+    const app = createApp({ rootDir, cachePath });
+    const statuses: number[] = [];
+    for (let i = 0; i < 301; i++) {
+      const res = await call(app, "/api/usage");
+      statuses.push(res.status);
+    }
+    expect(statuses[299]).toBe(200);
+    expect(statuses[300]).toBe(429);
+    const staticRes = await call(app, "/dist/bundle.js");
+    expect(staticRes.status).toBe(200);
+  });
+
+  test("IP を解決できないリクエストは /api/usage を配信しない（fail-closed）", async () => {
+    // 実サーバは常に接続元 IP を解決できる。解決できない場合は unique キーで扱われ
+    // ループバック判定に落ちないため /api/* は拒否される
+    const app = createApp({ rootDir, cachePath });
+    const res = await app(new Request("http://127.0.0.1/api/usage"));
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("server LAN 案内ページ", () => {
+  test("LAN bind の非ループバック接続には案内ページを返し、クライアント資産は配信しない", async () => {
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const page = await call(app, "/", "192.168.1.10");
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("SSH tunnel");
+    const bundle = await call(app, "/dist/bundle.js", "192.168.1.10");
+    expect(bundle.status).toBe(404);
+    const chart = await call(app, "/public/vendor/chart.umd.min.js", "192.168.1.10");
+    expect(chart.status).toBe(404);
+  });
+
+  test("LAN bind のループバック接続（SSH トンネル）には通常のダッシュボードを配信する", async () => {
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const page = await call(app, "/", "127.0.0.1");
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("ccusage");
   });
 });
 
@@ -370,27 +459,27 @@ describe("server isLoopbackHost", () => {
 describe("server Host 検証（DNS rebinding 対策）", () => {
   test("ループバック bind 時に非ループバックのホストは 400 を返す", async () => {
     const app = createApp({ rootDir, cachePath });
-    const res = await app(new Request("http://evil.example.com/"));
+    const res = await app(new Request("http://evil.example.com/"), appEnv("127.0.0.1"));
     expect(res.status).toBe(400);
   });
 
   test("ループバック bind 時に localhost / 127.0.0.1 のホストは許可する", async () => {
     const app = createApp({ rootDir, cachePath });
-    const localhost = await app(new Request("http://localhost/"));
+    const localhost = await app(new Request("http://localhost/"), appEnv("127.0.0.1"));
     expect(localhost.status).toBe(200);
-    const loopback = await app(new Request("http://127.0.0.1/"));
+    const loopback = await app(new Request("http://127.0.0.1/"), appEnv("127.0.0.1"));
     expect(loopback.status).toBe(200);
   });
 
   test("LAN bind（0.0.0.0）ではホスト検証を適用しない", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
-    const res = await app(new Request("http://192.168.1.10/"));
+    const res = await app(new Request("http://192.168.1.10/"), appEnv("192.168.1.10"));
     expect(res.status).toBe(200);
   });
 
   test("ループバック別名（HOST=127.0.0.2）でも非ループバックのホストは 400 を返す", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "127.0.0.2" });
-    const res = await app(new Request("http://evil.example.com/"));
+    const res = await app(new Request("http://evil.example.com/"), appEnv("127.0.0.1"));
     expect(res.status).toBe(400);
   });
 });

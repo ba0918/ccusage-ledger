@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync, symlinkSync, lstatSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync, symlinkSync, lstatSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, ccusageCliPath, buildCcusageCommand, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -48,28 +48,67 @@ describe("buildCcusageCommand", () => {
 });
 
 describe("spawnEnv", () => {
-  test("許可リストのキーのみを残す", () => {
-    expect(spawnEnv({ PATH: "/usr/bin", HOME: "/home/u", XDG_CACHE_HOME: "/tmp/c" })).toEqual({
+  test("許可リストのキーのみを残し、HOME は空の一時ディレクトリに置き換える", () => {
+    expect(spawnEnv(
+      { PATH: "/usr/bin", HOME: "/home/u", XDG_CACHE_HOME: "/tmp/c" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+    )).toEqual({
       PATH: "/usr/bin",
-      HOME: "/home/u",
       XDG_CACHE_HOME: "/tmp/c",
+      HOME: "/tmp/empty",
+      CLAUDE_CONFIG_DIR: "/home/u/.claude/projects",
+      CODEX_HOME: "/home/u/.codex",
+      GEMINI_DATA_DIR: "/home/u/.gemini/tmp",
+      OPENCODE_DATA_DIR: "/home/u/.local/share/opencode",
     });
   });
 
   test("秘密系の環境変数を除外する", () => {
-    const env = spawnEnv({
-      PATH: "/usr/bin",
-      HOME: "/home/u",
-      ANTHROPIC_API_KEY: "secret",
-      OPENAI_API_KEY: "secret",
-      SSH_AUTH_SOCK: "/run/user/1000/ssh-agent.sock",
-      AWS_SECRET_ACCESS_KEY: "secret",
-    });
+    const env = spawnEnv(
+      {
+        PATH: "/usr/bin",
+        HOME: "/home/u",
+        ANTHROPIC_API_KEY: "secret",
+        OPENAI_API_KEY: "secret",
+        SSH_AUTH_SOCK: "/run/user/1000/ssh-agent.sock",
+        AWS_SECRET_ACCESS_KEY: "secret",
+      },
+      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+    );
     expect(env.PATH).toBe("/usr/bin");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.SSH_AUTH_SOCK).toBeUndefined();
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    // HOME は実ユーザーのものではなく空の一時ディレクトリになる
+    expect(env.HOME).toBe("/tmp/empty");
+  });
+
+  test("ユーザーがデータディレクトリ env を設定している場合はそれを尊重する", () => {
+    const env = spawnEnv(
+      { CLAUDE_CONFIG_DIR: "/custom/claude", CODEX_HOME: "/custom/codex" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+    );
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/custom/claude");
+    expect(env.CODEX_HOME).toBe("/custom/codex");
+    // 未設定のものはデフォルトを解決する
+    expect(env.GEMINI_DATA_DIR).toBe("/home/u/.gemini/tmp");
+    expect(env.OPENCODE_DATA_DIR).toBe("/home/u/.local/share/opencode");
+  });
+
+  test("データディレクトリ env が空文字の場合はデフォルトにフォールバックする", () => {
+    const env = spawnEnv(
+      { CLAUDE_CONFIG_DIR: "" },
+      { userHome: "/home/u", emptyHome: "/tmp/empty" },
+    );
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/u/.claude/projects");
+  });
+});
+
+describe("userHomeDir", () => {
+  test("HOME があればそれを使い、無ければ homedir() にフォールバックする", () => {
+    expect(userHomeDir({ HOME: "/home/u" })).toBe("/home/u");
+    expect(typeof userHomeDir({})).toBe("string");
   });
 });
 
@@ -146,6 +185,44 @@ describe("fetchUsage キャッシュ書き込み", () => {
     expect(existsSync(cachePath)).toBe(true);
     expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
     expect(lstatSync(decoy).isSymbolicLink()).toBe(true);
+  });
+
+  test("キャッシュディレクトリが自分所有でも 0755 なら 0700 に設定し直してから書く", async () => {
+    const dir = tempDir();
+    const cacheDir = join(dir, "data");
+    mkdirSync(cacheDir, { recursive: true });
+    chmodSync(cacheDir, 0o755);
+    const cachePath = join(cacheDir, "usage.json");
+
+    const spawn = async (): Promise<SpawnResult> => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+    await fetchUsage({ cachePath, spawn });
+
+    // 共有パーミッションのままキャッシュを書かない（fail-closed: 自分所有なら 0700 に直す）
+    expect(statSync(cacheDir).mode & 0o777).toBe(0o700);
+    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+  });
+
+  test("キャッシュディレクトリが他人所有なら書き込まない（fail-closed）", async () => {
+    if (typeof process.getuid !== "function") { return; }
+    const dir = tempDir();
+    const cacheDir = join(dir, "data");
+    mkdirSync(cacheDir, { recursive: true });
+    // 現在ユーザーの UID を他人に変えるのは root でしかできないため、所有権チェックが
+    // 入ることをモックで検証する（writeCache は非公開なので fetchUsage 経由で失敗を観測する）。
+    // 実運用では chown された共有ディレクトリがこの分岐に入る
+    const original = process.getuid;
+    (process as { getuid?: () => number }).getuid = () => original() + 1;
+    try {
+      const cachePath = join(cacheDir, "usage.json");
+      const spawn = async (): Promise<SpawnResult> => ({ stdout: JSON.stringify(FIXTURE), exitCode: 0 });
+      // fetchUsage はキャッシュ書き込み失敗を warn して新鮮データを返す（ベストエフォート契約）。
+      // ここでは書き込みが行われずキャッシュファイルが作られないことを確認する
+      const result = await fetchUsage({ cachePath, spawn });
+      expect(result?.source).toBe("fresh");
+      expect(existsSync(cachePath)).toBe(false);
+    } finally {
+      (process as { getuid?: () => number }).getuid = original;
+    }
   });
 });
 

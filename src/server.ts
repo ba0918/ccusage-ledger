@@ -1,6 +1,6 @@
 import { readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isIP } from "node:net";
-import { join, normalize } from "node:path";
+import { dirname, join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
@@ -23,9 +23,11 @@ const CONTENT_TYPES: Record<string, string> = {
 const COMMON_HEADERS: Record<string, string> = {
   // base-uri 'none': HTML 注入時に <base> で相対 URL 解決を乗っ取られないようにする
   // form-action 'none': フォーム送信先の強制を防ぐ（このアプリはフォーム送信を行わない）
-  // style-src 'unsafe-inline': モデル別バーの幅（style="width:N%"）をインライン style で設定しているため。
-  //   値は数値のみでデータ由来文字列を挿入しない。CSS 変数 + stylesheet 化すれば外せる（将来課題）
-  "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  // style-src-attr 'unsafe-inline': モデル別バーの幅（style="width:N%"）をインライン style 属性で設定しているため。
+  //   style-src-elem（<style> 要素・<link>）には 'unsafe-inline' を与えないことで、注入された <style> ブロック
+  //   （属性セレクタ経由のデータ抽出・@import・UI リドレス）を CSP で遮断する。style 属性はセレクタを書けないため
+  //   CSS インジェクションの実行面が <style> 要素に限られる。アプリの CSS は public/app.css（外部）に分離済み
+  "content-security-policy": "default-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   // frame-ancestors を無視する古いブラウザ向けの defense-in-depth（CSP だけに依存しない）
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
@@ -151,6 +153,33 @@ export interface AppWithUsage {
   setUsageBody(body: string | null): void;
 }
 
+// 非ループバック接続（LAN 公開時）にのみ配信する案内ページ。bundle.js 等のクライアント資産を
+// ネットワークに配信しないことで、平文 HTTP 上で on-path 攻撃者が改ざん・注入できる JS の
+// 攻撃面をなくす（/api/usage も非ループバック接続では配信しないため、LAN からはデータに触れない）
+function lanOnlyPage(port: number): string {
+  const hint = `ssh -L ${port}:127.0.0.1:${port}`;
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ccusage Ledger</title>
+    <style>body{font-family:system-ui,sans-serif;background:#0b0e14;color:#e8eaf0;padding:48px 24px;max-width:640px;margin:0 auto}code{background:#141824;padding:2px 6px;border-radius:6px}pre{background:#141824;padding:14px;border-radius:8px;overflow-x:auto}h1{font-size:20px}li{margin:8px 0}</style>
+  </head>
+  <body>
+    <h1>ccusage Ledger</h1>
+    <p>The dashboard is bound to the network. Usage data is only served over loopback connections, so viewing it requires an SSH tunnel:</p>
+    <pre>${hint}</pre>
+    <p>Then open <code>http://127.0.0.1:${port}</code>.</p>
+    <ul>
+      <li>An SSH tunnel terminates on loopback, so the connection source is treated as local.</li>
+      <li>Plaintext HTTP over the network is intentionally not used for the dashboard.</li>
+    </ul>
+  </body>
+</html>
+`;
+}
+
 export function createApp(options: {
   rootDir: string;
   cachePath: string;
@@ -172,12 +201,21 @@ export function createApp(options: {
     usageBody = null;
   }
 
-  // rate limit は常に適用する。loopback は寛大な上限（600/分）、LAN 公開時はより厳しい上限（120/分）
+  // rate limit は常に適用する。loopback は寛大な上限（static 600/分・/api 300/分）、
+  // LAN 公開時はより厳しい上限（static 120/分・/api 60/分）
   // 注意: ループバック bind では全ローカルプロセスが同一 source IP に集約されるため、
   // rate limit は同一マシンの別プロセスによる /api/usage の大量リクエストを止められない
   // （ループバック共有は AGENTS.md で許容した脅威モデル内の残余リスク）
   const lanMode = !isLoopbackHost(hostname);
-  const rateLimiter = options.rateLimit ?? createRateLimiter(lanMode ? 120 : 600, 60_000);
+  // /api/* と静的資産で別々のバケットを使う。静的リソースへの安価なリクエスト洪水で
+  // /api/usage の予算が枯渇しないようにする（ドライブバイ DoS の影響低減）
+  const defaultApiLimit = lanMode ? 60 : 300;
+  const defaultStaticLimit = lanMode ? 120 : 600;
+  const apiLimiter = createRateLimiter(defaultApiLimit, 60_000);
+  const staticLimiter = createRateLimiter(defaultStaticLimit, 60_000);
+  const userLimiter = options.rateLimit;
+  const limitRequest = (key: string, isApi: boolean): boolean =>
+    userLimiter ? userLimiter(key) : (isApi ? apiLimiter(key) : staticLimiter(key));
   const staticCache = new Map<string, ArrayBuffer>();
 
   const app = new Hono();
@@ -186,40 +224,42 @@ export function createApp(options: {
   // IP は Hono の fetch 第二引数（env）経由で渡される接続情報から解決する
   // （テストは { requestIP } を、Bun/Node の実サーバはサーバ固有の接続情報を env に渡す）
   app.use("*", async (c, next) => {
-    const ip = resolveRequestIp(c);
-    if (!rateLimiter(ip)) {
-      return c.text("Too Many Requests", 429);
-    }
-
     const url = parseUrl(c.req.url);
     if (url === null) {
-      return c.json({ error: "bad request" }, 400);
+      return badRequest();
+    }
+
+    const ip = resolveRequestIp(c);
+    const isApiPath = url.pathname.startsWith("/api/");
+    if (!limitRequest(ip, isApiPath)) {
+      return tooManyRequests();
     }
 
     // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
     if (!hostAllowed(url.hostname, hostname)) {
-      return c.json({ error: "bad request" }, 400);
+      return badRequest();
     }
 
     let pathname: string;
     try {
       pathname = decodeURIComponent(url.pathname);
     } catch {
-      return c.json({ error: "bad request" }, 400);
+      return badRequest();
+    }
+
+    // /api/* は接続元 IP がループバックのときのみ配信する。bind ホスト名ではなく接続の実 source IP で
+    // 判定するため、ポート転送・リバーストンネルで届く非ループバック接続はここで 403 になる。
+    // （bind がループバックでも防御は維持され、SSH トンネル経由のループバック接続は通る）
+    if (isApiPath && !isLoopbackHost(ip)) {
+      return apiForbidden();
     }
 
     c.set("pathname", pathname);
+    c.set("clientIp", ip);
     return next();
   });
 
   app.get("/api/usage", (_c) => {
-    // 非ループバック bind ではデータを配信しない（SSH トンネル経由のループバック接続のみに限定）
-    if (!isLoopbackHost(hostname)) {
-      return new Response(JSON.stringify({ error: `forbidden: /api/usage is only served over loopback. Use an SSH tunnel: ${sshTunnelHint(port)}` }), {
-        status: 403,
-        headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
-      });
-    }
     if (usageBody === null) {
       // キャッシュなしでも 200 で空データを返す（キャッシュ有無を 404/200 で判別させない）
       return new Response(JSON.stringify({ daily: [], monthly: [] }), {
@@ -234,6 +274,17 @@ export function createApp(options: {
   });
 
   app.all("*", (c) => {
+    // 非ループバック接続（LAN 公開時）には案内ページのみ配信し、クライアント資産を配らない。
+    // ループバック接続（ローカル + SSH トンネル）は通常のダッシュボードを配信する
+    if (!isLoopbackHost(c.get("clientIp"))) {
+      if (c.get("pathname") === "/") {
+        return new Response(lanOnlyPage(port), {
+          status: 200,
+          headers: withCommonHeaders({ "content-type": "text/html; charset=utf-8" }),
+        });
+      }
+      return notFoundResponse();
+    }
     return serveStatic(rootDir, c.get("pathname"), staticCache);
   });
 
@@ -249,10 +300,35 @@ export function createApp(options: {
   }) as unknown as AppWithUsage;
 }
 
-// ミドルウェアで使う Context の型定義（get/set に pathname を保持する）
+function badRequest(): Response {
+  // 400 も共通セキュリティヘッダを付けて返す（フレーム化・MIME スニッフィング防止の defense-in-depth）
+  return new Response(JSON.stringify({ error: "bad request" }), {
+    status: 400,
+    headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8" }),
+  });
+}
+
+function tooManyRequests(): Response {
+  return new Response("Too Many Requests", {
+    status: 429,
+    headers: withCommonHeaders({}),
+  });
+}
+
+function apiForbidden(): Response {
+  // ボディに bind ポートやトンネルコマンドを含めない（LAN スキャナーへの情報漏出を避ける。
+  // SSH トンネルの案内は起動時コンソール出力と LAN 案内ページで行う）
+  return new Response(JSON.stringify({ error: "forbidden: /api/usage is only served over loopback" }), {
+    status: 403,
+    headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
+  });
+}
+
+// ミドルウェアで使う Context の型定義（get/set に pathname / clientIp を保持する）
 declare module "hono" {
   interface ContextVariableMap {
     pathname: string;
+    clientIp: string;
   }
 }
 
@@ -265,6 +341,7 @@ interface ConnInfoEnv {
   server?: { requestIP?: (request: Request) => { address: string } | null };
   incoming?: { socket?: { remoteAddress?: string } };
 }
+let unresolvedIpCounter = 0;
 function resolveRequestIp(c: Context): string {
   const env = c.env as ConnInfoEnv;
   if (env?.requestIP) {
@@ -278,36 +355,34 @@ function resolveRequestIp(c: Context): string {
   if (env?.incoming?.socket?.remoteAddress) {
     return env.incoming.socket.remoteAddress;
   }
-  return "unknown";
+  // IP を解決できないリクエストは単一の共有キーに集約しない（同じバケットに押し込まれると
+  // 攻撃者がバケットを共有して制限をかわしたり、逆に混雑して自分だけが制限される）。
+  // ここで返る値はループバック判定で false になるため、/api/* は fail-closed で拒否される
+  unresolvedIpCounter += 1;
+  return `unresolved:${unresolvedIpCounter}`;
 }
 
-const STATIC_PREFIXES = ["/dist/", "/public/"];
+// 配信するのはブラウザが必要とする固定ファイルのみ。URL からパスを組み立てないため、
+// パストラバーサル・hardlink / symlink による許可リスト外ファイルの配信（F3 / F12）、
+// サーバ CLI バンドル等の予期しない成果物の漏出（F15）を構造的に防ぐ。
+// また未知パスへの同期 FS アクセス（statSync / realpathSync）を生まない（F13）
+const STATIC_ALLOWLIST: Record<string, string> = {
+  "/": "index.html",
+  "/dist/bundle.js": "dist/bundle.js",
+  "/public/vendor/chart.umd.min.js": "public/vendor/chart.umd.min.js",
+  "/public/app.css": "public/app.css",
+};
 
 export function isWithinBases(target: string, bases: string[]): boolean {
   return bases.some((base) => target === base || target.startsWith(`${base}/`));
 }
 
 async function serveStatic(rootDir: string, pathname: string, staticCache: Map<string, ArrayBuffer>): Promise<Response> {
-  // 許可リストは「パス」ではなく「解決後のファイルが配信対象ディレクトリ内にあるか」で判定する
-  // （エンコード済み ..%2f で許可リストを迂回され、src/・package.json・.git 等が配信されるのを防ぐ）
-  const relative = pathname === "/" ? "index.html" : pathname.slice(1);
-  const resolved = normalize(join(rootDir, relative));
-
-  // 末尾ドット・スペースは Windows で Win32 層により剥がされ、別ファイル（例: .html ブロック回避）に解決され得る
-  if (pathname !== "/" && /[. ]$/.test(pathname)) {
+  const relative = STATIC_ALLOWLIST[pathname];
+  if (relative === undefined) {
     return notFoundResponse();
   }
-
-  const allowedBases = STATIC_PREFIXES.map((prefix) => normalize(join(rootDir, prefix)).replace(/[\\/]+$/, ""));
-  if (pathname !== "/" && !isWithinBases(resolved, allowedBases)) {
-    return notFoundResponse();
-  }
-
-  // エクスポート成果物（個人データ埋め込みの単一 HTML）を配信しない。index.html はルート / のみ
-  // （大文字小文字の違いでブロックを回避されないよう case-insensitive に比較する）
-  if (pathname !== "/" && extensionName(resolved).toLowerCase() === ".html") {
-    return notFoundResponse();
-  }
+  const resolved = join(rootDir, relative);
 
   // 一度読んだファイルはキャッシュから配信する（再読込・存在チェックでファイルシステムに触れない）
   const cached = staticCache.get(resolved);
@@ -328,12 +403,13 @@ async function serveStatic(rootDir: string, pathname: string, staticCache: Map<s
     return notFoundResponse();
   }
 
-  // symlink が allowlist 外を指している場合は配信しない（realpath で解決して再チェック）
+  // symlink が許可対象外（そのファイルの属するディレクトリの外）を指している場合は配信しない。
+  // 固定 allowlist でも dist/bundle.js がルート直下の秘密ファイルへの symlink に差し替えられた場合を防ぐ
   let real: string;
   try {
     real = realpathSync(resolved);
-    const realBases = allowedBases.map((base) => realpathSync(base));
-    if (pathname !== "/" && !isWithinBases(real, realBases)) {
+    const realBase = realpathSync(dirname(resolved));
+    if (!isWithinBases(real, [realBase])) {
       return notFoundResponse();
     }
   } catch {
@@ -438,6 +514,16 @@ export async function main(): Promise<void> {
 
   // bind する。Bun 実行時は Bun.serve（requestIP を提供）、Node 実行時は @hono/node-server を使う
   const boundPort = await startServer(app, hostname, port);
+
+  // ループバック TCP ポートは同一マシンの全ローカルユーザー/プロセスから閲覧できる。
+  // 共有マシンでは他のローカルユーザーが /api/usage の全履歴を読めるため、その旨を起動時に警告する
+  // （認証は意図的に実装していない。境界は「画面に届ける人」の制限で担保する設計。AGENTS.md 参照）
+  if (isLoopbackHost(hostname)) {
+    console.warn(
+      "NOTE: the dashboard is bound to loopback and is readable by any local user/process on this machine. " +
+        "On a shared machine this exposes your ccusage usage data to other local users.",
+    );
+  }
 
   // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）
   const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath });

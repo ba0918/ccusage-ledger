@@ -13,7 +13,8 @@
     "bun.lock",
     "index.html",
     "dist",
-    "public"
+    "public",
+    "!dist/ccusage-ledger.html"
   ],
   "publishConfig": {
     "access": "public"
