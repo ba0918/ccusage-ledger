@@ -1,83 +1,87 @@
 # ccusage Ledger
 
-エージェント CLI（Claude Code / Codex / OpenCode 等）の使用量・トークン量・金額を可視化する個人用ダッシュボード。
+A personal dashboard that visualizes usage, token counts, and costs of agent CLIs (Claude Code / Codex / OpenCode, etc.).
 
-[ccusage](https://github.com/ccusage/ccusage) が出力する JSON を元に、日別 / 月別 / 年別のコスト・トークン・キャッシュヒット率、モデル別・エージェント別の内訳をグラフと表で表示します。
+It reads JSON emitted by [ccusage](https://github.com/ccusage/ccusage) and displays daily / monthly / yearly cost, tokens, and cache hit rate, plus per-model and per-agent breakdowns in charts and tables.
 
-## スクリーンショット
+## Screenshot
 
 ![ccusage Ledger](assets/image.png)
 
-## 起動
+## Requirements
 
-リポジトリから:
+[Bun](https://bun.sh) is required. The `ccusage-ledger` bin starts via `#!/usr/bin/env bun`, so it does not run on a machine without Bun (npm cannot enforce Bun, so install it beforehand).
+
+## Getting Started
+
+From the repository:
 
 ```sh
 bun install
 bun run dev
 ```
 
-npm 配布版から:
+From the npm distribution:
 
 ```sh
 bunx ccusage-ledger
 ```
 
-起動するとブラウザで `http://127.0.0.1:3000` が開きます（ローカル対話環境のみ。TTY でない環境では自動では開きません）。
+The browser opens `http://127.0.0.1:3000` on start (local interactive environments only; it does not auto-open in a non-TTY environment).
 
-## 表示できるもの
+## What it shows
 
-- **期間単位**: 日次 / 月次 / 年次
-- **期間ナビ**: 全期間表示、または ◀▶ で特定の月・年を選択
-- **モデル別**: コスト積み上げ・構成比率・実効単価・コストランキング
-- **エージェント別**: 配分ドーナツ（コスト / トークン切替）・効率テーブル
-- **期間別 × エージェント別の詳細テーブル**
-- **言語**: 画面右上のトグルで日本語 / English を切り替え（初期表示は英語。選択はブラウザに保存され、次回起動時に復元）
+- **Period granularity**: daily / monthly / yearly
+- **Period navigation**: all periods, or select a specific month / year with ◀▶
+- **By model**: cost stacking, mix ratio, effective unit price, cost ranking
+- **By agent**: share donut (cost / token toggle), efficiency table
+- **Detailed table by period × agent**
+- **Language**: toggle Japanese / English in the top-right corner (initial language is English; the choice is saved in the browser and restored on the next launch)
 
-## 設定
+## Configuration
 
-| 環境変数 | 既定値 | 説明 |
+| Env var | Default | Description |
 |---|---|---|
-| `HOST` | `127.0.0.1` | バインドするアドレス |
-| `PORT` | `3000` | バインドするポート |
-| `CCUSAGE_LEDGER_ALLOW_LAN` | なし | `1` で非ループバック bind の警告のみで起動 |
+| `HOST` | `127.0.0.1` | Bind address |
+| `PORT` | `3000` | Bind port |
+| `CCUSAGE_LEDGER_ALLOW_LAN` | (none) | Set to `1` to start with only a warning for a non-loopback bind |
 
-### LAN 公開について
+### About LAN exposure
 
-既定は `127.0.0.1` のみにバインドします。`HOST=0.0.0.0` などの非ループバック bind では、ネットワーク上の誰でも画面（使用量データ）を閲覧でき、平文 HTTP のため盗聴・改ざんされる可能性があります。
+By default the server binds only to `127.0.0.1`. With a non-loopback bind such as `HOST=0.0.0.0`, anyone on the network can view the dashboard (usage data), and plaintext HTTP can be eavesdropped and tampered with.
 
-- TTY では起動時に警告を表示して確認を求めます
-- TTY でない環境では `CCUSAGE_LEDGER_ALLOW_LAN=1` を設定しない限り起動を拒否します
-- 非ループバック bind では `/api/usage` を 403 で拒否します（データ本体は配信されません）
+- On a TTY, a warning is shown and confirmation is requested at startup
+- On a non-TTY, startup is refused unless `CCUSAGE_LEDGER_ALLOW_LAN=1` is set
+- On a non-loopback bind, `/api/usage` returns 403 (the data body is not served)
 
-別端末から見る場合は **SSH トンネル**を推奨します。トンネル自体がアクセス制限になり、接続元はループバックになるため `/api/usage` も利用できます。
+To view from another device, use an **SSH tunnel**. The tunnel itself acts as access control, and the connection source becomes loopback, so `/api/usage` works as well.
 
 ```sh
 ssh -L 3000:127.0.0.1:3000 your-server
 ```
 
-> 認証は意図的に実装していません。このサーバーは単一ユーザーのローカル利用を前提とし、「画面に届ける人」の制限（ループバック・SSH トンネル）で境界を担保しています。
+> Authentication is intentionally not implemented. This server assumes single-user local use; the boundary is enforced by limiting who can reach the screen (loopback / SSH tunnel).
 
-## HTML エクスポート
+## HTML Export
 
 ```sh
 bun run export
 ```
 
-実行時カレントの `dist/ccusage-ledger.html` に単一 HTML を出力します。
+Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working directory.
 
-**注意**: エクスポートファイルにはあなたの ccusage 使用量データが含まれます。信頼できる相手に渡す場合にのみエクスポートしてください。外部配信する場合は、サーバーのレスポンスヘッダで `X-Frame-Options: DENY` を付与してください（エクスポート HTML の CSP は `<meta>` タグ注入のため `frame-ancestors` をブラウザが無視し、iframe 埋め込みは JS による frame buster でのみ防ぎます）。
+**Caution**: The exported file contains your ccusage usage data. Only export it when sharing with someone you trust. For external distribution, set `X-Frame-Options: DENY` in the server response headers (the exported HTML's CSP is injected via `<meta>`, which browsers ignore for `frame-ancestors`; iframe embedding is only prevented by the JS frame buster).
 
-## データ
+## Data
 
-サーバーは [ccusage](https://github.com/ccusage/ccusage)（依存として固定した `ccusage@20.0.19`）を直接実行して全履歴を取得し、`~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）にキャッシュします。API キー等の秘密は子プロセスに渡しません。
+The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.19`) directly to fetch the full history and caches it at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
 
-## 開発
+## Development
 
 ```sh
-bun run build   # フロントを dist/bundle.js にバンドル
-bun test        # テスト
-bun run typecheck  # 型チェック
+bun run build      # bundle the frontend into dist/bundle.js
+bun test           # run tests
+bun run typecheck  # type-check
 ```
 
 ## License
