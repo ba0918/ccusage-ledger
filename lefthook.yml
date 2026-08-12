@@ -1,0 +1,16 @@
+# pre-commit フック: secretlint（staged のみ）+ lint + 型チェック + テストを並列実行
+# このリポジトリの設定（リポジトリ内に保持し、環境を問わず再現できるようにする）
+# インストール: lefthook install（.git/hooks を lefthook 管理にする）
+
+pre-commit:
+  parallel: true
+  commands:
+    # staged ファイルの秘密情報スキャン（fail-secure: ツール・設定が無ければ拒否）
+    secretlint:
+      run: bash .lefthook/secretlint.sh {staged_files}
+    lint:
+      run: bun run lint
+    typecheck:
+      run: bunx tsc --noEmit
+    test:
+      run: bun test
