@@ -5,7 +5,6 @@
 
 # Build output
 /dist/
-/ccusage-ledger.js
 
 # Dependencies
 /node_modules/
