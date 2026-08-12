@@ -7,10 +7,11 @@ import type {
   ChartSeries,
   KpiSummary,
   ModelCostRank,
+  ModelTokenBreakdownItem,
   ModelUnitPrice,
   OtherBreakdownItem,
 } from "../aggregate";
-import { agentDonutData, allAgents, maxFinite, modelColor, otherBreakdown } from "../aggregate";
+import { agentDonutData, allAgents, maxFinite, modelColor, modelTokenBreakdown, otherBreakdown } from "../aggregate";
 import type { PeriodEntry } from "../types";
 import { el } from "./dom";
 import { htmlAttr, htmlText } from "./escape";
@@ -18,6 +19,7 @@ import { formatAxisCurrency, formatCurrency, formatPercent, formatTokens } from 
 import { t } from "./i18n";
 
 export type TooltipContext = { entries: PeriodEntry[]; top: ReadonlySet<string>; excludeZero?: boolean };
+export type StackedMetric = "cost" | "tokens";
 
 const AGENT_PALETTE = ["#7aa7ff", "#4cd6a0", "#f5b34d", "#c084fc", "#76b7b2", "#e15759"];
 const OTHER_COLOR = "#8b92a7";
@@ -107,6 +109,7 @@ interface StackedBarSpec {
   yTitle: string;
   tooltip: (value: number, datasetLabel: string) => string;
   tooltipInner?: (item: OtherBreakdownItem) => string;
+  tooltipCallback?: (item: unknown) => string | string[];
 }
 
 // 積み上げ棒チャート（コスト / モデル構成比）の共通描画。2 系統は x 軸タイトル・
@@ -140,7 +143,7 @@ function renderStackedBar(spec: StackedBarSpec): void {
         legend: { position: "bottom" },
         tooltip: {
           callbacks: {
-            label: tooltipLabel(spec.tooltip, { ...spec.tooltipCtx, inner: spec.tooltipInner }),
+            label: spec.tooltipCallback ?? tooltipLabel(spec.tooltip, { ...spec.tooltipCtx, inner: spec.tooltipInner }),
           },
         },
       },
@@ -159,6 +162,63 @@ export function renderCostStacked(series: ChartSeries, models: string[], tooltip
     yTitle: t("costUsd"),
     tooltip: (value, label) => `${label}: ${formatAxisCurrency(value)}`,
     tooltipInner: (item) => `${item.modelName}: ${formatAxisCurrency(item.cost)}`,
+  });
+}
+
+function tokenBreakdownLines(item: ModelTokenBreakdownItem, nested: boolean): string[] {
+  const indent = nested ? "    " : "  ";
+  return [
+    ...(nested ? [`  ${item.modelName}`] : []),
+    `${indent}${t("total")}: ${formatTokens(item.totalTokens)}`,
+    `${indent}${t("input")}: ${formatTokens(item.inputTokens)}`,
+    `${indent}${t("output")}: ${formatTokens(item.outputTokens)}`,
+    `${indent}${t("cacheRead")}: ${formatTokens(item.cacheReadTokens)}`,
+    `${indent}${t("cacheCreation")}: ${formatTokens(item.cacheCreationTokens)}`,
+  ];
+}
+
+function tokenTooltipLabel(tooltipCtx: TooltipContext): (item: unknown) => string | string[] {
+  return (item: unknown) => {
+    const { parsed, dataset, dataIndex } = item as {
+      parsed: { x?: number; y?: number };
+      dataset: { label?: string };
+      dataIndex: number;
+    };
+    const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
+    if (tooltipCtx.excludeZero && value === 0) { return ""; }
+    const label = dataset.label ?? "";
+    const entry = tooltipCtx.entries[dataIndex];
+    if (!entry) { return `${label}: ${formatTokens(value)}`; }
+    const isOther = label === t("other");
+    const breakdowns = modelTokenBreakdown(entry, isOther ? null : label, tooltipCtx.top);
+    return [
+      `${label}: ${formatTokens(value)}`,
+      ...breakdowns.flatMap((breakdown) => tokenBreakdownLines(breakdown, isOther)),
+    ];
+  };
+}
+
+export function renderUsageStacked(
+  metric: StackedMetric,
+  costSeries: ChartSeries,
+  tokenSeries: ChartSeries,
+  models: string[],
+  tooltipCtx: TooltipContext,
+): void {
+  if (metric === "cost") {
+    renderCostStacked(costSeries, models, tooltipCtx);
+    return;
+  }
+  renderStackedBar({
+    id: "chart-cost-stacked",
+    series: tokenSeries,
+    models,
+    tooltipCtx,
+    xTitle: t("period"),
+    yTick: (value) => formatTokens(value),
+    yTitle: t("tokenCount"),
+    tooltip: (value, label) => `${label}: ${formatTokens(value)}`,
+    tooltipCallback: tokenTooltipLabel(tooltipCtx),
   });
 }
 

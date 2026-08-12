@@ -10,7 +10,7 @@ import {
   type AgentShareData,
   type DashboardFilters,
 } from "../aggregate";
-import { renderAgentDonut, renderCacheHit, renderCostRanking, renderCostStacked, renderKpis, renderModelMix, renderUnitPrice, type TooltipContext } from "./charts";
+import { renderAgentDonut, renderCacheHit, renderCostRanking, renderKpis, renderModelMix, renderUnitPrice, renderUsageStacked, type StackedMetric, type TooltipContext } from "./charts";
 import { el } from "./dom";
 import { htmlText } from "./escape";
 import { applyStaticTranslations, createSafeStorage, getLang, setLang, t, type Lang } from "./i18n";
@@ -28,6 +28,7 @@ let navYear = 0;
 let navMonth = 1;
 let viewingAll = true;
 let donutSeg: "cost" | "token" = "cost";
+let stackedMetric: StackedMetric = "cost";
 let lastAgentShare: AgentShareData | null = null;
 let lastAgentEfficiency: AgentEfficiency[] = [];
 
@@ -157,7 +158,11 @@ function render(): void {
   const tooltipCtx: TooltipContext = { entries, top: new Set(series.topModels), excludeZero: true };
 
   renderKpis(series.kpi, entries, rangeDescription());
-  renderCostStacked(series.costStacked, models, tooltipCtx);
+  const stackedTitle = t(stackedMetric === "cost" ? "costStackedTitle" : "tokensStackedTitle");
+  const stackedTitleElement = document.getElementById("stacked-chart-title");
+  if (stackedTitleElement) { stackedTitleElement.textContent = stackedTitle; }
+  el("chart-cost-stacked").setAttribute("aria-label", stackedTitle);
+  renderUsageStacked(stackedMetric, series.costStacked, series.tokensStacked, models, tooltipCtx);
   renderModelMix(series.modelMix, models, tooltipCtx);
   renderUnitPrice(series.unitPrices);
   // ドーナツのセグメント切替時に直前の render 結果を再描画できるよう、今回の結果を保持しておく
@@ -225,7 +230,23 @@ function bindControls(): void {
     });
   });
 
+  document.querySelectorAll<HTMLButtonElement>(".stacked-toggle button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      stackedMetric = btn.dataset.metric === "tokens" ? "tokens" : "cost";
+      syncStackedToggle();
+      if (hasData) { render(); }
+    });
+  });
+
   bindLangToggle();
+}
+
+function syncStackedToggle(): void {
+  document.querySelectorAll<HTMLButtonElement>(".stacked-toggle button").forEach((btn) => {
+    const isActive = btn.dataset.metric === stackedMetric;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-pressed", String(isActive));
+  });
 }
 
 function bindLangToggle(): void {
@@ -310,6 +331,7 @@ async function main(): Promise<void> {
     fillSelect("model", allModelNames);
     fillSelect("agent", allAgents(entries));
     bindControls();
+    syncStackedToggle();
     if (!hasData) {
       setStatus(t("noData"));
       return;

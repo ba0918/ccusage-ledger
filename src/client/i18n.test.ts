@@ -70,6 +70,19 @@ describe("getMessage", () => {
     expect(getMessage("ja", "all")).toBe("すべて");
   });
 
+  test("積み上げグラフの切替・タイトル・軸・トークン内訳を英語と日本語で返す", () => {
+    expect(getMessage("en", "stackedMetricAria")).toBe("Stacked chart display unit");
+    expect(getMessage("ja", "stackedMetricAria")).toBe("積み上げグラフの表示単位");
+    expect(getMessage("en", "tokensStackedTitle")).toBe("Tokens stacked (by model)");
+    expect(getMessage("ja", "tokensStackedTitle")).toBe("トークン積み上げ（モデル別）");
+    expect(getMessage("en", "tokenCount")).toBe("Token count");
+    expect(getMessage("ja", "tokenCount")).toBe("トークン数");
+    expect(getMessage("en", "cacheRead")).toBe("Cache Read");
+    expect(getMessage("ja", "cacheRead")).toBe("キャッシュ読み取り");
+    expect(getMessage("en", "cacheCreation")).toBe("Cache Creation");
+    expect(getMessage("ja", "cacheCreation")).toBe("キャッシュ作成");
+  });
+
   test("全キーが両言語で undefined にならない", () => {
     for (const key of MESSAGE_KEYS) {
       expect(getMessage("en", key)).toBeTypeOf("string");
@@ -337,9 +350,16 @@ function makeLangButton(lang: string): FakeElement {
   return button;
 }
 
+function makeStackedButton(metric: string): FakeElement {
+  const button = new FakeElement();
+  button.dataset.metric = metric;
+  return button;
+}
+
 function createFakeDom(): FakeDom {
   const elements = new Map<string, FakeElement>();
   const langButtons = [makeLangButton("en"), makeLangButton("ja")];
+  const stackedButtons = [makeStackedButton("cost"), makeStackedButton("tokens")];
   return {
     documentElement: { lang: "" },
     getElementById(id: string): FakeElement | null {
@@ -353,6 +373,9 @@ function createFakeDom(): FakeDom {
     querySelectorAll(selector: string): FakeElement[] {
       if (selector === ".lang-toggle button") {
         return langButtons;
+      }
+      if (selector === ".stacked-toggle button") {
+        return stackedButtons;
       }
       return [];
     },
@@ -375,30 +398,37 @@ function createFakeStorage(): Storage {
 }
 
 class FakeChart {
-  data: unknown;
-  options: unknown;
+  static instances: FakeChart[] = [];
+  data: ChartData;
+  options: ChartOptions;
+  constructor(_canvas: HTMLCanvasElement, config: ChartConfig) {
+    this.data = config.data;
+    this.options = config.options ?? {};
+    FakeChart.instances.push(this);
+  }
   update(): void {}
   destroy(): void {}
 }
 
 function makeEntry(period: string, breakdowns: [string, number][]): PeriodEntry {
+  const modelBreakdowns = breakdowns.map(([name, cost]) => ({
+    modelName: name,
+    cost,
+    inputTokens: cost * 1000,
+    outputTokens: cost * 100,
+    cacheReadTokens: cost * 10,
+    cacheCreationTokens: cost,
+  }));
   return {
     period,
     totalCost: breakdowns.reduce((sum, [, cost]) => sum + cost, 0),
-    totalTokens: breakdowns.length * 1000,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
+    totalTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.inputTokens + breakdown.outputTokens + breakdown.cacheReadTokens + breakdown.cacheCreationTokens, 0),
+    inputTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.inputTokens, 0),
+    outputTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.outputTokens, 0),
+    cacheReadTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.cacheReadTokens, 0),
+    cacheCreationTokens: modelBreakdowns.reduce((sum, breakdown) => sum + breakdown.cacheCreationTokens, 0),
     modelsUsed: breakdowns.map(([name]) => name),
-    modelBreakdowns: breakdowns.map(([name, cost]) => ({
-      modelName: name,
-      cost,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-    })),
+    modelBreakdowns,
   };
 }
 
@@ -434,6 +464,51 @@ async function loadMain(dom: FakeDom, data: UsageData, brokenStorage: boolean, v
 }
 
 describe("main.ts の言語切替", () => {
+  test("初期状態は Cost で、Tokens 選択により系列・タイトル・軸・ツールチップが切り替わる", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_MODELS, false, "stacked-toggle");
+
+    const chart = FakeChart.instances[0]!;
+    const buttons = dom.querySelectorAll(".stacked-toggle button");
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("Cost stacked (by model)");
+    expect(chart.data.datasets[0]!.data[0]).toBeCloseTo(0.3);
+    expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("Cost (USD)");
+
+    buttons[1]!.dispatch("click");
+
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("Tokens stacked (by model)");
+    expect(chart.data.datasets[0]!.data[0]).toBeCloseTo(333.3);
+    expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("Token count");
+    const label = (chart.options.plugins as { tooltip: { callbacks: { label: (item: unknown) => string[] } } }).tooltip.callbacks.label;
+    expect(label({ parsed: { y: 333.3 }, dataset: { label: "model-a" }, dataIndex: 0 })).toEqual([
+      "model-a: 333",
+      "  Total: 333",
+      "  Input: 300",
+      "  Output: 30",
+      "  Cache Read: 3",
+      "  Cache Creation: 0",
+    ]);
+  });
+
+  test("Tokens 選択はモデルフィルタと言語の変更後も維持される", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, DATA_WITH_MODELS, false, "stacked-persistence");
+
+    const buttons = dom.querySelectorAll(".stacked-toggle button");
+    buttons[1]!.dispatch("click");
+    const model = dom.getElementById("model")!;
+    model.value = "model-a";
+    model.dispatch("change");
+    dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
+
+    expect(buttons[1]!.classList.contains("active")).toBe(true);
+    expect(buttons[1]!.getAttribute("aria-pressed")).toBe("true");
+    expect(dom.getElementById("stacked-chart-title")!.textContent).toBe("トークン積み上げ（モデル別）");
+    const chart = FakeChart.instances[0]!;
+    expect((chart.options.scales as { y: { title: { text: string } } }).y.title.text).toBe("トークン数");
+    expect(chart.data.datasets.map((dataset) => dataset.label)).toEqual(["model-a"]);
+  });
+
   test("モデルフィルタ適用中に言語切替しても選択が維持され、絞り込みと一致する", async () => {
     const dom = createFakeDom();
     await loadMain(dom, DATA_WITH_MODELS, false, "filter");
