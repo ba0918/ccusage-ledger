@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: read
+  # npm publish --provenance 用: OIDC トークン（出所証明の署名）を発行するために必要
+  id-token: write
 
 jobs:
   publish:
@@ -36,6 +38,8 @@ jobs:
             exit 1
           fi
       # NODE_AUTH_TOKEN は npm publish 用の認証トークン（GitHub の secret に設定する）
-      - run: npm publish --access public
+      # --provenance で「このパッケージはこの GitHub リポジトリの CI から公開された」ことを
+      # OIDC 署名で証明し、npmjs.com に出所を表示する
+      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
