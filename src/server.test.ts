@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, parseHostname, type AppWithUsage } from "./server";
+import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -729,12 +729,49 @@ describe("server bindError", () => {
     });
     const message = bindError(error, 3000).message;
     expect(message).toContain("port 3000 is already in use");
-    expect(message).toContain("PORT");
+    expect(message).toContain("--port");
     expect(message).toContain("excludedportrange");
   });
 
   test("EADDRINUSE 以外のエラーはそのまま通す（原因を書き換えない）", () => {
     const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
     expect(bindError(error, 3000)).toBe(error);
+  });
+});
+
+describe("server parseArgs / parsePort", () => {
+  test("--port と -p で値を受け取る（= 記法も含む）", () => {
+    expect(parseArgs(["--port", "4000"]).port).toBe("4000");
+    expect(parseArgs(["-p", "4000"]).port).toBe("4000");
+    expect(parseArgs(["--port=4000"]).port).toBe("4000");
+  });
+
+  test("--help を認識する", () => {
+    expect(parseArgs(["--help"]).help).toBe(true);
+    expect(parseArgs(["-h"]).help).toBe(true);
+    expect(parseArgs([]).help).toBe(false);
+  });
+
+  test("値のない --port はエラーにする（次のフラグを値として飲み込まない）", () => {
+    expect(() => parseArgs(["--port"])).toThrow(/requires a value/);
+    expect(() => parseArgs(["--port", "--help"])).toThrow(/requires a value/);
+  });
+
+  test("未知のオプションは黙って無視せずエラーにする", () => {
+    // 打ち間違い（--prot 4000 等）が黙って既定ポート起動になると原因に気づけない
+    expect(() => parseArgs(["--prot", "4000"])).toThrow(/Unknown option/);
+  });
+
+  test("既定ポートは競合しやすい 3000 ではない", () => {
+    expect(parsePort(undefined)).toBe(DEFAULT_PORT);
+    expect(DEFAULT_PORT).not.toBe(3000);
+    // Windows の既定動的ポート範囲（49152-65535）に入らない
+    expect(DEFAULT_PORT).toBeLessThan(49152);
+  });
+
+  test("不正な値は指定元を明示して拒否する（--port と PORT を取り違えない）", () => {
+    expect(() => parsePort("abc", "--port")).toThrow(/Invalid --port=abc/);
+    expect(() => parsePort("0", "--port")).toThrow(/Invalid --port=0/);
+    expect(() => parsePort("70000")).toThrow(/Invalid PORT=70000/);
   });
 });

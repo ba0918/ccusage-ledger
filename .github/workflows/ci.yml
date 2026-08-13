@@ -52,12 +52,12 @@ jobs:
           node ./node_modules/.bin/ccusage-ledger > server.log 2>&1 &
           SERVER_PID=$!
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:3000/ >/dev/null 2>&1; then break; fi
+            if curl -sf http://127.0.0.1:3737/ >/dev/null 2>&1; then break; fi
             sleep 1
           done
-          curl -sf -o /dev/null http://127.0.0.1:3000/
-          curl -sf -o /dev/null http://127.0.0.1:3000/dist/bundle.js
-          curl -sf -o /dev/null http://127.0.0.1:3000/api/usage
+          curl -sf -o /dev/null http://127.0.0.1:3737/
+          curl -sf -o /dev/null http://127.0.0.1:3737/dist/bundle.js
+          curl -sf -o /dev/null http://127.0.0.1:3737/api/usage
 
           # ccusage の解決や整合性検証に失敗しても /api/usage は空データで 200 を返すため、
           # ステータスだけでは「Node ではデータが取れない」不具合を検知できない。
@@ -73,7 +73,7 @@ jobs:
           fi
 
           # ミドルウェア・フレームワーク組み込みの応答でセキュリティヘッダが抜けないことを確認する
-          headers=$(curl -s -D- -o /dev/null -H "Host: evil.example.com" http://127.0.0.1:3000/)
+          headers=$(curl -s -D- -o /dev/null -H "Host: evil.example.com" http://127.0.0.1:3737/)
           # ステータス行そのものを見る（ヘッダ値に偶然 400 が含まれても通らないようにする）
           echo "$headers" | grep -qE "^HTTP/[0-9.]+ 400" || { echo "ERROR: Host 検証が効いていません" >&2; exit 1; }
           for header in content-security-policy x-frame-options x-content-type-options; do
@@ -84,7 +84,7 @@ jobs:
           done
 
           # 許可リスト外のパスが配信されないことを確認する
-          status=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3000/..%2fpackage.json")
+          status=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3737/..%2fpackage.json")
           [ "$status" = "404" ] || { echo "ERROR: トラバーサルが 404 になりません ($status)" >&2; exit 1; }
 
           kill $SERVER_PID

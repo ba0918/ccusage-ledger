@@ -560,7 +560,7 @@ function isBun(): boolean {
 export function bindError(error: Error, port: number): Error {
   if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") { return error; }
   return new Error(
-    `port ${port} is already in use. Set PORT to use a different port (e.g. PORT=3001). ` +
+    `port ${port} is already in use. Use --port to listen on a different port (e.g. --port ${port + 1}). ` +
       "On Windows the port can also be blocked by a reserved port range " +
       "(check: netsh interface ipv4 show excludedportrange protocol=tcp) or by a WSL process.",
   );
@@ -617,16 +617,64 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
 // PORT は 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、
 // bind 失敗が「判りにくいエラー」になるため、設定ミスを起動時に明確なメッセージで報告する
 // （cli.ts の catch が `ERROR: <message>` を出力して exit 1 する）
-function parsePort(value: string | undefined): number {
-  const raw = value ?? "3000";
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`Invalid PORT=${raw}: expected an integer between 1 and 65535`);
-  }
+// 既定ポート。3000 は React / Next / Rails 等の開発サーバーが使う最も競合しやすい番号で、
+// 初回起動がいきなり EADDRINUSE になりやすい。IANA の well-known / 一般的な開発用ポートを
+// 避け、Windows の動的ポート範囲（既定 49152-65535）にも入らない番号を既定にする
+export const DEFAULT_PORT = 3737;
+
+// ポート指定の出所を、エラーメッセージに正しく出すために持ち回る
+// （--port で指定したのに "Invalid PORT=..." と言われると原因を取り違える）
+export function parsePort(value: string | undefined, source: string = "PORT"): number {
+  const raw = value ?? String(DEFAULT_PORT);
+  const invalid = new Error(`Invalid ${source}=${raw}: expected an integer between 1 and 65535`);
+  if (!/^\d+$/.test(raw)) { throw invalid; }
   const port = Number(raw);
-  if (port < 1 || port > 65535) {
-    throw new Error(`Invalid PORT=${raw}: expected an integer between 1 and 65535`);
-  }
+  if (port < 1 || port > 65535) { throw invalid; }
   return port;
+}
+
+export interface CliOptions {
+  port?: string;
+  help: boolean;
+}
+
+export const USAGE = `Usage: ccusage-ledger [options]
+
+Options:
+  -p, --port <number>  Port to listen on (default: ${DEFAULT_PORT}, env: PORT)
+  -h, --help           Show this help
+
+Environment:
+  HOST                       Bind address (default: 127.0.0.1)
+  PORT                       Port to listen on (overridden by --port)
+  CCUSAGE_LEDGER_ALLOW_LAN   Set to 1 to allow a non-loopback bind`;
+
+// 引数解析。未知のフラグは黙って無視せずエラーにする（打ち間違いに気づけるようにする）
+export function parseArgs(argv: string[]): CliOptions {
+  const options: CliOptions = { help: false };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+    if (arg === "--port" || arg === "-p") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new Error(`${arg} requires a value (e.g. ${arg} ${DEFAULT_PORT})`);
+      }
+      options.port = value;
+      i++;
+      continue;
+    }
+    const inline = arg.match(/^--port=(.*)$/);
+    if (inline) {
+      options.port = inline[1]!;
+      continue;
+    }
+    throw new Error(`Unknown option: ${arg}\n\n${USAGE}`);
+  }
+  return options;
 }
 
 // HOST は IP リテラルまたはホスト名のみ受け付ける。bind に渡す値がそのまま browserUrl →
@@ -646,7 +694,13 @@ export async function main(): Promise<void> {
   const rootDir = PACKAGE_DIR;
   const cachePath = defaultCachePath(process.env);
 
-  const port = parsePort(process.env.PORT);
+  const cli = parseArgs(process.argv.slice(2));
+  if (cli.help) {
+    console.log(USAGE);
+    return;
+  }
+  // 優先順位: --port > PORT > 既定値。指定元をエラーメッセージに反映する
+  const port = cli.port !== undefined ? parsePort(cli.port, "--port") : parsePort(process.env.PORT);
   // HOST は IP リテラル/ホスト名以外を起動時に拒否する（browserUrl → openBrowser に流れるため）。
   // bind 失敗の「判りにくいエラー」より先に、設定ミスを明確なメッセージで報告する
   const hostname = parseHostname(process.env.HOST);
