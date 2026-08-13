@@ -19,7 +19,7 @@
 ## アーキテクチャ
 
 ```
-依存として固定した ccusage@20.0.19 の node_modules/ccusage/src/cli.js を bun run で実行  （サーバ起動時に1回実行）
+依存として固定した ccusage@20.0.19 の node_modules/ccusage/src/cli.js を実行中ランタイム（Bun / Node の process.execPath）で spawn して `--json --sections daily,monthly --by-agent` を渡す（サーバ起動時に1回実行）
         │
         ▼
 ~/.cache/ccusage-ledger/usage.json  （最新1ファイルキャッシュ。XDG_CACHE_HOME があればそれを基準）
@@ -37,7 +37,7 @@ Hono（Bun.serve / Node の @hono/node-server）   （ローカルサーバ）
 
 ## データ取得
 
-1. サーバ起動時に、依存として固定した `ccusage@20.0.19` の `node_modules/ccusage/src/cli.js` を `bun run` で `--json --sections daily,monthly --by-agent` 付きで子プロセスとして実行
+1. サーバ起動時に、依存として固定した `ccusage@20.0.19` の `node_modules/ccusage/src/cli.js` を実行中ランタイム（`process.execPath`。`bunx` / `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）で `--json --sections daily,monthly --by-agent` 付きで子プロセスとして spawn して実行
 2. 標準出力の JSON を `~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）に上書き保存
 3. サーバはこのキャッシュファイルを API 経由で配信
 
@@ -116,6 +116,7 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 - 受け取った側はブラウザでファイルを開くだけで、期間ナビ・モデル/エージェントフィルタ・全グラフ・データテーブルが動作する
 - フロントは埋め込みデータ（グローバル変数）が存在すれば `/api/usage` の fetch をスキップする
 - 出力は排他的に作成した一時通常ファイルへ 0600 で書き、完了後に目的ファイルへ置換する。既存の目的ファイルがシンボリックリンクなら、リンク先を変更せずに失敗する。書き込みまたは置換に失敗した場合は一時ファイルを残さない
+- 出力先が ccusage-ledger 以外の git リポジトリ内（パッケージ側に `.git` が無い場合も含む）の場合は、個人データ入り HTML の誤コミットを防ぐためデフォルトで書き込みを拒否する（`CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1` で明示オプトイン）
 
 ## 実行環境
 
@@ -135,6 +136,7 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 
 - データキャッシュは `~/.cache/ccusage-ledger/usage.json` に統一する（`XDG_CACHE_HOME` 環境変数があればそれを基準とする）
 - サーバ起動・HTML エクスポートの両方がこの場所を使う
+- キャッシュの読み込みは、ディレクトリが自分所有かつ 0700 であることを確認できない場合はキャッシュなし扱いとし（fail-closed）、symlink は拒否する。サイズ検証と読取は同一 fd で行い、検証した対象と読む対象の差し替え（TOCTOU）を防ぐ
 
 ### セキュリティ方針
 
@@ -142,13 +144,13 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 - ブラウザは描画のために完全な JSON をメモリ上に保持するため、ブラウザ層でのデータ機密保護（トークン付与・暗号化）は構造的に機能しない。ページへ到達できる者は devtools などで JSON を取り出せる
 - したがって実質の防衛線はネットワーク層のみ。LAN 公開（`HOST` 環境変数で明示した場合のみ）は明示的なオプトインとして扱うが、非ループバック接続には案内ページのみを配信し、データ（`/api/usage`）とクライアント資産（bundle.js 等）は配信しない（`/api/usage` は接続元 IP がループバックのときのみ配信する。SSH トンネル経由のループバック接続なら利用できる）。非 TTY 環境では `CCUSAGE_LEDGER_ALLOW_LAN=1` が無ければ起動を拒否する
 - 漏洩しうるデータは使用量（コスト・トークン数）のみで、致命的な情報漏洩にはつながらない想定とする
-- ループバック bind 時は、リクエストのホストがループバック（localhost、127.0.0.0/8 の IP、::1、IPv4-mapped IPv6 のループバック）以外なら拒否する（DNS rebinding 対策。判定はリテラル集合ではなく IP アドレスとして行う）。LAN 公開（明示オプトイン）では適用しない
+- ループバック bind 時は、リクエストのホストがループバック（localhost、127.0.0.0/8 の IP、::1、IPv4-mapped IPv6 のループバック）以外なら拒否する（DNS rebinding 対策。判定はリテラル集合ではなく IP アドレスとして行う）。さらに `/api/*` は bind モードに関係なく Host ヘッダのループバックを要求する（LAN モードではホスト名検証が無効化されるため、DNS rebinding ページが 127.0.0.1 への同一オリジン fetch で全履歴を読めるのを防ぐ）。非 `/api` パスの Host 検証はループバック bind 時のみ適用し、LAN 公開では適用しない
 - 静的配信は固定 allowlist（`/` → index.html、`/dist/bundle.js`、`/public/app.css`、`/public/vendor/chart.umd.min.js`）のみで、URL からパスを組み立てない。パストラバーサル・ディレクトリ要求は構造的に排除され、配信対象外のファイル（サーバ CLI バンドル・エクスポート成果物等）や symlink が許可対象外の場所を指す場合は配信しない
 - データキャッシュはファイルパーミッション 0600 で書き、一時ファイルへの書き込み → rename で原子的に更新する
 - `ccusage` から取得した JSON はキャッシュ保存・配信・描画より前に検証する。すべてのコストとトークン数は有限かつ `0` 以上 `1e12` 以下とし、`metadata` が存在する場合は `null` や配列ではないオブジェクトだけを受理する。不正な取得結果は拒否し、安全な既存キャッシュがあればフォールバックする
 - ccusage コマンドはバージョン固定で実行する。依存として固定した `ccusage@20.0.19` の `node_modules/ccusage/src/cli.js` を、実行中ランタイム（Bun / Node の `process.execPath`）で直接 spawn して実行する（`bunx` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）。ccusage はレジストリから取得される外部コードであり、その実行は信頼を前提とする。バージョン固定は「毎回最新を取得」の移動標的リスクを減らすものであり、起動ごとの sha256 照合（下記）が完全な整合性検証ではないことは自明である
 - `ccusage` 子プロセスには実効的な実行期限を設ける。期限超過時は通常の終了要求を送り、猶予時間内に終了しなければ強制終了する。強制終了後の待機にも上限を設け、サーバ起動や HTML エクスポートが無期限に停止しないようにする
-- 起動ごとにインストール済み ccusage の完全性を sha256 で照合する。ラッパー（`node_modules/ccusage`）はプラットフォーム非依存のため固定値（`CCUSAGE_WRAPPER_SHA256`）と全プラットフォームで照合し、実行プラットフォームの native バイナリ（`@ccusage/ccusage-<platform>-<arch>`）はプラットフォーム別テーブル（`CCUSAGE_NATIVE_SHA256_BY_PLATFORM`）と照合する。テーブルに未登録のプラットフォームでは検証不可として WARN を出して続行する（単一固定値では他プラットフォームが常に不一致になるため）。照合ハッシュは同一成果物内に同梱されるため、固定版そのものの悪意ある publish や同一ユーザーの改ざんは検知できない（自己参照の限界。検知対象はローカル/レジストリ上の post-install 改ざん）
+- 起動ごとにインストール済み ccusage の完全性を sha256 で照合する。ラッパー（`node_modules/ccusage`）はプラットフォーム非依存のため固定値（`CCUSAGE_WRAPPER_SHA256`）と全プラットフォームで照合し、実行プラットフォームの native バイナリ（`@ccusage/ccusage-<platform>-<arch>`）はプラットフォーム別テーブル（`CCUSAGE_NATIVE_SHA256_BY_PLATFORM`）と照合する。テーブルに未登録のプラットフォームでは検証不可として実行を拒否する（fail-closed。`CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` で明示オプトインすると WARN のみで続行する）。照合ハッシュは同一成果物内に同梱されるため、固定版そのものの悪意ある publish や同一ユーザーの改ざんは検知できない（自己参照の限界。検知対象はローカル/レジストリ上の post-install 改ざん）
 
 ### 将来調査
 
@@ -165,7 +167,7 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 - 切替は即時反映（リロードなし）。切替時に `<html lang>` 属性も同時に更新する
 - 初回描画のちらつきを防ぐため、バンドル冒頭で保存済み言語を同期的に適用する
   - サーバ版 CSP はインライン script を禁止しているが、バンドルは外部ファイル（`script-src 'self'`）のため制約に抵触しない
-- 対象文言: `index.html` の静的文言 / `main.ts` の動的文言（チャート軸・tooltip・ステータス・空データ）/ `main.ts` が `aggregate.ts` の系列ビルダーへ注入する表示ラベル（`other` / `unitPrice` / `cacheHit`。`aggregate.ts` 側の `OTHER_LABEL` は英語の既定値で、表示層は現在言語のラベルを必ず渡す）/ export 警告バナー。補間を含む動的要素（エージェント数サブ・ドーナツ中央ラベル）はデータ 0 状態でも言語切替に追従する
+- 対象文言: `index.html` の静的文言 / `main.ts`・`charts.ts`・`detail-panel.ts` の動的文言（チャート軸・tooltip・ステータス・空データ・期間詳細パネル・比較カード）/ `main.ts` が `aggregate.ts` の系列ビルダーへ注入する表示ラベル（`other` / `unitPrice` / `cacheHit`。`aggregate.ts` 側の `OTHER_LABEL` は英語の既定値で、表示層は現在言語のラベルを必ず渡す）/ export 警告バナー。補間を含む動的要素（エージェント数サブ・ドーナツ中央ラベル）はデータ 0 状態でも言語切替に追従する
 - 数値表記は言語で変えない（金額は USD 固定、桁区切りは ja/en 共通）
 
 ## 将来拡張

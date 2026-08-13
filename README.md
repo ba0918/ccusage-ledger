@@ -48,6 +48,7 @@ The browser opens `http://127.0.0.1:3000` on start (local interactive environmen
 | `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `3000` | Bind port |
 | `CCUSAGE_LEDGER_ALLOW_LAN` | (none) | Set to `1` to start with only a warning for a non-loopback bind |
+| `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE` | (none) | Set to `1` to start with a warning (instead of refusing) when the ccusage native binary hash for the platform is not recorded |
 
 ### About LAN exposure
 
@@ -55,7 +56,7 @@ By default the server binds only to `127.0.0.1`. With a non-loopback bind such a
 
 - On a TTY, a warning is shown and confirmation is requested at startup
 - On a non-TTY, startup is refused unless `CCUSAGE_LEDGER_ALLOW_LAN=1` is set
-- For non-loopback connections, `/api/usage` returns 403 (the data body is not served); the decision is based on the connection's source IP, so an SSH tunnel reaching loopback still works
+- For non-loopback connections, `/api/usage` data is not served: a request with a non-loopback Host header gets 400, and a request from a non-loopback source IP gets 403 (the Host gate runs first, then the source-IP gate). The source-IP decision is based on the connection's source IP, so an SSH tunnel reaching loopback still works
 
 To view from another device, use an **SSH tunnel**. The tunnel itself acts as access control, and the connection source becomes loopback, so `/api/usage` works as well. The SSH tunnel encrypts the network segment, but the connection between the tunnel endpoint and the dashboard on the server still uses plain HTTP end-to-end (the encryption boundary is the SSH connection, not the dashboard itself).
 
@@ -81,14 +82,14 @@ Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working 
 
 The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.19`) directly to fetch the full history and caches it at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
 
-The child process gets an empty temporary `HOME` and only a small allowlist of non-secret env vars (`PATH`, `TERM`, `TMPDIR`, etc.) plus the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` or API keys — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. At startup the installed ccusage wrapper is sha256-verified against a pinned value on every platform, and the platform native binary against a per-platform table (platforms without a recorded hash are warned, not verified).
+The child process gets an empty temporary `HOME` and only a small allowlist of non-secret env vars (`PATH`, `TERM`, `TMPDIR`, etc.) plus the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` or API keys — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. At startup the installed ccusage wrapper is sha256-verified against a pinned value on every platform, and the platform native binary against a per-platform table (all 6 platforms shipped by ccusage@20.0.19 are registered; on an unregistered platform startup is refused unless `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` is set).
 
 > This guards against accidental access and post-install tampering. The hash constant ships inside the artifact it verifies, so a supply-chain compromise of the pinned release itself (or a same-user attacker) is out of scope for this control.
 
 ## Development
 
 ```sh
-bun run build      # bundle the frontend into dist/bundle.js
+bun run build      # bundle the frontend into dist/bundle.js and the CLI into dist/ccusage-ledger.js
 bun test           # run tests
 bun run typecheck  # type-check
 ```

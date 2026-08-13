@@ -20,7 +20,7 @@
 - 各 period エントリ: `period`（日 or 月）、`totalCost`、`totalTokens`、`inputTokens`、`outputTokens`、`cacheReadTokens`、`cacheCreationTokens`、`modelsUsed[]`、`modelBreakdowns[]`、`metadata.agents[]`、`agents[]`（エージェント別内訳。`--by-agent` で取得）
 - `modelBreakdowns[]`: モデル別の `modelName` / `cost` / 各トークン数
 - yearly は monthly をクライアントで集計して生成
-- スキーマには将来の複数デバイス対応のため `device` フィールドを最初から含める
+- スキーマ・検証には将来の複数デバイス対応のため `device` フィールドを最初から含める（白リスト投影（`projectUsageData`）からは落とすため、配信・描画では常に undefined。将来描画するときに投影へ追加する）
 
 ## フィルタ
 
