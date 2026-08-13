@@ -104,15 +104,32 @@ describe("publish ワークフローのリリースガード", () => {
     expect(executableLines).not.toContain("# npm publish");
   });
 
-  test("npm レジストリの認証が配線されている", () => {
-    // NODE_AUTH_TOKEN は、それを参照する .npmrc が無いと使われない（npm は ENEEDAUTH で落ちる）。
-    // .npmrc を生成するのは setup-node の registry-url 指定であり、setup-bun では代替できない
+  test("Trusted Publishing（OIDC）で公開し、長期トークンを持たない", () => {
+    // registry-url を指定すると NODE_AUTH_TOKEN を参照する .npmrc が生成され、
+    // 値が空のトークン認証として扱われて OIDC の経路に入らない
+    expect(executableLines).not.toContain("registry-url:");
+    expect(executableLines).not.toContain("NODE_AUTH_TOKEN");
+    expect(executableLines).not.toContain("secrets.NPM_TOKEN");
+  });
+
+  test("Trusted Publishing に必要な npm CLI を publish より前に用意している", () => {
+    // Trusted Publishing は npm 11.5.1 以上が必要だが、Node 22 の同梱は 10 系
     expect(executableLines).toContain("actions/setup-node@");
-    expect(executableLines).toContain("registry-url:");
-    const registryIndex = executableLines.indexOf("registry-url:");
+    const npmInstallIndex = executableLines.indexOf("npm install -g npm@");
     const publishIndex = executableLines.indexOf("npm publish");
-    expect(registryIndex).toBeGreaterThan(0);
-    expect(registryIndex).toBeLessThan(publishIndex);
+    expect(npmInstallIndex).toBeGreaterThan(0);
+    expect(npmInstallIndex).toBeLessThan(publishIndex);
+
+    // 固定したバージョンが最低要件を満たすことを確認する（更新時の取り違え防止）
+    const pinned = executableLines.match(/npm install -g npm@(\d+)\.(\d+)\.(\d+)/);
+    expect(pinned).not.toBeNull();
+    const [major, minor, patch] = [Number(pinned![1]), Number(pinned![2]), Number(pinned![3])];
+    const meetsMinimum = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+    expect(meetsMinimum, `npm@${major}.${minor}.${patch} は Trusted Publishing の最低要件 11.5.1 を満たさない`).toBe(true);
+  });
+
+  test("id-token: write を job 単位で付与している（OIDC の発行に必要）", () => {
+    expect(publishYml).toContain("id-token: write");
   });
 
   test("Release 作成のために contents: write を job 単位で付与している", () => {

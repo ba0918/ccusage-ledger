@@ -84,7 +84,10 @@ publish ワークフロー（`.github/workflows/publish.yml`）が以下の順�
 
 補足:
 
-- 前提として GitHub の secret に `NPM_TOKEN`（publish 権限のある npm トークン）が必要
+- 公開は npm の Trusted Publishing（OIDC）で行う。**長期トークンは使わず、GitHub の secret に npm トークンを置かない**（npmjs.com のパッケージ設定でこのリポジトリとワークフローファイルを信頼するよう登録済みであることが前提）。トークンが存在しないため、漏洩・失効・2FA の OTP 要求（`EOTP`）が構造的に起こらない
+- Trusted Publishing は npm CLI 11.5.1 以上・Node 22.14.0 以上を要求するため、publish ワークフローで npm を明示的に入れ直している。`registry-url` は指定しない（指定すると空の `NODE_AUTH_TOKEN` を参照する `.npmrc` が生成され、トークン認証扱いになって OIDC の経路に入らない）
+- provenance は Trusted Publishing では自動付与されるため、`--provenance` は指定しない
+- Trusted Publishing は**既に存在するパッケージにしか設定できない**（名前乗っ取り防止）。新しいパッケージ名で公開を始める場合、初回だけはローカルから `npm publish` する必要がある
 - バージョンを間違えてタグを打った場合は、push 前ならタグを消してやり直す。既に publish まで通った場合はそのバージョンは再利用できないため、次の番号で出し直す
 - `CHANGELOG.md` は持たず、GitHub Release の自動生成ノート（マージされた PR の一覧）を変更履歴とする
 
