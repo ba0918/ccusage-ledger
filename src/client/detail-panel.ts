@@ -74,7 +74,7 @@ function rowHtml(d: ModelPeriodDetail, models: string[], selected: readonly stri
   const refBadge = d.isRef
     ? `<span class="ref-badge" title="${htmlAttr(t("refBadgeTitle", { threshold: formatTokensFull(REF_TOKEN_THRESHOLD) }))}">${htmlText(t("refBadge"))}</span>`
     : "";
-  const selectedAttr = selected.includes(d.modelName) ? ' class="selected"' : "";
+  const selectedAttr = selected.includes(d.modelName) ? ' class="selected" aria-pressed="true"' : ' aria-pressed="false"';
   return `<tr data-model="${htmlAttr(d.modelName)}"${selectedAttr} title="${htmlAttr(t("selectModel", { model: shortModelName(d.modelName) }))}">
     <td><span class="m-name"><span class="swatch" style="background:${color}"></span>${htmlText(shortModelName(d.modelName))}${refBadge}</span></td>
     <td class="num-unit">${formatUnitPrice(d.unitPrice)}</td>

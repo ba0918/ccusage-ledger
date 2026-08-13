@@ -292,16 +292,17 @@ describe("renderDetailPanel", () => {
     expect(html).toContain("×");
   });
 
-  test("選択モデルの行に selected クラスを付けて再描画する", async () => {
-    const panel = await loadPanel();
+  test("選択モデルの行に selected クラスと aria-pressed を付けて再描画する", async () => {
     const dom = createFakeDom();
     installDom(dom);
+    const panel = await loadPanel();
     setLang("en", fakeStorage);
     panel.renderDetailPanel(ENTRY, MODELS, ["deepseek-chat"], () => {});
 
     const html = dom.getElementById("detail-table-body")!.innerHTML;
-    expect(html).toContain('data-model="deepseek-chat" class="selected"');
-    expect(html).toContain('data-model="claude-sonnet-4-5" title="');
+    expect(html).toContain('data-model="deepseek-chat" class="selected" aria-pressed="true"');
+    expect(html).toContain('data-model="claude-sonnet-4-5" aria-pressed="false"');
+    expect(html).toContain('data-model="claude-sonnet-4-5" aria-pressed="false" title="');
   });
 
   test("行クリックで onSelect がモデル名を渡して呼ばれる", async () => {
