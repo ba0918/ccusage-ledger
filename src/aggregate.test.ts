@@ -30,6 +30,11 @@ import {
   agentDonutData,
   maxFinite,
   sliceLatest,
+  REF_TOKEN_THRESHOLD,
+  buildModelPeriodDetails,
+  compareModelDetails,
+  effectiveUnitPrice,
+  type ModelPeriodDetail,
 } from "./aggregate";
 
 const DATA = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -955,5 +960,161 @@ describe("sliceLatest", () => {
   test("max を超える場合は末尾（最新）max 件を返す", () => {
     expect(sliceLatest([1, 2, 3, 4, 5], 3)).toEqual([3, 4, 5]);
     expect(sliceLatest([], 3)).toEqual([]);
+  });
+});
+
+// 単一期間のモデル詳細・比較のテスト用エントリ。tokens は inputTokens にまとめて総トークンを
+// 決める（unitPrice = cost ÷ tokens × 1e6 の検証が読みやすい）
+function makeDetailEntry(period: string, breakdowns: [modelName: string, cost: number, tokens: number][]): PeriodEntry {
+  const modelBreakdowns = breakdowns.map(([modelName, cost, tokens]) => ({
+    modelName,
+    cost,
+    inputTokens: tokens,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+  }));
+  return {
+    period,
+    totalCost: breakdowns.reduce((sum, [, cost]) => sum + cost, 0),
+    totalTokens: breakdowns.reduce((sum, [, , tokens]) => sum + tokens, 0),
+    inputTokens: breakdowns.reduce((sum, [, , tokens]) => sum + tokens, 0),
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    modelsUsed: breakdowns.map(([modelName]) => modelName),
+    modelBreakdowns,
+  };
+}
+
+// breakdowns から buildModelPeriodDetails を経由して modelName → detail の Map を作る
+// （compareModelDetails の入力は実装の出力と同じ型を使う）
+function detailsOf(breakdowns: [modelName: string, cost: number, tokens: number][]): Map<string, ModelPeriodDetail> {
+  return new Map(
+    buildModelPeriodDetails(makeDetailEntry("2026-08-13", breakdowns)).map((d) => [d.modelName, d]),
+  );
+}
+
+describe("buildModelPeriodDetails", () => {
+  const ENTRY = makeDetailEntry("2026-08-13", [
+    ["model-expensive", 9, 1_000_000],
+    ["model-mid", 4, 1_000_000],
+    ["model-small", 1, 500_000],
+    ["model-cheap", 1, 2_000_000],
+    ["model-free", 0, 5_000_000],
+    ["model-tiny", 0.5, 0],
+  ]);
+
+  test("単一期間の全モデルが実効単価の降順で並ぶ（上位5を超えても全件含む）", () => {
+    const details = buildModelPeriodDetails(ENTRY);
+
+    expect(details.map((d) => d.modelName)).toEqual([
+      "model-expensive",
+      "model-mid",
+      "model-small",
+      "model-cheap",
+      "model-free",
+      "model-tiny",
+    ]);
+  });
+
+  test("実効単価が cost ÷ totalTokens × 1e6 で計算される", () => {
+    const details = buildModelPeriodDetails(ENTRY);
+    const byName = new Map(details.map((d) => [d.modelName, d]));
+
+    expect(byName.get("model-expensive")!.unitPrice).toBeCloseTo(9);
+    expect(byName.get("model-cheap")!.unitPrice).toBeCloseTo(0.5);
+  });
+
+  test("トークン 0 のモデルの実効単価は 0 になる", () => {
+    const details = buildModelPeriodDetails(ENTRY);
+    expect(details.find((d) => d.modelName === "model-tiny")!.unitPrice).toBe(0);
+  });
+
+  test("総トークンが閾値未満のモデルに参考値フラグが付き、閾値ちょうどは付かない", () => {
+    expect(REF_TOKEN_THRESHOLD).toBe(1_000_000);
+    const byName = new Map(buildModelPeriodDetails(ENTRY).map((d) => [d.modelName, d]));
+
+    expect(byName.get("model-small")!.isRef).toBe(true);
+    expect(byName.get("model-tiny")!.isRef).toBe(true);
+    expect(byName.get("model-expensive")!.isRef).toBe(false);
+    expect(byName.get("model-free")!.isRef).toBe(false);
+  });
+
+  test("各モデルのトークン内訳と総トークンを breakdown から引き継ぐ", () => {
+    const details = buildModelPeriodDetails(ENTRY);
+    const expensive = details[0]!;
+
+    expect(expensive.totalTokens).toBe(1_000_000);
+    expect(expensive.inputTokens).toBe(1_000_000);
+    expect(expensive.outputTokens).toBe(0);
+    expect(expensive.cacheReadTokens).toBe(0);
+    expect(expensive.cacheCreationTokens).toBe(0);
+    expect(expensive.cost).toBe(9);
+  });
+});
+
+describe("effectiveUnitPrice", () => {
+  test("cost ÷ totalTokens × 1e6 を返し、トークン 0 は 0 を返す", () => {
+    expect(effectiveUnitPrice(2, 1_000_000)).toBe(2);
+    expect(effectiveUnitPrice(3, 0)).toBe(0);
+  });
+});
+
+describe("compareModelDetails", () => {
+  test("倍率（大きい側 ÷ 小さい側）と低減率（%）を指標ごとに計算する", () => {
+    const details = detailsOf([
+      ["expensive", 9, 1_000_000],
+      ["small", 1, 500_000],
+    ]);
+    const cmp = compareModelDetails(details.get("expensive")!, details.get("small")!);
+
+    expect(cmp.unitPriceRatio).toBeCloseTo(4.5);
+    expect(cmp.unitPriceReduction).toBeCloseTo(77.78);
+    expect(cmp.costRatio).toBeCloseTo(9);
+    expect(cmp.costReduction).toBeCloseTo(88.89);
+    expect(cmp.tokensRatio).toBeCloseTo(2);
+    expect(cmp.tokensReduction).toBeCloseTo(50);
+  });
+
+  test("両方 0 の指標は倍率 1・低減率 0 になる（0 除算を回避）", () => {
+    const details = detailsOf([
+      ["zero-a", 0, 0],
+      ["zero-b", 0, 0],
+    ]);
+    const cmp = compareModelDetails(details.get("zero-a")!, details.get("zero-b")!);
+
+    expect(cmp.unitPriceRatio).toBe(1);
+    expect(cmp.unitPriceReduction).toBe(0);
+    expect(cmp.costRatio).toBe(1);
+    expect(cmp.costReduction).toBe(0);
+    expect(cmp.tokensRatio).toBe(1);
+    expect(cmp.tokensReduction).toBe(0);
+  });
+
+  test("片側だけ 0 の指標は倍率 Infinity・低減率 100 になる（NaN にならない）", () => {
+    const details = detailsOf([
+      ["zero", 0, 0],
+      ["real", 2, 1_000_000],
+    ]);
+    const cmp = compareModelDetails(details.get("zero")!, details.get("real")!);
+
+    expect(cmp.unitPriceRatio).toBe(Infinity);
+    expect(cmp.unitPriceReduction).toBe(100);
+    expect(cmp.costRatio).toBe(Infinity);
+    expect(cmp.costReduction).toBe(100);
+    expect(cmp.tokensRatio).toBe(Infinity);
+    expect(cmp.tokensReduction).toBe(100);
+  });
+
+  test("等しい指標は倍率 1・低減率 0 になる", () => {
+    const details = detailsOf([
+      ["same-a", 2, 1_000_000],
+      ["same-b", 2, 1_000_000],
+    ]);
+    const cmp = compareModelDetails(details.get("same-a")!, details.get("same-b")!);
+
+    expect(cmp.unitPriceRatio).toBe(1);
+    expect(cmp.unitPriceReduction).toBe(0);
   });
 });

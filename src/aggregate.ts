@@ -7,6 +7,10 @@ import type { AgentBreakdown, ModelBreakdown, PeriodEntry, UsageData } from "./t
 // テストと再利用を単一の場所に閉じるため。
 export const TOP_N = 5;
 
+// 参考値（ref バッジ）とみなす総トークンの閾値（U3 仮決め）。利用量が少ないモデルは
+// 実効単価の信頼性が低いため、この値未満のモデルを参考値として明示する
+export const REF_TOKEN_THRESHOLD = 1_000_000;
+
 // 上位 N モデル以外をまとめる「その他」バケットのラベル。表示層が t("other") で渡すため、
 // 純計算層の既定値は言語に依存しない英語を使う
 export const OTHER_LABEL = "Others";
@@ -367,8 +371,83 @@ export function cacheHitRate(entry: {
 }
 
 // 実効単価（$/MTok）= cost / tokens × 1e6。トークン 0 は単価を計算できないため 0 を返す
-function effectiveUnitPrice(cost: number, tokens: number): number {
+export function effectiveUnitPrice(cost: number, tokens: number): number {
   return tokens === 0 ? 0 : (cost / tokens) * 1_000_000;
+}
+
+// 単一期間のモデル詳細（期間クリックパネルの 1 行分）。modelBreakdowns の 6 フィールド +
+// 実効単価 + 参考値フラグを 1 つの型にまとめる
+export interface ModelPeriodDetail {
+  modelName: string;
+  cost: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  unitPrice: number;
+  isRef: boolean;
+}
+
+// 単一期間の全モデル詳細を実効単価の降順で返す。概要グラフの上位 N モデル +「その他」とは
+// 独立に entry.modelBreakdowns を全件対象とする（クリック期間の「全モデル即時比較」が役割）
+export function buildModelPeriodDetails(entry: PeriodEntry): ModelPeriodDetail[] {
+  return entry.modelBreakdowns
+    .map((breakdown) => {
+      const totalTokens = totalTokensOf(breakdown);
+      return {
+        modelName: breakdown.modelName,
+        cost: breakdown.cost,
+        totalTokens,
+        inputTokens: breakdown.inputTokens,
+        outputTokens: breakdown.outputTokens,
+        cacheReadTokens: breakdown.cacheReadTokens,
+        cacheCreationTokens: breakdown.cacheCreationTokens,
+        unitPrice: effectiveUnitPrice(breakdown.cost, totalTokens),
+        isRef: totalTokens < REF_TOKEN_THRESHOLD,
+      };
+    })
+    .sort((a, b) => b.unitPrice - a.unitPrice);
+}
+
+// 2 モデル比較の倍率（大きい側 ÷ 小さい側）。両方 0 は倍率 1、片方 0 は Infinity として
+// 0 除算を回避する（表示層は ∞ として扱う）
+function ratioOf(a: number, b: number): number {
+  const max = Math.max(a, b);
+  const min = Math.min(a, b);
+  if (max === 0) { return 1; }
+  if (min === 0) { return Infinity; }
+  return max / min;
+}
+
+// 低減率（%）= 小さい側が大きい側より何 % 少ないか。両方 0 は低減できないため 0
+function reductionOf(a: number, b: number): number {
+  const max = Math.max(a, b);
+  const min = Math.min(a, b);
+  if (max === 0) { return 0; }
+  return (1 - min / max) * 100;
+}
+
+export interface ModelComparison {
+  unitPriceRatio: number;
+  unitPriceReduction: number;
+  costRatio: number;
+  costReduction: number;
+  tokensRatio: number;
+  tokensReduction: number;
+}
+
+// 2 モデル比較データ（倍率・低減率）。単位・コスト・トークンの 3 指標を ratioOf /
+// reductionOf でまとめて計算する（0 除算の回避は ratioOf / reductionOf 側に集約）
+export function compareModelDetails(a: ModelPeriodDetail, b: ModelPeriodDetail): ModelComparison {
+  return {
+    unitPriceRatio: ratioOf(a.unitPrice, b.unitPrice),
+    unitPriceReduction: reductionOf(a.unitPrice, b.unitPrice),
+    costRatio: ratioOf(a.cost, b.cost),
+    costReduction: reductionOf(a.cost, b.cost),
+    tokensRatio: ratioOf(a.totalTokens, b.totalTokens),
+    tokensReduction: reductionOf(a.totalTokens, b.totalTokens),
+  };
 }
 
 export interface ChartSeries {
