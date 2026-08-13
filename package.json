@@ -1,9 +1,12 @@
 {
   "name": "ccusage-ledger",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent CLI usage dashboard: visualize cost, tokens, and cache hit rates from ccusage data",
   "type": "module",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/ba0918/ccusage-ledger.git" },
+  "homepage": "https://github.com/ba0918/ccusage-ledger#readme",
+  "bugs": { "url": "https://github.com/ba0918/ccusage-ledger/issues" },
   "packageManager": "bun@1.3.14",
   "keywords": ["ccusage", "claude-code", "codex", "opencode", "dashboard", "usage"],
   "bin": {

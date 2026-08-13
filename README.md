@@ -6,7 +6,7 @@ It reads JSON emitted by [ccusage](https://github.com/ccusage/ccusage) and displ
 
 ## Screenshot
 
-![ccusage Ledger](assets/image.png)
+![ccusage Ledger](https://raw.githubusercontent.com/ba0918/ccusage-ledger/main/assets/image.png)
 
 ## Requirements
 
