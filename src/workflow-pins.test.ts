@@ -63,12 +63,16 @@ describe("publish ワークフローのリリースガード", () => {
   const publishYml = readFileSync(join(WORKFLOW_DIR, "publish.yml"), "utf-8");
 
   // 実行順の検証はコメント行を除いた本文で行う。コメントには説明として同じコマンド名が
-  // 登場する（例: 9 行目の "npm publish --provenance 用: ..."）ため、生の本文で
-  // indexOf すると「コメントの位置」を比較してしまい、ステップを入れ替えても検知できない
-  const executableLines = publishYml
-    .split("\n")
-    .filter((line) => !/^\s*#/.test(line))
-    .join("\n");
+  // 登場し得るため、生の本文で indexOf すると「コメントの位置」を比較してしまい、
+  // ステップを入れ替えても検知できない
+  function stripComments(yml: string): string {
+    return yml
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+  }
+
+  const executableLines = stripComments(publishYml);
 
   test("タグと package.json の version 一致を検証している", () => {
     // npm は同一バージョンの再公開を拒否するため、不一致のまま publish すると
@@ -93,15 +97,21 @@ describe("publish ワークフローのリリースガード", () => {
     expect(releaseIndex).toBeGreaterThan(publishIndex);
   });
 
-  test("順序検証はコメントではなく実行行を見ている（テスト自体の回帰防止）", () => {
-    // コメント行を残したままステップだけ入れ替えても検知できることを、
-    // 実行行だけを対象にしていることの確認として固定する
-    const commentOnly = publishYml
-      .split("\n")
-      .filter((line) => /^\s*#/.test(line))
-      .join("\n");
-    expect(commentOnly).toContain("npm publish");
-    expect(executableLines).not.toContain("# npm publish");
+  test("順序検証はコメントを無視する（テスト自体の回帰防止）", () => {
+    // 合成した入力で仕組みそのものを検証する。実ファイルのコメント文言に依存させると、
+    // コメントを書き換えただけでこのテストが壊れる（実際に一度壊した）
+    const sample = [
+      "  # npm publish 用のトークンに関する説明コメント",
+      "      - run: gh release create foo",
+      "      - run: npm publish --access public",
+    ].join("\n");
+
+    // 生の本文ではコメントが先に一致し、順序が逆に見える（これが修正前の不具合）
+    expect(sample.indexOf("npm publish")).toBeLessThan(sample.indexOf("gh release create"));
+
+    // コメントを除くと、実行行の実際の順序が得られる
+    const stripped = stripComments(sample);
+    expect(stripped.indexOf("npm publish")).toBeGreaterThan(stripped.indexOf("gh release create"));
   });
 
   test("Trusted Publishing（OIDC）で公開し、長期トークンを持たない", () => {
