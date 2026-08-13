@@ -63,12 +63,16 @@ describe("publish ワークフローのリリースガード", () => {
   const publishYml = readFileSync(join(WORKFLOW_DIR, "publish.yml"), "utf-8");
 
   // 実行順の検証はコメント行を除いた本文で行う。コメントには説明として同じコマンド名が
-  // 登場する（例: 9 行目の "npm publish --provenance 用: ..."）ため、生の本文で
-  // indexOf すると「コメントの位置」を比較してしまい、ステップを入れ替えても検知できない
-  const executableLines = publishYml
-    .split("\n")
-    .filter((line) => !/^\s*#/.test(line))
-    .join("\n");
+  // 登場し得るため、生の本文で indexOf すると「コメントの位置」を比較してしまい、
+  // ステップを入れ替えても検知できない
+  function stripComments(yml: string): string {
+    return yml
+      .split("\n")
+      .filter((line) => !/^\s*#/.test(line))
+      .join("\n");
+  }
+
+  const executableLines = stripComments(publishYml);
 
   test("タグと package.json の version 一致を検証している", () => {
     // npm は同一バージョンの再公開を拒否するため、不一致のまま publish すると
@@ -93,31 +97,77 @@ describe("publish ワークフローのリリースガード", () => {
     expect(releaseIndex).toBeGreaterThan(publishIndex);
   });
 
-  test("順序検証はコメントではなく実行行を見ている（テスト自体の回帰防止）", () => {
-    // コメント行を残したままステップだけ入れ替えても検知できることを、
-    // 実行行だけを対象にしていることの確認として固定する
-    const commentOnly = publishYml
-      .split("\n")
-      .filter((line) => /^\s*#/.test(line))
-      .join("\n");
-    expect(commentOnly).toContain("npm publish");
-    expect(executableLines).not.toContain("# npm publish");
+  test("順序検証はコメントを無視する（テスト自体の回帰防止）", () => {
+    // 合成した入力で仕組みそのものを検証する。実ファイルのコメント文言に依存させると、
+    // コメントを書き換えただけでこのテストが壊れる（実際に一度壊した）
+    const sample = [
+      "  # npm publish 用のトークンに関する説明コメント",
+      "      - run: gh release create foo",
+      "      - run: npm publish --access public",
+    ].join("\n");
+
+    // 生の本文ではコメントが先に一致し、順序が逆に見える（これが修正前の不具合）
+    expect(sample.indexOf("npm publish")).toBeLessThan(sample.indexOf("gh release create"));
+
+    // コメントを除くと、実行行の実際の順序が得られる
+    const stripped = stripComments(sample);
+    expect(stripped.indexOf("npm publish")).toBeGreaterThan(stripped.indexOf("gh release create"));
   });
 
-  test("npm レジストリの認証が配線されている", () => {
-    // NODE_AUTH_TOKEN は、それを参照する .npmrc が無いと使われない（npm は ENEEDAUTH で落ちる）。
-    // .npmrc を生成するのは setup-node の registry-url 指定であり、setup-bun では代替できない
+  test("Trusted Publishing（OIDC）で公開し、長期トークンを持たない", () => {
+    // registry-url を指定すると NODE_AUTH_TOKEN を参照する .npmrc が生成され、
+    // 値が空のトークン認証として扱われて OIDC の経路に入らない
+    expect(executableLines).not.toContain("registry-url:");
+    expect(executableLines).not.toContain("NODE_AUTH_TOKEN");
+    expect(executableLines).not.toContain("secrets.NPM_TOKEN");
+  });
+
+  test("Trusted Publishing に必要な npm CLI を publish より前に用意している", () => {
+    // Trusted Publishing は npm 11.5.1 以上が必要だが、Node 22 の同梱は 10 系
     expect(executableLines).toContain("actions/setup-node@");
-    expect(executableLines).toContain("registry-url:");
-    const registryIndex = executableLines.indexOf("registry-url:");
+    const npmInstallIndex = executableLines.indexOf("npm install -g npm@");
     const publishIndex = executableLines.indexOf("npm publish");
-    expect(registryIndex).toBeGreaterThan(0);
-    expect(registryIndex).toBeLessThan(publishIndex);
+    expect(npmInstallIndex).toBeGreaterThan(0);
+    expect(npmInstallIndex).toBeLessThan(publishIndex);
+
+    // 固定したバージョンが最低要件を満たすことを確認する（更新時の取り違え防止）
+    const pinned = executableLines.match(/npm install -g npm@(\d+)\.(\d+)\.(\d+)/);
+    expect(pinned).not.toBeNull();
+    const [major, minor, patch] = [Number(pinned![1]), Number(pinned![2]), Number(pinned![3])];
+    const meetsMinimum = major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1)));
+    expect(meetsMinimum, `npm@${major}.${minor}.${patch} は Trusted Publishing の最低要件 11.5.1 を満たさない`).toBe(true);
   });
 
-  test("Release 作成のために contents: write を job 単位で付与している", () => {
-    // workflow 単位は contents: read のまま、必要な job にだけ write を与える
-    expect(publishYml).toMatch(/permissions:\s*\n\s*contents: read/);
-    expect(publishYml).toContain("contents: write");
+  // job 単位の permissions は workflow 単位の指定を「置き換える」。したがって
+  // workflow 全体を対象に toContain するだけでは、job 側の 1 行を消しても
+  // workflow 側の同じ行に一致してテストが通ってしまう（実際には権限を失う）。
+  // job の permissions ブロックだけを取り出して検証する
+  function jobPermissions(yml: string): string[] {
+    const lines = yml.split("\n");
+    // workflow 単位は列 0、job 単位は job キー（2）配下の 4 スペース
+    const start = lines.findIndex((line) => /^ {4}permissions:\s*$/.test(line));
+    if (start === -1) { return []; }
+    const baseIndent = lines[start]!.search(/\S/);
+    const entries: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim() === "" || line.trimStart().startsWith("#")) { continue; }
+      if (line.search(/\S/) <= baseIndent) { break; }
+      entries.push(line.trim());
+    }
+    return entries;
+  }
+
+  test("publish job の permissions に OIDC 発行と Release 作成の権限がある", () => {
+    // id-token: write が欠けると Trusted Publishing が OIDC トークンを受け取れず publish できない。
+    // contents: write が欠けると publish 後の Release 作成に失敗する
+    const permissions = jobPermissions(publishYml);
+    expect(permissions.length, "publish job の permissions ブロックが見つからない").toBeGreaterThan(0);
+    expect(permissions).toContain("id-token: write");
+    expect(permissions).toContain("contents: write");
+  });
+
+  test("workflow 単位の permissions は contents: read に絞っている", () => {
+    // 必要な job にだけ write を与え、既定は最小権限にする
+    expect(publishYml).toMatch(/^permissions:\n {2}contents: read$/m);
   });
 });

@@ -6,7 +6,8 @@ on:
 
 permissions:
   contents: read
-  # npm publish --provenance 用: OIDC トークン（出所証明の署名）を発行するために必要
+  # Trusted Publishing 用: npm に提示する OIDC トークンを発行するために必要
+  # （provenance の署名にも同じトークンが使われる）
   id-token: write
 
 jobs:
@@ -55,15 +56,16 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.14
-      # npm publish の認証に必要。registry-url を指定すると
-      # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} を参照する .npmrc が生成され、
-      # publish ステップの NODE_AUTH_TOKEN が使われるようになる。
-      # これが無いと npm はトークンの存在に気づけず ENEEDAUTH で落ちる
-      # （.npmrc にはトークンそのものではなく env 参照が書かれるため、値がファイルに残らない）
+      # Trusted Publishing（OIDC）で publish するため、長期トークンは使わない。
+      # registry-url は指定しない: 指定すると NODE_AUTH_TOKEN を参照する .npmrc が生成され、
+      # 値が空のトークン認証として扱われて OIDC の経路に入らない。
+      # Node は 22.14.0 以上が必要（node-version: 22 は 22 系の最新を入れる）
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
+      # Trusted Publishing は npm CLI 11.5.1 以上が必要だが、Node 22 に同梱されるのは 10 系。
+      # バージョンは明示的に固定する（更新時はここを上げる）
+      - run: npm install -g npm@12.0.2
       - run: bun install --frozen-lockfile
       # lockfile 内の依存に既知脆弱性があれば publish を止める（bun.lock は integrity 固定済み）
       - run: bun audit
@@ -90,12 +92,11 @@ jobs:
             echo "ERROR: 配布物に秘密ファイルが混入しています" >&2
             exit 1
           fi
-      # NODE_AUTH_TOKEN は npm publish 用の認証トークン（GitHub の secret に設定する）
-      # --provenance で「このパッケージはこの GitHub リポジトリの CI から公開された」ことを
-      # OIDC 署名で証明し、npmjs.com に出所を表示する
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted Publishing（OIDC）で公開する。npmjs.com 側でこのリポジトリと
+      # このワークフローファイルを信頼するよう設定しておく必要がある（事前設定が前提）。
+      # 長期トークンを持たないため、トークン漏洩・失効・OTP 要求（EOTP）の問題が構造的に無くなる。
+      # provenance は Trusted Publishing では自動付与されるため --provenance は指定しない
+      - run: npm publish --access public
 
       # publish が成功した後に GitHub Release を作る（publish 失敗時に Release だけが残らない順序）。
       # gh はランナーに同梱されているため、Release 作成のために追加の Action を増やさない
