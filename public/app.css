@@ -108,9 +108,124 @@ main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
   display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
 }
 .card h2 .hint { color: var(--muted); font-size: 11px; font-weight: 400; display: flex; align-items: center; }
+.card h2.stacked-heading { align-items: center; flex-wrap: wrap; }
+.stacked-heading-copy { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.stacked-toggle { flex-shrink: 0; }
 .chart { position: relative; height: 260px; }
 .card.wide .chart { height: 300px; }
 canvas { width: 100% !important; height: 100% !important; }
+
+/* 積み上げグラフ + 期間詳細パネルの横並び。パネル非表示時はグラフが全幅、
+   has-detail でグラフ幅を縮めて右にパネルを出す（モック A 横並び案） */
+.stacked-area { grid-column: 1 / -1; display: flex; gap: 14px; align-items: stretch; min-width: 0; }
+.stacked-chart-box { flex: 1 1 auto; min-width: 0; }
+.stacked-chart-box .chart { height: 300px; }
+.stacked-area.has-detail .stacked-chart-box { flex-basis: 0; }
+
+/* 期間詳細パネル */
+.detail-panel {
+  flex: 1 1 42%; min-width: 380px; max-width: 460px;
+  /* チャートカード（見出し + 300px キャンバス + 余白）と同じ高さに揃える。
+     モデル数が多い期間や比較カード表示時もカード全体が縦に伸びず、
+     テーブルと比較カードがパネル内でスクロールする */
+  max-height: 386px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.detail-panel[hidden] { display: none; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.detail-title { font-size: 13px; font-weight: 600; }
+.detail-title .period { color: var(--accent); }
+.detail-close {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+}
+.detail-close:hover { color: var(--text); border-color: var(--muted); }
+.detail-note { color: var(--muted); font-size: 11px; margin-bottom: 10px; line-height: 1.5; }
+.detail-table { overflow: auto; flex: 1 1 auto; min-height: 96px; }
+.detail-table table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.detail-table thead th:nth-child(1) { width: 30%; }
+.detail-table thead th:nth-child(2) { width: 14%; }
+.detail-table thead th:nth-child(3) { width: 15%; }
+.detail-table thead th:nth-child(4) { width: 19%; }
+.detail-table thead th:nth-child(5) { width: 22%; }
+.detail-table thead th {
+  text-align: right; color: var(--muted); font-weight: 500; font-size: 11px;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  position: sticky; top: 0; background: var(--panel); z-index: 1;
+}
+.detail-table thead th:first-child, .detail-table tbody td:first-child { text-align: left; }
+.detail-table tbody td { text-align: right; padding: 4px 8px; border-bottom: 1px solid #1b2030; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.detail-table tbody tr { cursor: pointer; }
+.detail-table tbody tr:hover { background: var(--panel-2); }
+.detail-table tbody tr.selected { background: rgba(122, 167, 255, 0.12); }
+.detail-table tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.detail-table .m-name { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-table .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.detail-table .ref-badge {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: 10px; padding: 1px 7px; margin-left: 4px; white-space: nowrap;
+}
+.detail-table .breakdown { display: inline-flex; gap: 2px; width: 90px; height: 8px; border-radius: 2px; overflow: hidden; vertical-align: middle; }
+.detail-table .num-unit { color: #cbd2e0; }
+.tm-wrap { position: relative; display: inline-flex; cursor: help; }
+
+/* トークン内訳ツールチップ（body 直下の固定要素。テーブルの overflow で見切れない） */
+.tm-tip-fixed {
+  position: fixed;
+  z-index: 100;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 11px;
+  font-size: 11px;
+  line-height: 1.8;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  display: none;
+  pointer-events: none;
+}
+.tm-tip-fixed.visible { display: block; }
+.tm-tip-fixed .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
+.tm-tip-fixed b { font-weight: 600; color: var(--text); }
+
+/* 2 モデル比較（カード型）。パネルはチャートカードの高さに制約されているため、
+   比較カードも min-height: 0 で縮み、内部スクロールする（テーブルとスペースを分け合う） */
+.detail-compare { overflow: auto; min-height: 0; flex: 0 1 auto; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+.compare-head { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+.compare-empty { color: var(--muted); font-weight: 400; }
+.compare-note { color: var(--muted); font-size: 10px; margin-top: 6px; line-height: 1.5; }
+.cb-cards { display: flex; gap: 10px; align-items: stretch; }
+.cb-card {
+  flex: 1 1 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.cb-card-head { font-size: 12px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cb-card-head .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.cb-metric { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; margin-top: 7px; }
+.cb-metric .cb-m-label { color: var(--muted); }
+.cb-metric .cb-m-val { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cb-metric .cb-m-val.up { color: #ff9d9d; }
+.cb-metric .cb-m-val.down { color: var(--green); }
+.cb-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 3px; background: var(--panel-2); border: 1px solid var(--border); }
+.cb-bar span { height: 100%; }
+.cb-cards-vs { align-self: center; color: var(--muted); font-size: 11px; }
+.cb-delta-summary { font-size: 11px; color: var(--muted); margin: 2px 0 8px; }
+.cb-card .tm-bar { width: 100%; margin-top: 6px; }
+.tm-bar { display: inline-flex; height: 10px; border-radius: 3px; overflow: hidden; }
+.tm-bar span { height: 100%; }
+.tm-items { display: flex; gap: 7px; flex-wrap: wrap; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.tm-items .ti { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 11px; }
+.tm-items .ti .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 10px; }
 .legend span { display: flex; align-items: center; gap: 5px; }
 .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
@@ -191,4 +306,8 @@ td.num { font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) {
   .kpis { grid-template-columns: 1fr 1fr; }
   .grid { grid-template-columns: 1fr; }
+  /* 詳細パネルは縦積みにし、パネル幅・高さの制約を外して横スクロールを防ぐ */
+  .stacked-area { flex-direction: column; }
+  .stacked-area.has-detail .stacked-chart-box { flex-basis: auto; }
+  .detail-panel { min-width: 0; max-width: none; max-height: none; }
 }

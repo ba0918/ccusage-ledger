@@ -21,6 +21,9 @@ interface ChartOptions {
   interaction?: Record<string, unknown>;
   scales?: Record<string, unknown>;
   plugins?: Record<string, unknown>;
+  // Chart.js の click ハンドラ。elements はクリック位置のヒット要素（index = カテゴリ軸の
+  // インデックス）。積み上げグラフの棒クリックで期間を特定するために使う
+  onClick?: (event: unknown, elements: ReadonlyArray<{ index?: number }>) => void;
 }
 
 interface ChartConfig {

@@ -7,17 +7,19 @@ import type {
   ChartSeries,
   KpiSummary,
   ModelCostRank,
+  ModelTokenBreakdownItem,
   ModelUnitPrice,
   OtherBreakdownItem,
 } from "../aggregate";
-import { agentDonutData, allAgents, maxFinite, modelColor, otherBreakdown } from "../aggregate";
+import { agentDonutData, allAgents, maxFinite, modelColor, modelTokenBreakdown, otherBreakdown } from "../aggregate";
 import type { PeriodEntry } from "../types";
 import { el } from "./dom";
 import { htmlAttr, htmlText } from "./escape";
-import { formatAxisCurrency, formatCurrency, formatPercent, formatTokens } from "./format";
+import { formatAxisCurrency, formatCurrency, formatPercent, formatTokens, shortModelName } from "./format";
 import { t } from "./i18n";
 
 export type TooltipContext = { entries: PeriodEntry[]; top: ReadonlySet<string>; excludeZero?: boolean };
+export type StackedMetric = "cost" | "tokens";
 
 const AGENT_PALETTE = ["#7aa7ff", "#4cd6a0", "#f5b34d", "#c084fc", "#76b7b2", "#e15759"];
 const OTHER_COLOR = "#8b92a7";
@@ -40,18 +42,22 @@ function createChart(id: string, type: string, data: ChartData, options: ChartOp
   charts[id] = new Chart(canvas, { type, data, options: fullOptions });
 }
 
-function datasetColor(label: string, models: string[]): string {
-  return label === t("other") ? OTHER_COLOR : modelColor(label, models);
+function datasetColor(label: string, models: string[], isOther = false): string {
+  return isOther ? OTHER_COLOR : modelColor(label, models);
 }
 
-function colorize(series: ChartSeries, colorFor: (label: string) => string, fill: boolean | "origin" = false): ChartData {
+function colorize(
+  series: ChartSeries,
+  colorFor: (label: string, isOther: boolean) => string,
+  fill: boolean | "origin" = false,
+): ChartData {
   return {
     labels: series.labels,
     datasets: series.datasets.map((dataset) => ({
       ...dataset,
       fill,
-      backgroundColor: colorFor(dataset.label),
-      borderColor: colorFor(dataset.label),
+      backgroundColor: colorFor(dataset.label, dataset.isOther === true),
+      borderColor: colorFor(dataset.label, dataset.isOther === true),
     })),
   };
 }
@@ -63,13 +69,13 @@ function tooltipLabel(
   return (item: unknown) => {
     const { parsed, dataset, dataIndex } = item as {
       parsed: { x?: number; y?: number };
-      dataset: { label?: string };
+      dataset: { label?: string; isOther?: boolean };
       dataIndex: number;
     };
     const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
     if (opts?.excludeZero && value === 0) { return ""; }
     const lines: string[] = [fmt(value, dataset.label ?? "")];
-    if (dataset.label === t("other") && opts?.entries && opts.top) {
+    if (dataset.isOther === true && opts?.entries && opts.top) {
       const entry = opts.entries[dataIndex];
       if (entry) {
         const inner = opts.inner ?? ((item: OtherBreakdownItem) => `${item.modelName}: ${Math.round(item.ratio)}%`);
@@ -107,6 +113,8 @@ interface StackedBarSpec {
   yTitle: string;
   tooltip: (value: number, datasetLabel: string) => string;
   tooltipInner?: (item: OtherBreakdownItem) => string;
+  tooltipCallback?: (item: unknown) => string | string[];
+  onPeriodClick?: (periodIndex: number) => void;
 }
 
 // 積み上げ棒チャート（コスト / モデル構成比）の共通描画。2 系統は x 軸タイトル・
@@ -132,7 +140,7 @@ function renderStackedBar(spec: StackedBarSpec): void {
   createChart(
     spec.id,
     "bar",
-    colorize(spec.series, (label) => datasetColor(label, spec.models)),
+    colorize(spec.series, (label, isOther) => datasetColor(label, spec.models, isOther)),
     {
       interaction: { mode: "index", intersect: false },
       scales: { x: xScale, y: yScale },
@@ -140,15 +148,23 @@ function renderStackedBar(spec: StackedBarSpec): void {
         legend: { position: "bottom" },
         tooltip: {
           callbacks: {
-            label: tooltipLabel(spec.tooltip, { ...spec.tooltipCtx, inner: spec.tooltipInner }),
+            label: spec.tooltipCallback ?? tooltipLabel(spec.tooltip, { ...spec.tooltipCtx, inner: spec.tooltipInner }),
           },
         },
+      },
+      // 棒クリックで最初のヒット要素のカテゴリインデックス（期間）を呼び出し元へ渡す。
+      // モード index のため、同じ x 位置の複数データセットのうち先頭だけ使う
+      onClick: (_event, elements) => {
+        const first = elements[0];
+        if (first !== undefined && spec.onPeriodClick !== undefined && first.index !== undefined) {
+          spec.onPeriodClick(first.index);
+        }
       },
     },
   );
 }
 
-export function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext): void {
+export function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext, onPeriodClick?: (periodIndex: number) => void): void {
   renderStackedBar({
     id: "chart-cost-stacked",
     series,
@@ -159,6 +175,66 @@ export function renderCostStacked(series: ChartSeries, models: string[], tooltip
     yTitle: t("costUsd"),
     tooltip: (value, label) => `${label}: ${formatAxisCurrency(value)}`,
     tooltipInner: (item) => `${item.modelName}: ${formatAxisCurrency(item.cost)}`,
+    onPeriodClick,
+  });
+}
+
+function tokenBreakdownLines(item: ModelTokenBreakdownItem, nested: boolean): string[] {
+  const indent = nested ? "    " : "  ";
+  return [
+    ...(nested ? [`  ${item.modelName}`] : []),
+    `${indent}${t("total")}: ${formatTokens(item.totalTokens)}`,
+    `${indent}${t("input")}: ${formatTokens(item.inputTokens)}`,
+    `${indent}${t("output")}: ${formatTokens(item.outputTokens)}`,
+    `${indent}${t("cacheRead")}: ${formatTokens(item.cacheReadTokens)}`,
+    `${indent}${t("cacheCreation")}: ${formatTokens(item.cacheCreationTokens)}`,
+  ];
+}
+
+function tokenTooltipLabel(tooltipCtx: TooltipContext): (item: unknown) => string | string[] {
+  return (item: unknown) => {
+    const { parsed, dataset, dataIndex } = item as {
+      parsed: { x?: number; y?: number };
+      dataset: { label?: string; isOther?: boolean };
+      dataIndex: number;
+    };
+    const value = parsed.y !== undefined ? parsed.y : parsed.x ?? 0;
+    if (tooltipCtx.excludeZero && value === 0) { return ""; }
+    const label = dataset.label ?? "";
+    const entry = tooltipCtx.entries[dataIndex];
+    if (!entry) { return `${label}: ${formatTokens(value)}`; }
+    const isOther = dataset.isOther === true;
+    const breakdowns = modelTokenBreakdown(entry, isOther ? null : label, tooltipCtx.top);
+    return [
+      `${label}: ${formatTokens(value)}`,
+      ...breakdowns.flatMap((breakdown) => tokenBreakdownLines(breakdown, isOther)),
+    ];
+  };
+}
+
+export function renderUsageStacked(
+  metric: StackedMetric,
+  costSeries: ChartSeries,
+  tokenSeries: ChartSeries,
+  models: string[],
+  tooltipCtx: TooltipContext,
+  onPeriodClick?: (periodIndex: number) => void,
+): void {
+  if (metric === "cost") {
+    renderCostStacked(costSeries, models, tooltipCtx, onPeriodClick);
+    return;
+  }
+  renderStackedBar({
+    id: "chart-cost-stacked",
+    series: tokenSeries,
+    models,
+    tooltipCtx,
+    xTitle: t("period"),
+    yTick: (value) => formatTokens(value),
+    yTitle: t("tokenCount"),
+    tooltip: (value, label) => `${label}: ${formatTokens(value)}`,
+    tooltipCallback: tokenTooltipLabel(tooltipCtx),
+    onPeriodClick,
   });
 }
 
@@ -174,10 +250,6 @@ export function renderModelMix(series: ChartSeries, models: string[], tooltipCtx
     yTitle: t("ratioPercent"),
     tooltip: (value, label) => `${label}: ${Math.round(value)}%`,
   });
-}
-
-function shortModelName(modelName: string): string {
-  return modelName.startsWith("claude-") ? modelName.slice("claude-".length) : modelName;
 }
 
 // キャッシュヒット率の良し悪しを表す色のしきい値（単価バーの色）。上位（>=0.95）は緑、
