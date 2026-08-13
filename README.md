@@ -35,7 +35,8 @@ The browser opens `http://127.0.0.1:3000` on start (local interactive environmen
 
 - **Period granularity**: daily / monthly / yearly
 - **Period navigation**: all periods, or select a specific month / year with ◀▶
-- **By model**: cost stacking, mix ratio, effective unit price, cost ranking
+- **By model**: cost / token stacking (toggle), mix ratio, effective unit price, cost ranking
+- **Period model comparison**: click a bar (day / month / year) to compare every model used in that period by effective unit price in a side panel
 - **By agent**: share donut (cost / token toggle), efficiency table
 - **Detailed table by period × agent**
 - **Language**: toggle Japanese / English in the top-right corner (initial language is English; the choice is saved in the browser and restored on the next launch)

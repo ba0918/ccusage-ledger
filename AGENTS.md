@@ -5,7 +5,7 @@
 ## 技術スタック
 
 - **サーバ**: Bun + TypeScript。HTTP レイヤーは Hono（`hono`）を使用し、Bun 実行時は `Bun.serve`、Node 実行時は `@hono/node-server` で起動する
-- **データ取得**: dependencies で固定した `ccusage@20.0.19`（bun.lock で integrity 固定）を `bun run node_modules/ccusage/src/cli.js --json --sections daily,monthly --by-agent` で spawn して全履歴を取得
+- **データ取得**: dependencies で固定した `ccusage@20.0.19`（bun.lock で integrity 固定）の `node_modules/ccusage/src/cli.js` を、実行中ランタイムの `process.execPath`（Bun / Node）で直接 spawn して `--json --sections daily,monthly --by-agent` で全履歴を取得（`bunx` や `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）
 - **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
 ## データフロー
@@ -28,12 +28,17 @@
 - 期間ナビ: 全期間表示 または ◀▶ で特定の月・年を選択（日次/月次=月、年次=年）
 - モデル別 / エージェント別
 
+## 積み上げグラフ
+
+- モデル別の積み上げ棒グラフは Cost / Tokens トグルで費用とトークン使用量を切り替えられる（初期は Cost。選択はフィルタ変更後も維持、再読み込みで Cost に戻る）
+- 棒（日・月・年）をクリックすると、その期間に利用実績のある全モデルを実効単価（$/MTok）の高い順で右側パネルに表示し、任意の 2 モデルをカード型で比較できる（詳細仕様は `docs/spec/dashboard.md`「期間クリックによるモデル実効単価比較」節）
+
 ## 多言語対応
 
 - 言語切替: ヘッダー右上の ja / en トグル（表示層のみ。初期言語は英語、選択は localStorage キー `ccusage-ledger:lang` に永続化）
 - 切替はリロードなしで即時反映され、`<html lang>` も同期する。ちらつきを防ぐため、バンドル冒頭で保存済み言語を同期的に適用する
 - サーバ側・CLI の文言と `/api/usage` 応答は英語に統一し、ローカライズしない
-- 対象文言: `index.html` 静的文言 / `main.ts` 動的文言（チャート軸・tooltip・ステータス・空データ）/ `aggregate.ts` 系列ビルダーへ注入する表示ラベル / export 警告バナー。数値表記は言語で変えない（金額 USD 固定・桁区切り共通）
+- 対象文言: `index.html` 静的文言 / `main.ts`・`charts.ts`・`detail-panel.ts` 動的文言（チャート軸・tooltip・ステータス・空データ・期間詳細パネル・比較カード）/ `aggregate.ts` 系列ビルダーへ注入する表示ラベル / export 警告バナー。数値表記は言語で変えない（金額 USD 固定・桁区切り共通）
 
 ## 起動・配布
 
