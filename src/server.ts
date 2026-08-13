@@ -635,11 +635,19 @@ export function parsePort(value: string | undefined, source: string = "PORT"): n
 
 export type PortSource = "--port" | "PORT" | "default";
 
-// ポート番号がどこで決まったかを判定する。優先順位は --port > PORT > 既定値
-export function resolvePortSource(cliPort: string | undefined, envPort: string | undefined): PortSource {
-  if (cliPort !== undefined) { return "--port"; }
-  if (envPort !== undefined && envPort !== "") { return "PORT"; }
-  return "default";
+export interface ResolvedPort {
+  port: number;
+  source: PortSource;
+}
+
+// ポート番号と「どこで決まったか」を同時に返す。優先順位は --port > PORT > 既定値。
+// 判定と値の計算を分けると両者が食い違い得るため（空文字の PORT を「既定値」と判定しながら
+// parsePort("") を呼んで Invalid PORT= で落ちる、という不整合が実際に起きた）、1 箇所で決める
+export function resolvePort(cliPort: string | undefined, envPort: string | undefined): ResolvedPort {
+  if (cliPort !== undefined) { return { port: parsePort(cliPort, "--port"), source: "--port" }; }
+  // 空文字は未設定と同等に扱う（シェルで PORT= と書いた場合に起動できないのを避ける）
+  if (envPort !== undefined && envPort !== "") { return { port: parsePort(envPort), source: "PORT" }; }
+  return { port: DEFAULT_PORT, source: "default" };
 }
 
 // 起動ログに付ける決定元の表示。既定値のときは何も付けない（通常の起動を煩わせない）。
@@ -717,8 +725,7 @@ export async function main(): Promise<void> {
     return;
   }
   // 優先順位: --port > PORT > 既定値。指定元をエラーメッセージと起動ログに反映する
-  const portSource = resolvePortSource(cli.port, process.env.PORT);
-  const port = portSource === "--port" ? parsePort(cli.port, "--port") : parsePort(process.env.PORT);
+  const { port, source: portSource } = resolvePort(cli.port, process.env.PORT);
   // HOST は IP リテラル/ホスト名以外を起動時に拒否する（browserUrl → openBrowser に流れるため）。
   // bind 失敗の「判りにくいエラー」より先に、設定ミスを明確なメッセージで報告する
   const hostname = parseHostname(process.env.HOST);
