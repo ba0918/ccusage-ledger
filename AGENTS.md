@@ -59,6 +59,35 @@
 - 公開: `npm publish`（publish 直前に `bun run build` が実行される。`files` は明示 allowlist（bun.lock / index.html / dist/bundle.js / dist/ccusage-ledger.js / public/app.css / public/vendor/chart.umd.min.js）のため、エクスポート成果物や dist/ に置いた未知のファイルはリスト外としてそもそもパックされず、publish.yml の pack 検証でも混入を確認する。データ・シークレットはパッケージに含まれない）
 - CI の GitHub Actions 参照は完全 SHA ピン + バージョンコメント必須で、`workflow-pins.test.ts` が機械的に検証する。Actions の更新は dependabot が提案するが auto-merge は無効（手動で再ピン確認する）
 
+## リリース手順
+
+タグ push をトリガにする。`main` にマージ済みの内容だけを公開する。
+
+1. `main` を最新にして、`bun test` / `bunx tsc --noEmit` / `bun run lint` が通ることを確認する
+2. `package.json` の `version` を上げて commit し、`main` へマージする（例: `0.1.0` → `0.1.1`）
+3. マージ後の `main` に注釈付きタグを打って push する
+
+```sh
+git checkout main && git pull
+git tag -a "v$(node -p "require('./package.json').version")" -m "Release v$(node -p "require('./package.json').version")"
+git push origin "v$(node -p "require('./package.json').version")"
+```
+
+publish ワークフロー（`.github/workflows/publish.yml`）が以下の順で実行する。前段のガードはいずれも
+「取り返しがつかない公開事故」を構造的に防ぐためのもので、`workflow-pins.test.ts` が存在を固定している。
+
+- タグ名と `package.json` の `version` の一致を検証（不一致で publish するとそのバージョン番号を消費して復旧できない。npm は同一バージョンの再公開を拒否する）
+- タグのコミットが `main` の履歴に含まれることを検証（作業ブランチへの誤タグで公開されない）
+- `bun audit` と `npm pack --dry-run` の配布物検証（秘密ファイル・個人データ入り HTML の混入拒否）
+- `prepublishOnly`（テスト・型チェック・lint・build）を経て `npm publish --provenance`
+- publish 成功後に `gh release create --generate-notes` で GitHub Release を作成（失敗時に Release だけが残らないよう publish の後に置く）
+
+補足:
+
+- 前提として GitHub の secret に `NPM_TOKEN`（publish 権限のある npm トークン）が必要
+- バージョンを間違えてタグを打った場合は、push 前ならタグを消してやり直す。既に publish まで通った場合はそのバージョンは再利用できないため、次の番号で出し直す
+- `CHANGELOG.md` は持たず、GitHub Release の自動生成ノート（マージされた PR の一覧）を変更履歴とする
+
 ## 主要コマンド
 
 - フロントビルド: `bun run build`

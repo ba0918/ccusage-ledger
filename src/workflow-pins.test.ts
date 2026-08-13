@@ -56,3 +56,37 @@ describe("GitHub Actions SHA ピン", () => {
     expect(content.toLowerCase()).not.toContain("auto-merge");
   });
 });
+
+// リリースの取り返しがつかない事故（誤ったバージョンの公開・main 外からの公開）を
+// 構造的に防ぐガードが publish.yml から失われていないことを固定する
+describe("publish ワークフローのリリースガード", () => {
+  const publishYml = readFileSync(join(WORKFLOW_DIR, "publish.yml"), "utf-8");
+
+  test("タグと package.json の version 一致を検証している", () => {
+    // npm は同一バージョンの再公開を拒否するため、不一致のまま publish すると
+    // そのバージョン番号を消費して取り返しがつかない
+    expect(publishYml).toContain("require('./package.json').version");
+    expect(publishYml).toContain("GITHUB_REF_NAME");
+  });
+
+  test("タグが main の履歴上にあることを検証している", () => {
+    // 作業ブランチのコミットに誤ってタグを打っても公開されないようにする
+    expect(publishYml).toContain("merge-base --is-ancestor");
+    // 祖先判定には全履歴が必要
+    expect(publishYml).toContain("fetch-depth: 0");
+  });
+
+  test("GitHub Release の作成は npm publish より後に置く", () => {
+    // publish 失敗時に Release だけが残ると、公開済みに見えて実体が無い状態になる
+    const publishIndex = publishYml.indexOf("npm publish");
+    const releaseIndex = publishYml.indexOf("gh release create");
+    expect(publishIndex).toBeGreaterThan(0);
+    expect(releaseIndex).toBeGreaterThan(publishIndex);
+  });
+
+  test("Release 作成のために contents: write を job 単位で付与している", () => {
+    // workflow 単位は contents: read のまま、必要な job にだけ write を与える
+    expect(publishYml).toMatch(/permissions:\s*\n\s*contents: read/);
+    expect(publishYml).toContain("contents: write");
+  });
+});

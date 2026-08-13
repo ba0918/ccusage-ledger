@@ -15,9 +15,43 @@ jobs:
     # （upstream の secret は upstream スコープで守られるが、guard を明示して誤実行を構造的に防ぐ）
     if: github.repository == 'ba0918/ccusage-ledger'
     runs-on: ubuntu-latest
+    permissions:
+      # publish 成功後に GitHub Release を作成するため write が必要
+      # （job 単位の permissions は workflow 単位の指定を置き換えるため id-token も再掲する）
+      contents: write
+      id-token: write
     steps:
       # Actions は SHA で固定する（v4 タグは移動するため、書き換え時にサプライチェーン攻撃を受ける）
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # タグが main の履歴に含まれることを検証するため全履歴を取得する
+          fetch-depth: 0
+
+      # 重い処理の前に、タグと配布内容の対応が壊れていないことを確認する（fail fast）。
+      # npm は同じバージョンの再公開を拒否するため、不一致に気づかず publish すると
+      # そのバージョン番号を消費してしまい取り返しがつかない
+      - name: タグと package.json の version が一致することを確認する
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "ERROR: タグ ($tag) と package.json の version ($pkg) が一致しません。" >&2
+            echo "       package.json を更新してからタグを打ち直してください。" >&2
+            exit 1
+          fi
+          echo "version check: $tag"
+
+      # リリースは main の履歴からのみ行う（作業ブランチのコミットに誤ってタグを打っても公開されない）
+      - name: タグが main の履歴上にあることを確認する
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "ERROR: タグのコミット ($GITHUB_SHA) が main の履歴に含まれていません。" >&2
+            echo "       main にマージしてからタグを打ち直してください。" >&2
+            exit 1
+          fi
+          echo "ancestry check: on main"
+
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.14
@@ -53,3 +87,16 @@ jobs:
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # publish が成功した後に GitHub Release を作る（publish 失敗時に Release だけが残らない順序）。
+      # gh はランナーに同梱されているため、Release 作成のために追加の Action を増やさない
+      # （uses: が増えるほど SHA ピンの維持対象が増える）。
+      # --verify-tag: 同名タグが実在することを確認してから作成する
+      - name: GitHub Release を作成する
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
