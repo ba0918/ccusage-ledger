@@ -273,6 +273,7 @@ class FakeElement {
   textContent = "";
   title = "";
   value = "";
+  hidden = false;
   style: Record<string, string> = {};
   children: FakeElement[] = [];
   parent: FakeElement | null = null;
@@ -334,17 +335,27 @@ class FakeElement {
       handler(event);
     }
   }
-  // 自分と祖先を遡ってクラスが一致する要素を返す（クリックの対象解決に使う）。
-  // 引数はクラスセレクタ（例: ".expand-btn"）で、先頭のドットを除いてクラス名と比較する
+  // 自分と祖先を遡ってセレクタが一致する要素を返す（クリックの対象解決に使う）。
+  // クラス（.expand-btn）・属性（[data-model]）・タグ名（tr）の 3 種を扱う。
+  // 詳細パネルの行クリック（closest("tr") → dataset.model）の解決に使う
+  matches(selector: string): boolean {
+    if (selector.startsWith(".")) { return this.classList.contains(selector.slice(1)); }
+    const attrMatch = selector.match(/^\[([a-z-]+)\]$/);
+    if (attrMatch) {
+      const name = attrMatch[1]!;
+      return this.dataset[name] !== undefined || this.getAttribute(name) !== null;
+    }
+    return this.tag === selector;
+  }
   closest(selector: string): FakeElement | null {
-    const className = selector.startsWith(".") ? selector.slice(1) : selector;
     let node: FakeElement | null = this;
     while (node !== null) {
-      if (node.classList.contains(className)) { return node; }
+      if (node.matches(selector)) { return node; }
       node = node.parent;
     }
     return null;
   }
+  tag = "div";
 }
 
 interface FakeDom {
@@ -673,5 +684,159 @@ describe("main.ts の言語切替", () => {
 
     dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
     expect(status.textContent).toBe("データがありません");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 積み上げグラフの棒クリック → 期間詳細パネル（main.ts 接続の統合テスト）
+// チャートの onClick は FakeChart に保持された options から直接呼び出し、
+// パネルの開閉・選択・状態維持・閉じる導線を検証する。
+// 文言（ja/en）の検証は detail-panel.test.ts / i18n 辞書テストに任せ、
+// ここでは言語に依存しない状態遷移（期間・クラス・選択数）を検証する
+// ---------------------------------------------------------------------------
+
+// 期間 0: model-a / model-b（0.3 / 0.2）。期間 1: model-a / model-c（0.9 / 0.3）。
+// 期間 2: 3 モデル（選択上限の置き換えを検証するため）
+const PANEL_DATA: UsageData = {
+  daily: [
+    makeEntry("2026-01-10", [["model-a", 0.3], ["model-b", 0.2]]),
+    makeEntry("2026-02-03", [["model-a", 0.9], ["model-c", 0.3]]),
+    makeEntry("2026-03-15", [["model-a", 0.4], ["model-b", 0.5], ["model-d", 0.1]]),
+  ],
+  monthly: [
+    makeAgentEntry("2026-04", "claude", [["model-a", 2]]),
+    makeAgentEntry("2026-05", "codex", [["model-b", 3]]),
+  ],
+};
+
+// 積み上げチャートは render ごとに options が差し替えられる（createChart が既存インスタンスを
+// 更新する）ため、FakeChart.instances[0] の最新 options から onClick を呼び出す
+function clickStackedBar(index: number): void {
+  const chart = FakeChart.instances[0]!;
+  const onClick = (chart.options as ChartOptions & { onClick?: (event: unknown, elements: ReadonlyArray<{ index?: number }>) => void }).onClick;
+  onClick!({}, [{ index }]);
+}
+
+function clickPanelRow(dom: FakeDom, modelName: string): void {
+  const tbody = dom.getElementById("detail-table-body")!;
+  const row = new FakeElement();
+  row.tag = "tr";
+  row.dataset.model = modelName;
+  tbody.dispatch("click", { target: row });
+}
+
+describe("積み上げグラフの棒クリックと詳細パネル", () => {
+  test("棒クリックで該当期間の詳細パネルが開き、別の棒をクリックすると内容が差し替わる", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-open");
+
+    const panel = dom.getElementById("detail-panel")!;
+    expect(panel.hidden).toBe(true);
+
+    clickStackedBar(0);
+    expect(panel.hidden).toBe(false);
+    expect(dom.getElementById("stacked-area")!.classList.contains("has-detail")).toBe(true);
+    expect(dom.getElementById("detail-period")!.textContent).toBe("2026-01-10");
+
+    clickStackedBar(1);
+    expect(dom.getElementById("detail-period")!.textContent).toBe("2026-02-03");
+    const tableHtml = dom.getElementById("detail-table-body")!.innerHTML;
+    expect(tableHtml).toContain("model-c");
+    expect(tableHtml).not.toContain("model-b");
+  });
+
+  test("パネル表示中も概要グラフのモデル集合・系列順・凡例が変わらない", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-chart-stable");
+
+    const chart = FakeChart.instances[0]!;
+    const before = chart.data.datasets.map((d) => d.label);
+
+    clickStackedBar(0);
+    clickPanelRow(dom, "model-a");
+    clickPanelRow(dom, "model-b");
+    clickStackedBar(1);
+
+    expect(chart.data.datasets.map((d) => d.label)).toEqual(before);
+    expect(chart.data.labels).toEqual(["2026-01-10", "2026-02-03", "2026-03-15"]);
+  });
+
+  test("行クリックで選択が切り替わり、2 モデルで比較カードが出て、3 つ目は古い方を置き換える", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-select");
+
+    clickStackedBar(2);
+    const compare = dom.getElementById("detail-compare")!;
+    expect(compare.innerHTML).toContain("compare-empty");
+
+    clickPanelRow(dom, "model-a");
+    expect(compare.innerHTML).toContain("Select one more model to compare");
+
+    clickPanelRow(dom, "model-b");
+    expect(compare.innerHTML).toContain("cb-cards");
+    expect(compare.innerHTML).toContain("model-a");
+    expect(compare.innerHTML).toContain("model-b");
+
+    clickPanelRow(dom, "model-d");
+    expect(compare.innerHTML).toContain("cb-cards");
+    expect(compare.innerHTML).toContain("model-b");
+    expect(compare.innerHTML).toContain("model-d");
+    expect(compare.innerHTML).not.toContain("model-a");
+  });
+
+  test("選択モデルの再クリックで選択が解除される", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-deselect");
+
+    clickStackedBar(0);
+    clickPanelRow(dom, "model-a");
+    clickPanelRow(dom, "model-a");
+
+    expect(dom.getElementById("detail-compare")!.innerHTML).toContain("compare-empty");
+    expect(dom.getElementById("detail-table-body")!.innerHTML).not.toContain('class="selected"');
+  });
+
+  test("選択中の期間は期間・モデル・エージェント・言語の変更後も維持される", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-persist");
+
+    clickStackedBar(0);
+    expect(dom.getElementById("detail-period")!.textContent).toBe("2026-01-10");
+
+    const section = dom.getElementById("section")!;
+    section.value = "monthly";
+    section.dispatch("change");
+    const model = dom.getElementById("model")!;
+    model.value = "model-a";
+    model.dispatch("change");
+    const agent = dom.getElementById("agent")!;
+    agent.value = "claude";
+    agent.dispatch("change");
+    dom.querySelectorAll(".lang-toggle button")[1]!.dispatch("click");
+
+    expect(dom.getElementById("detail-panel")!.hidden).toBe(false);
+    expect(dom.getElementById("detail-period")!.textContent).toBe("2026-01-10");
+  });
+
+  test("閉じるボタンでパネルが閉じる", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-close-btn");
+
+    clickStackedBar(0);
+    dom.getElementById("detail-close")!.dispatch("click");
+
+    expect(dom.getElementById("detail-panel")!.hidden).toBe(true);
+    expect(dom.getElementById("stacked-area")!.classList.contains("has-detail")).toBe(false);
+  });
+
+  test("全期間表示（nav-all）でパネルが閉じる", async () => {
+    const dom = createFakeDom();
+    await loadMain(dom, PANEL_DATA, false, "panel-navall");
+
+    clickStackedBar(0);
+    dom.getElementById("nav-all")!.dispatch("click");
+
+    expect(dom.getElementById("detail-panel")!.hidden).toBe(true);
+    expect(dom.getElementById("stacked-area")!.classList.contains("has-detail")).toBe(false);
   });
 });

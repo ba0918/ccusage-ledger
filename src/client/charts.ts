@@ -114,6 +114,7 @@ interface StackedBarSpec {
   tooltip: (value: number, datasetLabel: string) => string;
   tooltipInner?: (item: OtherBreakdownItem) => string;
   tooltipCallback?: (item: unknown) => string | string[];
+  onPeriodClick?: (periodIndex: number) => void;
 }
 
 // 積み上げ棒チャート（コスト / モデル構成比）の共通描画。2 系統は x 軸タイトル・
@@ -151,11 +152,19 @@ function renderStackedBar(spec: StackedBarSpec): void {
           },
         },
       },
+      // 棒クリックで最初のヒット要素のカテゴリインデックス（期間）を呼び出し元へ渡す。
+      // モード index のため、同じ x 位置の複数データセットのうち先頭だけ使う
+      onClick: (_event, elements) => {
+        const first = elements[0];
+        if (first !== undefined && spec.onPeriodClick !== undefined && first.index !== undefined) {
+          spec.onPeriodClick(first.index);
+        }
+      },
     },
   );
 }
 
-export function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext): void {
+export function renderCostStacked(series: ChartSeries, models: string[], tooltipCtx?: TooltipContext, onPeriodClick?: (periodIndex: number) => void): void {
   renderStackedBar({
     id: "chart-cost-stacked",
     series,
@@ -166,6 +175,7 @@ export function renderCostStacked(series: ChartSeries, models: string[], tooltip
     yTitle: t("costUsd"),
     tooltip: (value, label) => `${label}: ${formatAxisCurrency(value)}`,
     tooltipInner: (item) => `${item.modelName}: ${formatAxisCurrency(item.cost)}`,
+    onPeriodClick,
   });
 }
 
@@ -208,9 +218,10 @@ export function renderUsageStacked(
   tokenSeries: ChartSeries,
   models: string[],
   tooltipCtx: TooltipContext,
+  onPeriodClick?: (periodIndex: number) => void,
 ): void {
   if (metric === "cost") {
-    renderCostStacked(costSeries, models, tooltipCtx);
+    renderCostStacked(costSeries, models, tooltipCtx, onPeriodClick);
     return;
   }
   renderStackedBar({
@@ -223,6 +234,7 @@ export function renderUsageStacked(
     yTitle: t("tokenCount"),
     tooltip: (value, label) => `${label}: ${formatTokens(value)}`,
     tooltipCallback: tokenTooltipLabel(tooltipCtx),
+    onPeriodClick,
   });
 }
 
