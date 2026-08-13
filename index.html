@@ -71,12 +71,37 @@
       </section>
 
       <section class="grid">
-        <div class="card wide">
-          <h2 class="stacked-heading">
-            <span class="stacked-heading-copy"><span id="stacked-chart-title" data-i18n="costStackedTitle">Cost stacked (by model)</span> <span class="hint" data-i18n="costStackedHint">Switch daily / monthly / yearly with the period filter</span></span>
-            <span class="seg-toggle stacked-toggle" role="group" aria-label="Stacked chart display unit" data-i18n-aria="stackedMetricAria"><button type="button" class="active" data-metric="cost" aria-pressed="true" data-i18n="cost">Cost</button><button type="button" data-metric="tokens" aria-pressed="false" data-i18n="tokens">Tokens</button></span>
-          </h2>
-          <div class="chart"><canvas id="chart-cost-stacked" aria-label="Cost stacked (by model)" data-i18n-aria="costStackedTitle"></canvas></div>
+        <div class="stacked-area" id="stacked-area">
+          <div class="card stacked-chart-box">
+            <h2 class="stacked-heading">
+              <span class="stacked-heading-copy"><span id="stacked-chart-title" data-i18n="costStackedTitle">Cost stacked (by model)</span> <span class="hint" data-i18n="costStackedHint">Click a bar to compare all models in that period</span></span>
+              <span class="seg-toggle stacked-toggle" role="group" aria-label="Stacked chart display unit" data-i18n-aria="stackedMetricAria"><button type="button" class="active" data-metric="cost" aria-pressed="true" data-i18n="cost">Cost</button><button type="button" data-metric="tokens" aria-pressed="false" data-i18n="tokens">Tokens</button></span>
+            </h2>
+            <div class="chart"><canvas id="chart-cost-stacked" aria-label="Cost stacked (by model)" data-i18n-aria="costStackedTitle"></canvas></div>
+          </div>
+
+          <aside class="detail-panel" id="detail-panel" aria-label="Model details" data-i18n-aria="detailPanelTitle" hidden>
+            <div class="detail-head">
+              <span class="detail-title"><span data-i18n="detailPanelTitle">Model details</span>: <span class="period" id="detail-period"></span></span>
+              <button type="button" class="detail-close" id="detail-close" title="Close" data-i18n-title="closeDetail">✕</button>
+            </div>
+            <div class="detail-note" id="detail-note"></div>
+            <div class="detail-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th data-i18n="model">Model</th>
+                    <th data-i18n="effectiveUnitPrice">Effective unit price</th>
+                    <th data-i18n="cost">Cost</th>
+                    <th data-i18n="totalTokens">Total tokens</th>
+                    <th data-i18n="tokenMix">Token mix</th>
+                  </tr>
+                </thead>
+                <tbody id="detail-table-body"></tbody>
+              </table>
+            </div>
+            <div class="detail-compare" id="detail-compare"></div>
+          </aside>
         </div>
 
         <div class="card">

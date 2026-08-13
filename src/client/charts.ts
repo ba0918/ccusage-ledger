@@ -15,7 +15,7 @@ import { agentDonutData, allAgents, maxFinite, modelColor, modelTokenBreakdown, 
 import type { PeriodEntry } from "../types";
 import { el } from "./dom";
 import { htmlAttr, htmlText } from "./escape";
-import { formatAxisCurrency, formatCurrency, formatPercent, formatTokens } from "./format";
+import { formatAxisCurrency, formatCurrency, formatPercent, formatTokens, shortModelName } from "./format";
 import { t } from "./i18n";
 
 export type TooltipContext = { entries: PeriodEntry[]; top: ReadonlySet<string>; excludeZero?: boolean };
@@ -240,12 +240,7 @@ export function renderModelMix(series: ChartSeries, models: string[], tooltipCtx
   });
 }
 
-function shortModelName(modelName: string): string {
-  return modelName.startsWith("claude-") ? modelName.slice("claude-".length) : modelName;
-}
-
-// キャッシュヒット率の良し悪しを表す色のしきい値（単価バーの色）。上位（>=0.95）は緑、
-// 下位は赤になる。しきい値は実運用上の目安（キャッシュが効いていると 0.85 超が続く想定）
+// キャッシュヒット率の良し悪しを表す色のしきい値（単価バーの色）。上位（>=0.95）は緑、// 下位は赤になる。しきい値は実運用上の目安（キャッシュが効いていると 0.85 超が続く想定）
 // で、名前付き定数として判定ロジックをテスト可能にする
 const HIT_RATE_TIERS: ReadonlyArray<{ min: number; color: string }> = [
   { min: 0.95, color: "#34d399" },
