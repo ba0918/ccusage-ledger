@@ -1,6 +1,6 @@
 import { readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { isIP } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
@@ -469,8 +469,11 @@ const STATIC_ALLOWLIST: Record<string, string> = {
   "/public/app.css": "public/app.css",
 };
 
-export function isWithinBases(target: string, bases: string[]): boolean {
-  return bases.some((base) => target === base || target.startsWith(`${base}/`));
+// 配下判定はプラットフォームのパス区切りで行う。"/" 決め打ちにすると Windows（区切りが "\"）で
+// 常に「配下ではない」と判定され、静的ファイルがすべて 404 になる。
+// 区切りを付けて比較するのは、/foo と /foobar のような前方一致の取り違えを防ぐため
+export function isWithinBases(target: string, bases: string[], separator: string = sep): boolean {
+  return bases.some((base) => target === base || target.startsWith(`${base}${separator}`));
 }
 
 async function serveStatic(rootDir: string, pathname: string, staticCache: Map<string, ArrayBuffer>): Promise<Response> {
@@ -551,16 +554,33 @@ function isBun(): boolean {
   return process.versions.bun !== undefined;
 }
 
+// bind 失敗の原因が設定で直せるものなら、直し方まで含めて伝える。
+// EADDRINUSE は「別プロセスが使用中」以外に、Windows の予約済みポート範囲や
+// WSL の localhost forwarding でも起きるため、ポート変更の案内を添える
+export function bindError(error: Error, port: number): Error {
+  if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") { return error; }
+  return new Error(
+    `port ${port} is already in use. Set PORT to use a different port (e.g. PORT=3001). ` +
+      "On Windows the port can also be blocked by a reserved port range " +
+      "(check: netsh interface ipv4 show excludedportrange protocol=tcp) or by a WSL process.",
+  );
+}
+
 // サーバを bind して実際のポートを返す。Bun / Node どちらのランタイムでも動く
 async function startServer(app: AppWithUsage, hostname: string, port: number): Promise<number> {
   if (isBun()) {
-    const server = Bun.serve({
-      hostname,
-      port,
-      // Bun サーバが接続情報（requestIP を含む）を fetch の第二引数で提供する
-      fetch: (request, server) => app(request, server as unknown),
-    });
-    return server.port ?? port;
+    try {
+      const server = Bun.serve({
+        hostname,
+        port,
+        // Bun サーバが接続情報（requestIP を含む）を fetch の第二引数で提供する
+        fetch: (request, server) => app(request, server as unknown),
+      });
+      return server.port ?? port;
+    } catch (error) {
+      // Bun.serve は bind 失敗を同期 throw する。Node 側と同じ案内文言に揃える
+      throw bindError(error instanceof Error ? error : new Error(String(error)), port);
+    }
   }
 
   // Node 実行時: @hono/node-server で起動する。serve が env に { incoming, outgoing } を渡すため、
@@ -589,7 +609,7 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
         console.error(`ERROR: server error: ${messageOf(error)}`);
         return;
       }
-      reject(error);
+      reject(bindError(error, port));
     });
   });
 }
