@@ -56,3 +56,57 @@ describe("GitHub Actions SHA ピン", () => {
     expect(content.toLowerCase()).not.toContain("auto-merge");
   });
 });
+
+// リリースの取り返しがつかない事故（誤ったバージョンの公開・main 外からの公開）を
+// 構造的に防ぐガードが publish.yml から失われていないことを固定する
+describe("publish ワークフローのリリースガード", () => {
+  const publishYml = readFileSync(join(WORKFLOW_DIR, "publish.yml"), "utf-8");
+
+  // 実行順の検証はコメント行を除いた本文で行う。コメントには説明として同じコマンド名が
+  // 登場する（例: 9 行目の "npm publish --provenance 用: ..."）ため、生の本文で
+  // indexOf すると「コメントの位置」を比較してしまい、ステップを入れ替えても検知できない
+  const executableLines = publishYml
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+
+  test("タグと package.json の version 一致を検証している", () => {
+    // npm は同一バージョンの再公開を拒否するため、不一致のまま publish すると
+    // そのバージョン番号を消費して取り返しがつかない
+    expect(publishYml).toContain("require('./package.json').version");
+    expect(publishYml).toContain("GITHUB_REF_NAME");
+  });
+
+  test("タグが main の履歴上にあることを検証している", () => {
+    // 作業ブランチのコミットに誤ってタグを打っても公開されないようにする
+    expect(publishYml).toContain("merge-base --is-ancestor");
+    // 祖先判定には全履歴が必要
+    expect(publishYml).toContain("fetch-depth: 0");
+  });
+
+  test("GitHub Release の作成は npm publish より後に置く", () => {
+    // publish 失敗時に Release だけが残ると、公開済みに見えて実体が無い状態になる
+    const publishIndex = executableLines.indexOf("npm publish");
+    const releaseIndex = executableLines.indexOf("gh release create");
+    expect(publishIndex, "npm publish の実行行が見つからない").toBeGreaterThan(0);
+    expect(releaseIndex, "gh release create の実行行が見つからない").toBeGreaterThan(0);
+    expect(releaseIndex).toBeGreaterThan(publishIndex);
+  });
+
+  test("順序検証はコメントではなく実行行を見ている（テスト自体の回帰防止）", () => {
+    // コメント行を残したままステップだけ入れ替えても検知できることを、
+    // 実行行だけを対象にしていることの確認として固定する
+    const commentOnly = publishYml
+      .split("\n")
+      .filter((line) => /^\s*#/.test(line))
+      .join("\n");
+    expect(commentOnly).toContain("npm publish");
+    expect(executableLines).not.toContain("# npm publish");
+  });
+
+  test("Release 作成のために contents: write を job 単位で付与している", () => {
+    // workflow 単位は contents: read のまま、必要な job にだけ write を与える
+    expect(publishYml).toMatch(/permissions:\s*\n\s*contents: read/);
+    expect(publishYml).toContain("contents: write");
+  });
+});
