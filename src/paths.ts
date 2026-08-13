@@ -17,8 +17,18 @@ export interface UnderBaseOptions {
 // 同じ規則を使うため、両方から参照できるこのモジュールに置く
 export function isUnderBase(target: string, base: string, options: UnderBaseOptions = {}): boolean {
   const separator = options.separator ?? sep;
+  // 末尾の余分な区切りだけを落とす。両方の区切り（"/" と "\\"）を一律に剥がすと、
+  // POSIX では "\\" が正当なファイル名文字であるため "/app/dist\\" という名前のファイルが
+  // "/app/dist" と一致し、そのディレクトリ外のファイルを配信できてしまう
+  const trimTrailing = (path: string): string => {
+    let end = path.length;
+    while (end > separator.length && path.startsWith(separator, end - separator.length)) {
+      end -= separator.length;
+    }
+    return path.slice(0, end);
+  };
   const fold = (path: string): string => {
-    const trimmed = path.replace(/[\\/]+$/, "");
+    const trimmed = trimTrailing(path);
     return options.caseInsensitive ? trimmed.toLowerCase() : trimmed;
   };
   const foldedTarget = fold(target);

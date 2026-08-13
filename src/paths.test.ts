@@ -68,4 +68,12 @@ describe("isUnderBase", () => {
     expect(isUnderBase("/root/dist/x", "/root/dist/", { separator: "/" })).toBe(true);
     expect(isUnderBase("/root/dist/", "/root/dist", { separator: "/" })).toBe(true);
   });
+
+  test("落とすのは指定した区切りだけ（POSIX の \\ は正当なファイル名文字）", () => {
+    // 両方の区切りを一律に剥がすと、POSIX で "dist\\" という名前のファイルが "dist" と
+    // 一致し、そのディレクトリ外のファイルを配信できてしまう
+    expect(isUnderBase("/root/dist\\", "/root/dist", { separator: "/" })).toBe(false);
+    // Windows では "\\" が区切りなので、末尾の "\\" は落として比較する
+    expect(isUnderBase("C:\\root\\dist\\", "C:\\root\\dist", { separator: "\\" })).toBe(true);
+  });
 });

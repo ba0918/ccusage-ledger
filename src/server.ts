@@ -685,6 +685,11 @@ export function parseArgs(argv: string[]): CliOptions {
     const inlineValue = arg.startsWith("--") && equals !== -1 ? arg.slice(equals + 1) : undefined;
 
     if (name === "--help" || name === "-h") {
+      // 値を取らないフラグに = で値を付けた場合は黙って無視せず拒否する
+      // （--help=json のような指定が「無視された」と気づけないのを防ぐ）
+      if (inlineValue !== undefined) {
+        throw new Error(`${name} does not take a value`);
+      }
       options.help = true;
       continue;
     }
