@@ -145,13 +145,17 @@ export function buildExportedHtml(html: string, chartJs: string, bundle: string,
     .replace(/</g, "\\u003c")
     .replace(/[\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16)}`);
   const cspMeta = `<meta http-equiv="Content-Security-Policy" content="${exportCsp(nonce)}">`;
+  // 置換値は必ず関数形式で渡す。文字列で渡すと $$ / $& / $` / $' / $1 が特殊置換パターンとして
+  // 解釈され、埋め込む JS・CSS・データが黙って書き換わる（実際に bundle の `$${cost.toFixed(2)}` が
+  // `${cost.toFixed(2)}` になり、エクスポート HTML の金額から通貨記号が消えていた）。
+  // 関数形式なら戻り値がそのまま挿入され、特殊パターンは解釈されない
   const out = html
-    .replace("</head>", `${cspMeta}${exportFrameBuster(nonce)}${EXPORT_NOSCRIPT_FRAME_WARNING}</head>`)
-    .replace("<body>", `<body>${EXPORT_WARNING_BANNER}`)
-    .replace(CHART_TAG, `<script nonce="${nonce}">${chartJs}</script>`)
-    .replace(BUNDLE_TAG, `<script nonce="${nonce}">${bundle}</script>`)
-    .replace(EMBEDDED_TAG, `<script id="embedded-data" nonce="${nonce}">window.CCUSAGE_DATA = ${dataJson};</script>`)
-    .replace(APP_CSS_TAG, `<style nonce="${nonce}">${css}</style>`);
+    .replace("</head>", () => `${cspMeta}${exportFrameBuster(nonce)}${EXPORT_NOSCRIPT_FRAME_WARNING}</head>`)
+    .replace("<body>", () => `<body>${EXPORT_WARNING_BANNER}`)
+    .replace(CHART_TAG, () => `<script nonce="${nonce}">${chartJs}</script>`)
+    .replace(BUNDLE_TAG, () => `<script nonce="${nonce}">${bundle}</script>`)
+    .replace(EMBEDDED_TAG, () => `<script id="embedded-data" nonce="${nonce}">window.CCUSAGE_DATA = ${dataJson};</script>`)
+    .replace(APP_CSS_TAG, () => `<style nonce="${nonce}">${css}</style>`);
 
   // タグ表記が index.html とずれた場合、replace が効かず壊れた HTML が静かに出力されるのを防ぐ
   for (const tag of [CHART_TAG, BUNDLE_TAG, EMBEDDED_TAG, APP_CSS_TAG]) {

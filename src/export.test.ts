@@ -37,6 +37,37 @@ function build(): string {
   return buildExportedHtml(HTML, "var CHART = 1;", "var BUNDLE = 2;", "body { color: #000; }", DATA);
 }
 
+describe("buildExportedHtml の置換は $ 特殊パターンを解釈しない", () => {
+  // String.prototype.replace は置換文字列内の $$ / $& / $` / $' / $1 を特殊パターンとして
+  // 解釈するため、埋め込む JS・CSS・データが黙って書き換わる。実際に bundle 内の
+  // `$${cost.toFixed(2)}` が `${cost.toFixed(2)}` になり、エクスポート HTML の
+  // 全金額から通貨記号が消えていた
+  const DOLLARS = "const price = `$${cost.toFixed(2)}`; const m = '$&' + '$`' + \"$'\" + '$1';";
+
+  test("バンドルの $ 記号がそのまま保持される（金額の通貨記号が消えない）", () => {
+    const out = buildExportedHtml(HTML, "var CHART = 1;", DOLLARS, "body { color: #000; }", DATA);
+    expect(out).toContain(DOLLARS);
+  });
+
+  test("Chart.js・CSS の $ 記号もそのまま保持される", () => {
+    const css = "body { content: '$$ $& $1'; }";
+    const out = buildExportedHtml(HTML, DOLLARS, "var BUNDLE = 2;", css, DATA);
+    expect(out).toContain(DOLLARS);
+    expect(out).toContain(css);
+  });
+
+  test("埋め込みデータ内の $ 記号（モデル名など外部データ由来）が壊れない", () => {
+    const data = {
+      ...DATA,
+      daily: [{ ...DATA.daily![0]!, modelsUsed: ["model-$$-$&-$'"] }],
+    };
+    const out = buildExportedHtml(HTML, "var CHART = 1;", "var BUNDLE = 2;", "body{}", data);
+    const embedded = embeddedScriptContent(out);
+    expect(JSON.parse(embedded.replace("window.CCUSAGE_DATA = ", "").replace(/;$/, "")).daily[0].modelsUsed)
+      .toEqual(["model-$$-$&-$'"]);
+  });
+});
+
 function embeddedScriptContent(out: string): string {
   const match = out.match(/<script id="embedded-data"[^>]*>(.*?)<\/script>/s);
   expect(match).not.toBeNull();
