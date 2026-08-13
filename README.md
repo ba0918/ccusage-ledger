@@ -29,7 +29,13 @@ npx ccusage-ledger
 bunx ccusage-ledger
 ```
 
-The browser opens `http://127.0.0.1:3000` on start (local interactive environments only; it does not auto-open in a non-TTY environment).
+The browser opens `http://127.0.0.1:3737` on start (local interactive environments only; it does not auto-open in a non-TTY environment).
+
+Use `--port` to listen on a different port:
+
+```sh
+npx ccusage-ledger --port 4000
+```
 
 ## What it shows
 
@@ -46,7 +52,7 @@ The browser opens `http://127.0.0.1:3000` on start (local interactive environmen
 | Env var | Default | Description |
 |---|---|---|
 | `HOST` | `127.0.0.1` | Bind address |
-| `PORT` | `3000` | Bind port |
+| `PORT` | `3737` | Bind port (overridden by `--port`) |
 | `CCUSAGE_LEDGER_ALLOW_LAN` | (none) | Set to `1` to start with only a warning for a non-loopback bind |
 | `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE` | (none) | Set to `1` to start with a warning (instead of refusing) when the ccusage native binary hash for the platform is not recorded |
 
@@ -61,12 +67,12 @@ By default the server binds only to `127.0.0.1`. With a non-loopback bind such a
 To view from another device, use an **SSH tunnel**. The tunnel itself acts as access control, and the connection source becomes loopback, so `/api/usage` works as well. The SSH tunnel encrypts the network segment, but the connection between the tunnel endpoint and the dashboard on the server still uses plain HTTP end-to-end (the encryption boundary is the SSH connection, not the dashboard itself).
 
 ```sh
-ssh -L 3000:127.0.0.1:3000 your-server
+ssh -L 3737:127.0.0.1:3737 your-server
 ```
 
 > Authentication is intentionally not implemented. This server assumes single-user local use; the boundary is enforced by limiting who can reach the screen (loopback / SSH tunnel).
 >
-> A local reverse proxy that forwards to `127.0.0.1:3000` (e.g. nginx `proxy_pass`) makes every proxied connection appear to come from loopback, so `/api/usage` is served to anyone the proxy is reachable from without triggering any LAN-bind warning. Do not put the dashboard behind a LAN-facing reverse proxy unless that is exactly what you want.
+> A local reverse proxy that forwards to `127.0.0.1:3737` (e.g. nginx `proxy_pass`) makes every proxied connection appear to come from loopback, so `/api/usage` is served to anyone the proxy is reachable from without triggering any LAN-bind warning. Do not put the dashboard behind a LAN-facing reverse proxy unless that is exactly what you want.
 
 ## HTML Export
 
