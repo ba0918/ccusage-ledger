@@ -6,7 +6,8 @@ on:
 
 permissions:
   contents: read
-  # npm publish --provenance 用: OIDC トークン（出所証明の署名）を発行するために必要
+  # Trusted Publishing 用: npm に提示する OIDC トークンを発行するために必要
+  # （provenance の署名にも同じトークンが使われる）
   id-token: write
 
 jobs:

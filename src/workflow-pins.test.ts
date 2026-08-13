@@ -128,13 +128,36 @@ describe("publish ワークフローのリリースガード", () => {
     expect(meetsMinimum, `npm@${major}.${minor}.${patch} は Trusted Publishing の最低要件 11.5.1 を満たさない`).toBe(true);
   });
 
-  test("id-token: write を job 単位で付与している（OIDC の発行に必要）", () => {
-    expect(publishYml).toContain("id-token: write");
+  // job 単位の permissions は workflow 単位の指定を「置き換える」。したがって
+  // workflow 全体を対象に toContain するだけでは、job 側の 1 行を消しても
+  // workflow 側の同じ行に一致してテストが通ってしまう（実際には権限を失う）。
+  // job の permissions ブロックだけを取り出して検証する
+  function jobPermissions(yml: string): string[] {
+    const lines = yml.split("\n");
+    // workflow 単位は列 0、job 単位は job キー（2）配下の 4 スペース
+    const start = lines.findIndex((line) => /^ {4}permissions:\s*$/.test(line));
+    if (start === -1) { return []; }
+    const baseIndent = lines[start]!.search(/\S/);
+    const entries: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim() === "" || line.trimStart().startsWith("#")) { continue; }
+      if (line.search(/\S/) <= baseIndent) { break; }
+      entries.push(line.trim());
+    }
+    return entries;
+  }
+
+  test("publish job の permissions に OIDC 発行と Release 作成の権限がある", () => {
+    // id-token: write が欠けると Trusted Publishing が OIDC トークンを受け取れず publish できない。
+    // contents: write が欠けると publish 後の Release 作成に失敗する
+    const permissions = jobPermissions(publishYml);
+    expect(permissions.length, "publish job の permissions ブロックが見つからない").toBeGreaterThan(0);
+    expect(permissions).toContain("id-token: write");
+    expect(permissions).toContain("contents: write");
   });
 
-  test("Release 作成のために contents: write を job 単位で付与している", () => {
-    // workflow 単位は contents: read のまま、必要な job にだけ write を与える
-    expect(publishYml).toMatch(/permissions:\s*\n\s*contents: read/);
-    expect(publishYml).toContain("contents: write");
+  test("workflow 単位の permissions は contents: read に絞っている", () => {
+    // 必要な job にだけ write を与え、既定は最小権限にする
+    expect(publishYml).toMatch(/^permissions:\n {2}contents: read$/m);
   });
 });
