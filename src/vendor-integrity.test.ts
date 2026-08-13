@@ -71,6 +71,23 @@ describe("vendored assets integrity", () => {
     expect(computeNativeHash()).toBe(expected);
   });
 
+  test("native プラットフォーム別テーブルは全 6 プラットフォームを網羅する（未登録プラットフォームは fail-closed）", () => {
+    // native バイナリはプラットフォームごとに内容が異なるため、プラットフォーム別テーブルで
+    // 検証する。ccusage@20.0.19 が提供する全プラットフォーム（npm tarball から計算・裏取り済み）
+    // が登録されていないと、そのプラットフォームでは起動時に検証不可となる
+    const registered = [
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-arm64",
+      "linux-x64",
+      "win32-arm64",
+      "win32-x64",
+    ];
+    for (const key of registered) {
+      expect(expectedNativeCcusageHash(key.split("-")[0]!, key.split("-")[1]!), `${key} のハッシュが登録されている`).not.toBeNull();
+    }
+  });
+
   test("native プラットフォーム別テーブルは現在のプラットフォームを解決できる（linux-x64 開発環境）", () => {
     // 開発環境（linux-x64）の native ハッシュがテーブルに登録されていることを確認する。
     // CI（ubuntu-latest）でも同じ値で検証が走る

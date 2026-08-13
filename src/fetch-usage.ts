@@ -126,11 +126,17 @@ export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
 export const CCUSAGE_WRAPPER_SHA256 = "986573dbd113bcf093a5dd9a5253f26ebdd97500daa4ad64d53af19d2bc1c1f4";
 
 // 実行プラットフォームの native バイナリ（@ccusage/ccusage-<platform>-<arch>）の sha256。
-// native バイナリはプラットフォームごとに内容が異なるため、単一固定値では照合できない。
-// 各プラットフォームの開発環境で再計算してテーブルに登録する。登録済みプラットフォームでは
-// 起動時に native 改ざんを検出し、未登録プラットフォームでは検証不可として WARN を出す
+// native バイナリはプラットフォームごとに内容が異なるため、プラットフォーム別テーブルで照合する。
+// 登録値は ccusage@20.0.19 の npm tarball（registry が配布する実体）から、hashPackageFiles と
+// 同一アルゴリズムで計算した固定値（linux-x64 は node_modules 実インストールとの一致を裏取り済み）。
+// 依存を更新した場合は全プラットフォームで再計算して必ず更新する
 export const CCUSAGE_NATIVE_SHA256_BY_PLATFORM: Record<string, string> = {
+  "darwin-arm64": "544ece2253789f1dfbce508ef76f71bf715d85e81bc3d43c025ddb5691fd2dfc",
+  "darwin-x64": "a4394b106a783c792250bfc345d8454a68a1c9eb80935ae2d827787882fc81f1",
+  "linux-arm64": "c01dfdd9701dd8fe1897e3981c88ffe6c18a6c30c48b6348ff3e9501b80ee458",
   "linux-x64": "2dfeb9fef4617794b35ef14e934127dd3f4a29a2afc922868c0f5595e79b6188",
+  "win32-arm64": "5874189a8432f09b3a0d39e010562d674e4a7762fd47c19f771b899921feaf46",
+  "win32-x64": "7b0e9b30d1ef25da43c45554e8b91cd0963ac938532ae6a4dd0d8bf0cb7fffb4",
 };
 
 // プラットフォームキー（"linux-x64" 等）。native バイナリのハッシュ対象と期待値テーブルの
@@ -148,6 +154,23 @@ export function expectedNativeCcusageHash(
   arch: string = process.arch,
 ): string | null {
   return CCUSAGE_NATIVE_SHA256_BY_PLATFORM[ccusagePlatformKey(platform, arch)] ?? null;
+}
+
+// 未登録プラットフォーム（ハッシュ検証不可）の扱いを決める環境変数。
+// 明示オプトインなしでは検証できない native バイナリを実行しない（fail-closed）
+export function isAllowUnverifiedNative(env: Record<string, string | undefined>): boolean {
+  return env.CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE === "1" || env.CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE === "true";
+}
+
+// native ハッシュの検証方針を純関数として決定する。
+// verified: ハッシュ登録済み（照合する）/ unverified-override: 未登録だが明示オプトインあり（WARN で続行）
+// / refuse: 未登録かつオプトインなし（実行拒否）
+export function nativeIntegrityPolicy(
+  env: Record<string, string | undefined>,
+  expected: string | null,
+): "verified" | "unverified-override" | "refuse" {
+  if (expected !== null) { return "verified"; }
+  return isAllowUnverifiedNative(env) ? "unverified-override" : "refuse";
 }
 
 // ccusage の native バイナリパッケージ名（@ccusage/ccusage-<platform>-<arch>）。
@@ -241,13 +264,22 @@ function assertCcusageIntegrity(packageDir: string = PACKAGE_DIR): void {
   const expected = expectedNativeCcusageHash();
   if (expected === null) {
     // native はプラットフォームごとに内容が異なるため、未登録プラットフォームでは照合できない。
-    // fail-closed にするとダッシュボードが常に空になり、改ざん検出の役割も失われるため、
-    // 検証不可であることを明示して続行する（登録方法はコメントを参照）
-    console.warn(
-      `WARN: ccusage native binary integrity is not verified on ${ccusagePlatformKey()} (no expected hash recorded). ` +
-        "Add the hash to CCUSAGE_NATIVE_SHA256_BY_PLATFORM to enable verification.",
+    // 検証できないバイナリを黙って実行すると改ざん検出の意味が無くなるため、明示オプトイン
+    // （CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1）なしでは実行を拒否する（fail-closed。
+    // ハッシュの登録方法は CCUSAGE_NATIVE_SHA256_BY_PLATFORM のコメントを参照）
+    const policy = nativeIntegrityPolicy(process.env, null);
+    if (policy === "unverified-override") {
+      console.warn(
+        `WARN: ccusage native binary integrity is not verified on ${ccusagePlatformKey()} (no expected hash recorded). ` +
+          "Running with CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1 override.",
+      );
+      return;
+    }
+    throw new Error(
+      `ccusage native binary integrity cannot be verified on ${ccusagePlatformKey()} (no expected hash recorded). ` +
+        "Refusing to run an unverified native binary. Set CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1 to override, " +
+        "or add the hash to CCUSAGE_NATIVE_SHA256_BY_PLATFORM.",
     );
-    return;
   }
   if (nativeHash !== expected) {
     throw new Error(
