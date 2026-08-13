@@ -73,12 +73,15 @@ export function findGitRoot(startDir: string): string | null {
 
 // エクスポート出力先が「ccusage-ledger 自身の git リポジトリとは異なる git リポジトリ内」かどうか。
 // export は実行時カレントに dist/ccusage-ledger.html を書くため、他プロジェクトの checkout 内で
-// 実行すると個人データ埋め込み HTML が誤ってコミット・共有される（F8）。ただし
-// パッケージ自身が git 管理下にない場合（npm インストール先）は比較できないため false を返す
+// 実行すると個人データ埋め込み HTML が誤ってコミット・共有される（F8）。
+// パッケージ側に .git が無い場合（npm インストール先）は「ccusage-ledger の checkout である」と
+// 確認できないため、出力先が何らかの git リポジトリ内なら foreign として扱う
+// （安全側に倒す。出力先が git 外なら outputRoot が null になり false）
 export function isForeignGitWorktree(outputDir: string, packageDir: string): boolean {
   const outputRoot = findGitRoot(outputDir);
   const packageRoot = findGitRoot(packageDir);
-  if (outputRoot === null || packageRoot === null) { return false; }
+  if (outputRoot === null) { return false; }
+  if (packageRoot === null) { return true; }
   return outputRoot !== packageRoot;
 }
 
