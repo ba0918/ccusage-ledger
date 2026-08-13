@@ -104,6 +104,17 @@ describe("publish ワークフローのリリースガード", () => {
     expect(executableLines).not.toContain("# npm publish");
   });
 
+  test("npm レジストリの認証が配線されている", () => {
+    // NODE_AUTH_TOKEN は、それを参照する .npmrc が無いと使われない（npm は ENEEDAUTH で落ちる）。
+    // .npmrc を生成するのは setup-node の registry-url 指定であり、setup-bun では代替できない
+    expect(executableLines).toContain("actions/setup-node@");
+    expect(executableLines).toContain("registry-url:");
+    const registryIndex = executableLines.indexOf("registry-url:");
+    const publishIndex = executableLines.indexOf("npm publish");
+    expect(registryIndex).toBeGreaterThan(0);
+    expect(registryIndex).toBeLessThan(publishIndex);
+  });
+
   test("Release 作成のために contents: write を job 単位で付与している", () => {
     // workflow 単位は contents: read のまま、必要な job にだけ write を与える
     expect(publishYml).toMatch(/permissions:\s*\n\s*contents: read/);
