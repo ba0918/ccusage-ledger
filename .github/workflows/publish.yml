@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   publish:
+    # フォーク先でタグが push されても本流で publish が走らないよう、リポジトリを限定する
+    # （upstream の secret は upstream スコープで守られるが、guard を明示して誤実行を構造的に防ぐ）
+    if: github.repository == 'ba0918/ccusage-ledger'
     runs-on: ubuntu-latest
     steps:
       # Actions は SHA で固定する（v4 タグは移動するため、書き換え時にサプライチェーン攻撃を受ける）

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn as spawnProcess } from "node:child_process";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, readCache, isAllowUnverifiedNative, nativeIntegrityPolicy, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -241,6 +241,50 @@ describe("userHomeDir", () => {
   test("HOME があればそれを使い、無ければ homedir() にフォールバックする", () => {
     expect(userHomeDir({ HOME: "/home/u" })).toBe("/home/u");
     expect(typeof userHomeDir({})).toBe("string");
+  });
+});
+
+describe("native バイナリの検証不可ポリシー（fail-closed）", () => {
+  test("CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE の値でオプトインを判定する", () => {
+    expect(isAllowUnverifiedNative({})).toBe(false);
+    expect(isAllowUnverifiedNative({ CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE: "0" })).toBe(false);
+    expect(isAllowUnverifiedNative({ CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE: "1" })).toBe(true);
+    expect(isAllowUnverifiedNative({ CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE: "true" })).toBe(true);
+  });
+
+  test("ハッシュ登録済みプラットフォームは常に verified", () => {
+    expect(nativeIntegrityPolicy({}, "abc123")).toBe("verified");
+    expect(nativeIntegrityPolicy({ CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE: "1" }, "abc123")).toBe("verified");
+  });
+
+  test("未登録プラットフォームはオプトインなしでは refuse（検証できないバイナリを実行しない）", () => {
+    // 未登録プラットフォームの native バイナリは改ざんを検知できないため、デフォルトでは
+    // 実行を拒否する。CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1 でのみ明示オプトインできる
+    expect(nativeIntegrityPolicy({}, null)).toBe("refuse");
+    expect(nativeIntegrityPolicy({ CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE: "1" }, null)).toBe("unverified-override");
+    expect(nativeIntegrityPolicy({ CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE: "true" }, null)).toBe("unverified-override");
+  });
+});
+
+describe("readCache", () => {
+  test("所有権・0700・スキーマ検証を通過したキャッシュは読み込む", () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    writeCacheFixture(cachePath);
+    expect(readCache(cachePath)).not.toBeNull();
+  });
+
+  test("キャッシュファイルがシンボリックリンクの場合は読み込まない（lstat 検証）", () => {
+    // statSync / readFileSync は symlink を追うため、サイズ検証と読取だけでは
+    // リンク先の偽造 JSON を配信してしまう。lstat で symlink 自体を拒否する
+    // （writeExportedHtml と同じ安全条件。attack-review F22）
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
+    const target = join(dir, "forged.json");
+    writeFileSync(target, JSON.stringify(FIXTURE));
+    symlinkSync(target, cachePath);
+    expect(readCache(cachePath)).toBeNull();
   });
 });
 

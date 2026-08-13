@@ -73,13 +73,30 @@ export function findGitRoot(startDir: string): string | null {
 
 // エクスポート出力先が「ccusage-ledger 自身の git リポジトリとは異なる git リポジトリ内」かどうか。
 // export は実行時カレントに dist/ccusage-ledger.html を書くため、他プロジェクトの checkout 内で
-// 実行すると個人データ埋め込み HTML が誤ってコミット・共有される（F8）。ただし
-// パッケージ自身が git 管理下にない場合（npm インストール先）は比較できないため false を返す
+// 実行すると個人データ埋め込み HTML が誤ってコミット・共有される（F8）。
+// パッケージ側に .git が無い場合（npm インストール先）は「ccusage-ledger の checkout である」と
+// 確認できないため、出力先が何らかの git リポジトリ内なら foreign として扱う
+// （安全側に倒す。出力先が git 外なら outputRoot が null になり false）
 export function isForeignGitWorktree(outputDir: string, packageDir: string): boolean {
   const outputRoot = findGitRoot(outputDir);
   const packageRoot = findGitRoot(packageDir);
-  if (outputRoot === null || packageRoot === null) { return false; }
+  if (outputRoot === null) { return false; }
+  if (packageRoot === null) { return true; }
   return outputRoot !== packageRoot;
+}
+
+// 外部の git リポジトリ内への書き込み方針。警告だけで続行すると誤コミットが起き得るため、
+// デフォルトでは書き込みを拒否し、CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1（または true）でのみ
+// 明示オプトインする（attack-review F12）
+export function exportForeignWorktreePolicy(
+  env: Record<string, string | undefined>,
+  outputDir: string,
+  packageDir: string,
+): "ok" | "refuse" {
+  if (!isForeignGitWorktree(outputDir, packageDir)) { return "ok"; }
+  const allow = env.CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN;
+  if (allow === "1" || allow === "true") { return "ok"; }
+  return "refuse";
 }
 
 export interface ExportFileOperations {
@@ -179,18 +196,21 @@ async function main(): Promise<void> {
 
   const exported = buildExportedHtml(html, chartJs, bundle, css, usage.data);
   const outputPath = exportOutputPath(process.cwd());
+
+  // 他プロジェクトの git リポジトリ内への書き込みは、個人データ入り HTML の誤コミットを防ぐため
+  // デフォルトで拒否する（CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1 で明示オプトイン。attack-review F12）
+  if (exportForeignWorktreePolicy(process.env, dirname(outputPath), PACKAGE_DIR) === "refuse") {
+    console.error(
+      `ERROR: refusing to export into a git repository that is not ccusage-ledger (${findGitRoot(dirname(outputPath))}). ` +
+        "This file contains your ccusage usage data. Set CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1 to export anyway.",
+    );
+    process.exit(1);
+  }
+
   writeExportedHtml(outputPath, exported);
 
   console.log(`exported: ${outputPath}`);
   console.warn("Note: this HTML contains your ccusage usage data. Only export it when sharing with someone you trust.");
-  // 他プロジェクトの git リポジトリ内に書き込む場合は、個人データ入り HTML が誤ってコミット
-  // されないよう明示的に警告する（F8。誤共有・誤公開の防止）
-  if (isForeignGitWorktree(dirname(outputPath), PACKAGE_DIR)) {
-    console.warn(
-      `WARN: the output is written inside a git repository that is not ccusage-ledger (${findGitRoot(dirname(outputPath))}). ` +
-        "This file contains your ccusage usage data. Make sure it is not committed, shared, or uploaded.",
-    );
-  }
 }
 
 if (import.meta.main) {

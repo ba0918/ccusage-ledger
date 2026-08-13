@@ -42,8 +42,14 @@ export const MAX_DISTINCT_AGENTS = 1000;
 // 個人用ダッシュボードのコスト・トークン量として現実的な上限（1e12）を設けて弾く
 export const MAX_NUMERIC_MAGNITUDE = 1e12;
 
+// C0 制御文字（タブ・LF・CR 以外）と DEL。HTML エスケープでは制御文字を無害化しきれない
+// 文脈（script 埋め込み等）への将来の流入に備えてデータ層で拒否する（attack-review F9）。
+// モデル名・エージェント名に制御文字が現れることは正当なデータでも無い。
+// biome の noControlCharactersInRegex を避けるため、リテラルにエスケープを含めず動的に構築する
+const CONTROL_CHARS = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(8)}${String.fromCharCode(11)}${String.fromCharCode(12)}${String.fromCharCode(14)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`);
+
 function isBoundedString(value: unknown, maxLength: number = MAX_STRING_LENGTH): boolean {
-  return typeof value === "string" && value.length <= maxLength;
+  return typeof value === "string" && value.length <= maxLength && !CONTROL_CHARS.test(value);
 }
 
 function isStringArray(value: unknown, maxLength: number): boolean {

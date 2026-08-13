@@ -89,6 +89,15 @@ describe("server /api/usage", () => {
     expect((await res.json() as { daily: unknown[] }).daily.length).toBeGreaterThan(0);
   });
 
+  test("LAN bind でも /api/usage はループバック Host を要求する（DNS rebinding 対策）", async () => {
+    // LAN モードでは非 /api パスの Host 検証を無効化するが、/api/* は loopback 専用配信のため
+    // 全 bind モードで Host がループバックであることを要求する。DNS rebinding ページが
+    // 127.0.0.1 への同一オリジン fetch で全履歴を読めるのを防ぐ（attack-review F1）
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const res = await app(new Request("http://attacker.example/api/usage"), appEnv("127.0.0.1"));
+    expect(res.status).toBe(400);
+  });
+
   test("パーセントエンコードした /api/usage（/%61pi/usage）もループバック以外の接続には配信しない", async () => {
     // Hono はパスセグメントをデコードしてルーティングするため、エンコードでゲートを迂回できない
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
@@ -105,13 +114,14 @@ describe("server /api/usage", () => {
     expect((await res.json() as { daily: unknown[] }).daily.length).toBeGreaterThan(0);
   });
 
-  test("403 は generic ボディを返し、bind ポートやトンネルコマンドを含めない", async () => {
+  test("403 は generic ボディを返し、bind ポート・トンネルコマンド・エンドポイント名を含めない", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0", port: 5000 });
     const res = await call(app, "/api/usage", "192.168.1.10");
     const body = await res.json() as { error: string };
-    expect(body.error).toContain("loopback");
-    expect(body.error).not.toContain("ssh");
-    expect(body.error).not.toContain("5000");
+    expect(body.error).toBe("forbidden");
+    expect(JSON.stringify(body)).not.toContain("ssh");
+    expect(JSON.stringify(body)).not.toContain("5000");
+    expect(JSON.stringify(body)).not.toContain("api");
   });
 
   test("スキーマ外のフィールドは /api/usage で配信しない（curated projection）", async () => {
@@ -424,6 +434,55 @@ describe("server セキュリティ", () => {
     }
     expect(apiCalls).toBe(0);
   });
+
+  test("rate limit キーは source IP と Host のペア（Host 別のリクエストは別バケット）", async () => {
+    // ループバック bind では全リクエストが同一 source IP に集約されるため、キーに Host を
+    // 含めて DNS-rebinding ページ（Host: attacker.example）がユーザーの予算と別バケットになる。
+    // 同一 (IP, Host) のリクエストは同じバケットを使う（attack-review F5）
+    const keys: string[] = [];
+    const app = createApp({ rootDir, cachePath, rateLimit: (key) => { keys.push(key); return true; } });
+    await app(new Request("http://127.0.0.1/"), appEnv("127.0.0.1"));
+    await app(new Request("http://localhost/"), appEnv("127.0.0.1"));
+    await app(new Request("http://127.0.0.1/"), appEnv("192.168.1.10"));
+    expect(keys).toEqual(["127.0.0.1|127.0.0.1", "127.0.0.1|localhost", "192.168.1.10|127.0.0.1"]);
+  });
+
+  test("Content-Length が大きすぎるリクエストは 413 を返す（ボディ上限）", async () => {
+    // どのエンドポイントもボディを読まないため、巨大ボディは不要なメモリ消費になるだけ。
+    // Content-Length ヘッダの段階で拒否する（attack-review F8）
+    const app = createApp({ rootDir, cachePath });
+    const request = new Request("http://127.0.0.1/", {
+      method: "POST",
+      headers: { "content-length": "5000" },
+      body: "x",
+    });
+    const res = await app(request, appEnv("127.0.0.1"));
+    expect(res.status).toBe(413);
+  });
+
+  test("極端に長いパスはデコード前に 400 を返す（パス長上限）", async () => {
+    // decodeURIComponent の前に長さを検証し、巨大なパスによるデコード・比較コストを抑える
+    const app = createApp({ rootDir, cachePath });
+    const longPath = `/${"a".repeat(9000)}`;
+    const res = await app(new Request(`http://127.0.0.1${longPath}`), appEnv("127.0.0.1"));
+    expect(res.status).toBe(400);
+  });
+
+  test("どのレスポンスにも Access-Control-Allow-Origin を含めない（CORS 不在の不変条件）", async () => {
+    // LAN モード + DNS rebinding で /api/usage に到達できた場合でも、ACAO が無ければ
+    // ブラウザはクロスオリジン読み取りを遮断する。CORS ヘッダ追加が回帰で起きないことを
+    // 機械的に検証する（attack-review F4 / F13）
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const paths = ["/api/usage", "/", "/dist/bundle.js", "/nope"];
+    for (const path of paths) {
+      const res = await app(new Request(`http://127.0.0.1${path}`, {
+        headers: { origin: "https://evil.example" },
+      }), appEnv("127.0.0.1"));
+      expect(res.headers.get("access-control-allow-origin"), path).toBeNull();
+    }
+    const forbidden = await app(new Request("http://127.0.0.1/api/usage"), appEnv("192.168.1.10"));
+    expect(forbidden.headers.get("access-control-allow-origin")).toBeNull();
+  });
 });
 
 describe("server LAN 案内ページ", () => {
@@ -510,6 +569,15 @@ describe("server isLoopbackHost", () => {
 
   test("非ループバックのホストは false", () => {
     for (const host of ["0.0.0.0", "192.168.1.10", "::", "evil.example.com", "::ffff:192.168.1.10"]) {
+      expect(isLoopbackHost(host)).toBe(false);
+    }
+  });
+
+  test("末尾にドットが付いたホストはループバックとして扱わない（trailing-dot は明示的に拒否）", () => {
+    // node:net の isIP は現状 trailing-dot を拒否するが、isIP の実装変化に依存せず
+    // 仕様として明示的に拒否する（URL パーサーは "127.0.0.1." を正規化して通すため、
+    // この関数に到達する前に解決されることもあるが、単体契約として固定する）
+    for (const host of ["127.0.0.1.", "::1.", "localhost.", "127.0.0.2."]) {
       expect(isLoopbackHost(host)).toBe(false);
     }
   });

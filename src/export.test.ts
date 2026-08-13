@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, readFileSync, readdirSync, symlinkSync, lstatSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UsageData } from "./types";
-import { buildExportedHtml, exportOutputPath, writeExportedHtml, isForeignGitWorktree } from "./export";
+import { buildExportedHtml, exportOutputPath, writeExportedHtml, isForeignGitWorktree, exportForeignWorktreePolicy } from "./export";
 
 const HTML = [
   "<!doctype html><html><head><title>ccusage</title>",
@@ -117,6 +117,68 @@ describe("isForeignGitWorktree", () => {
       mkdirSync(join(pkgRoot, ".git"), { recursive: true });
       // 出力先は foreignRepo 内、パッケージルートは ccusage-ledger。git ルートが異なるため警告対象
       expect(isForeignGitWorktree(foreignRepo, pkgRoot)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("パッケージ側に .git が無い場合（npm インストール先相当）でも、出力先が他プロジェクトの git リポジトリ内なら true", () => {
+    // npm 配布版は node_modules 内に .git を持たない。この場合でも「出力先が ccusage-ledger
+    // の checkout ではない git リポジトリ内」であることは判定できるため、foreign として扱い
+    // 誤コミット防止を無効化しない（Codex review P2）
+    // テストベースは homedir() 直下に置く（findGitRoot が親へ遡るため、ベースの祖先に
+    // .git がある環境では packageRoot が null にならず判定が変わる。ホーム直下に .git が
+    // ある環境は稀で、CI の ubuntu runner でも無い前提とする）
+    const dir = mkdtempSync(join(homedir(), ".ccusage-export-test-"));
+    try {
+      const foreignRepo = join(dir, "other-project");
+      const npmInstallDir = join(dir, "node_modules", "ccusage-ledger");
+      mkdirSync(join(foreignRepo, ".git"), { recursive: true });
+      // npm インストール先（package 側）には .git を作らない
+      mkdirSync(npmInstallDir, { recursive: true });
+      expect(isForeignGitWorktree(foreignRepo, npmInstallDir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("exportForeignWorktreePolicy", () => {
+  test("外部の git リポジトリ内への出力は env 無しでは refuse（誤コミット防止）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const foreignRepo = join(dir, "other-project");
+      const pkgRoot = join(dir, "ccusage-ledger");
+      mkdirSync(join(foreignRepo, ".git"), { recursive: true });
+      mkdirSync(join(pkgRoot, ".git"), { recursive: true });
+      // 警告だけで続行すると誤コミットが起き得るため、デフォルトでは書き込みを拒否する
+      expect(exportForeignWorktreePolicy({}, foreignRepo, pkgRoot)).toBe("refuse");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("外部リポジトリでも明示オプトイン（CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1）なら ok", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const foreignRepo = join(dir, "other-project");
+      const pkgRoot = join(dir, "ccusage-ledger");
+      mkdirSync(join(foreignRepo, ".git"), { recursive: true });
+      mkdirSync(join(pkgRoot, ".git"), { recursive: true });
+      for (const value of ["1", "true"]) {
+        expect(exportForeignWorktreePolicy({ CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN: value }, foreignRepo, pkgRoot)).toBe("ok");
+      }
+      expect(exportForeignWorktreePolicy({ CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN: "0" }, foreignRepo, pkgRoot)).toBe("refuse");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("外部リポジトリでない場合は env に関係なく ok", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      mkdirSync(join(dir, ".git"), { recursive: true });
+      expect(exportForeignWorktreePolicy({}, dir, dir)).toBe("ok");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -342,6 +404,23 @@ describe("buildExportedHtml", () => {
     const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
     expect(embeddedScriptContent(out)).not.toContain("\u2028");
     expect(embeddedScriptContent(out)).not.toContain("\u2029");
+    expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
+  });
+
+  test("データに <!--（HTML コメント開始）が含まれてもエクスポート全体にリテラルを残さない", () => {
+    // < を \u003c に変換するため <!-- も \u003c!-- になる。script 内のリテラルを
+    // コメントとして終端させられないことを検証する（attack-review F17）
+    const data: UsageData = {
+      ...DATA,
+      daily: [
+        {
+          ...DATA.daily![0]!,
+          modelsUsed: ["claude<!--"],
+        },
+      ],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
+    expect(out).not.toContain("<!--");
     expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
   });
 

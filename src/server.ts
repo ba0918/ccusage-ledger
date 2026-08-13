@@ -30,6 +30,10 @@ const COMMON_HEADERS: Record<string, string> = {
   // frame-ancestors を無視する古いブラウザ向けの defense-in-depth（CSP だけに依存しない）
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
+  // CORS ヘッダは意図的に一切出力しない（セキュリティ境界）。LAN モード + DNS rebinding で
+  // /api/usage に到達できた場合でも、Access-Control-Allow-Origin が無ければブラウザは
+  // クロスオリジン読み取りを遮断し、CORP: same-origin が no-cors 埋め込みを防ぐ。
+  // 将来 CORS を追加する場合は allowlist + Credentials 無しに限定すること（attack-review F4 / F13）
   "cross-origin-resource-policy": "same-origin",
   "cross-origin-opener-policy": "same-origin",
   "referrer-policy": "no-referrer",
@@ -54,6 +58,10 @@ function notFoundResponse(): Response {
 // （127.0.0.0/8 の別名や ::1 はすべてループバック。HOST=127.0.0.2 等でも検証を有効にする）
 export function isLoopbackHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  // trailing-dot（127.0.0.1. / localhost.）はループバックとして扱わない。
+  // node:net の isIP は現状拒否するが、実装変化に依存せず仕様として明示的に拒否する
+  // （URL パーサーが "127.0.0.1." を正規化して通すことがあるため、契約として固定する）
+  if (host === "" || host.endsWith(".")) { return false; }
   if (host === "localhost") { return true; }
   const version = isIP(host);
   if (version === 4) { return host.startsWith("127."); }
@@ -241,6 +249,21 @@ export function createApp(options: {
       return badRequest();
     }
 
+    // 巨大なパスはデコード・分類の前に拒否する（decodeURIComponent と startsWith の
+    // コストを一定に保つ。上限は実用上十分な長さ。attack-review F16）
+    if (url.pathname.length > MAX_PATH_LENGTH) {
+      return badRequest();
+    }
+
+    // どのエンドポイントもリクエストボディを読まないため、Content-Length が上限を
+    // 超えるリクエストはハンドラ到達前に 413 で拒否する（巨大ボディのメモリ消費を防ぐ。
+    // chunked など Content-Length 無しのボディはランタイムの上限に委ねる。attack-review F8）
+    const contentLength = c.req.header("content-length");
+    const parsedLength = contentLength === undefined ? NaN : Number(contentLength);
+    if (Number.isFinite(parsedLength) && parsedLength > MAX_REQUEST_BODY_BYTES) {
+      return payloadTooLarge();
+    }
+
     let pathname: string;
     try {
       pathname = decodeURIComponent(url.pathname);
@@ -255,8 +278,16 @@ export function createApp(options: {
 
     const ip = resolveRequestIp(c);
 
-    // DNS rebinding 対策（ループバック bind 時のみ）: リクエストのホストがループバック以外なら拒否
-    if (!hostAllowed(url.hostname, hostname)) {
+    // DNS rebinding 対策: リクエストのホストがループバック以外なら拒否する。
+    // /api/* は loopback 専用配信のため、bind モードに関係なく Host はループバックを要求する。
+    // LAN モードでは hostAllowed が無条件 true になり Host 検証が効かなくなるため、
+    // DNS rebinding ページ（Host: attacker.example → 127.0.0.1 への同一オリジン fetch）が
+    // 全履歴を読めるのを防ぐのがこの分岐（attack-review F1）
+    if (isApiPath) {
+      if (!isLoopbackHost(url.hostname)) {
+        return badRequest();
+      }
+    } else if (!hostAllowed(url.hostname, hostname)) {
       return badRequest();
     }
 
@@ -270,8 +301,12 @@ export function createApp(options: {
     // rate limit は「安価な検証で拒否されたリクエストの後」に適用する。Host 検証（400）や
     // /api ゲート（403）が先に走るため、悪意ある Web ページの DNS-rebinding ループが
     // 被害者自身の rate limit 予算を消費して正当なダッシュボードを 429 にできる
-    // ドライブバイ自己 DoS（F7）を起こせない。拒否済みリクエストは予算を消費しない
-    if (!limitRequest(ip, isApiPath)) {
+    // ドライブバイ自己 DoS（F7）を起こせない。拒否済みリクエストは予算を消費しない。
+    // キーは (source IP, Host) のペアにする。ループバック bind では全リクエストが同一 IP に
+    // 集約されるため、Host をキーに含めて DNS-rebinding ページ（Host: attacker.example）と
+    // ユーザー自身のリクエスト（Host: 127.0.0.1）のバケットを分離する（attack-review F5。
+    // Host: 127.0.0.1 の img ループによる共有バケット枯渇は残余リスクとして AGENTS.md に記載）
+    if (!limitRequest(rateLimitKey(ip, url.hostname), isApiPath)) {
       return tooManyRequests();
     }
 
@@ -280,7 +315,13 @@ export function createApp(options: {
     return next();
   });
 
-  app.get("/api/usage", (_c) => {
+  app.get("/api/usage", (c) => {
+    // ミドルウェアが同じゲートを適用済みだが、パス分類（decodeURIComponent + startsWith）と
+    // Hono のルーティングが将来ずれた場合に備えて、配信元をハンドラ自身でも再検証する
+    // （シングルポイント化せず defense-in-depth を維持。attack-review F15）
+    if (!isLoopbackHost(c.get("clientIp"))) {
+      return apiForbidden();
+    }
     if (usageBody === null) {
       // キャッシュなしでも 200 で空データを返す（キャッシュ有無を 404/200 で判別させない）
       return new Response(JSON.stringify({ daily: [], monthly: [] }), {
@@ -341,6 +382,20 @@ function lanOnlyResponse(port: number, pathname: string): Response {
   });
 }
 
+// どのエンドポイントもリクエストボディを読まないため、この上限で十分（4KB）。
+// 巨大ボディは Content-Length の段階で 413 にする（attack-review F8）
+const MAX_REQUEST_BODY_BYTES = 4096;
+
+// デコード前のパス長上限。allowlist のパスは全て短いため、実用上十分な長さ（attack-review F16）
+const MAX_PATH_LENGTH = 4096;
+
+// rate limit のキー。ループバック bind では全リクエストが同一 source IP に集約されるため、
+// Host をキーに含めて DNS-rebinding ページ（Host: attacker.example）のリクエストと
+// ユーザー自身のリクエスト（Host: 127.0.0.1）のバケットを分離する（attack-review F5）
+function rateLimitKey(ip: string, hostname: string): string {
+  return `${ip}|${hostname}`;
+}
+
 function tooManyRequests(): Response {
   return new Response("Too Many Requests", {
     status: 429,
@@ -348,10 +403,18 @@ function tooManyRequests(): Response {
   });
 }
 
+function payloadTooLarge(): Response {
+  return new Response("Payload Too Large", {
+    status: 413,
+    headers: withCommonHeaders({}),
+  });
+}
+
 function apiForbidden(): Response {
-  // ボディに bind ポートやトンネルコマンドを含めない（LAN スキャナーへの情報漏出を避ける。
-  // SSH トンネルの案内は起動時コンソール出力と LAN 案内ページで行う）
-  return new Response(JSON.stringify({ error: "forbidden: /api/usage is only served over loopback" }), {
+  // ボディはエンドポイント名・bind ポート・トンネルコマンドを一切含めない generic な文言のみ
+  // （LAN スキャナーへの情報漏出を避ける。SSH トンネルの案内は起動時コンソール出力と
+  // LAN 案内ページで行う。attack-review F7）
+  return new Response(JSON.stringify({ error: "forbidden" }), {
     status: 403,
     headers: withCommonHeaders({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }),
   });

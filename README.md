@@ -75,7 +75,7 @@ bun run export
 
 Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working directory.
 
-**Caution**: The exported file contains your ccusage usage data. Only export it when sharing with someone you trust. For external distribution, set `X-Frame-Options: DENY` in the server response headers (the exported HTML's CSP is injected via `<meta>`, which browsers ignore for `frame-ancestors`; iframe embedding is only prevented by the JS frame buster). If the output lands inside a git repository other than ccusage-ledger, a warning is printed — the file contains personal data, do not commit or upload it.
+**Caution**: The exported file contains your ccusage usage data. Only export it when sharing with someone you trust. For external distribution, set `X-Frame-Options: DENY` in the server response headers (the exported HTML's CSP is injected via `<meta>`, which browsers ignore for `frame-ancestors`; iframe embedding is only prevented by the JS frame buster). If the output lands inside a git repository other than ccusage-ledger, export is refused by default to prevent accidental commits of personal data — set `CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1` to export anyway.
 
 ## Data
 

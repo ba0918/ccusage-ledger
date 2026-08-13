@@ -27,6 +27,17 @@ describe("vendored assets integrity", () => {
     expect(hash).toBe(CHART_SHA256);
   });
 
+  test("vendored Chart.js に HTML 注入シンクが含まれない（canvas 描画の不変条件）", () => {
+    // Chart.js は canvas 描画のため tooltip / label を HTML として解釈しない。この性質が
+    // stored XSS の防衛線の一つ（モデル名を tooltip に渡しても HTML 実行にならない）なので、
+    // 依存を差し替えた場合に sink を持つビルドへ静かに後退しないことを機械的に検証する
+    // （attack-review F9）。setTimeout はアニメーションに使われるため対象外
+    const source = readFileSync(join(import.meta.dir, "..", "public", "vendor", "chart.umd.min.js"), "utf-8");
+    for (const sink of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"]) {
+      expect(source, `chart.umd.min.js に ${sink} を含めない（HTML 注入シンクの禁止）`).not.toContain(sink);
+    }
+  });
+
   test("ccusage ラッパー（プラットフォーム非依存）の sha256 が固定値と一致する", () => {
     // fetch-usage の computeWrapperHash は固定値 CCUSAGE_WRAPPER_SHA256 と起動時に照合する。
     // ラッパー（node_modules/ccusage）は cli.js + config-schema.json のみでプラットフォームに
@@ -58,6 +69,23 @@ describe("vendored assets integrity", () => {
     const nativeDir = ccusageNativePackageDir();
     if (nativeDir === null || expected === null) { return; }
     expect(computeNativeHash()).toBe(expected);
+  });
+
+  test("native プラットフォーム別テーブルは全 6 プラットフォームを網羅する（未登録プラットフォームは fail-closed）", () => {
+    // native バイナリはプラットフォームごとに内容が異なるため、プラットフォーム別テーブルで
+    // 検証する。ccusage@20.0.19 が提供する全プラットフォーム（npm tarball から計算・裏取り済み）
+    // が登録されていないと、そのプラットフォームでは起動時に検証不可となる
+    const registered = [
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-arm64",
+      "linux-x64",
+      "win32-arm64",
+      "win32-x64",
+    ];
+    for (const key of registered) {
+      expect(expectedNativeCcusageHash(key.split("-")[0]!, key.split("-")[1]!), `${key} のハッシュが登録されている`).not.toBeNull();
+    }
   });
 
   test("native プラットフォーム別テーブルは現在のプラットフォームを解決できる（linux-x64 開発環境）", () => {
