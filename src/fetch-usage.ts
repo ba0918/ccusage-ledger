@@ -494,17 +494,43 @@ function isPrivateDirMode(mode: number): boolean {
 // キャッシュを読み書きする前にディレクトリの安全性を検証する。他人が書き込み可能な
 // ディレクトリでは、キャッシュの改ざん・偽造（表示データのスプーフィング）ができるため
 // 所有権と 0700 を確認できなければ fail-closed（キャッシュなし扱い）にする
-export function assertSafeCacheDir(cacheDir: string, platform: string = process.platform): void {
+// Windows のユーザープロファイル配下かどうか。Windows は大文字小文字を区別しないため
+// 小文字化して比較し、末尾の区切りを落としてから前方一致を見る（Users と Users2 のような
+// 取り違えを防ぐため、区切りを付けて比較する）
+export function isUnderUserProfile(cacheDir: string, home: string, separator: string): boolean {
+  const normalize = (path: string): string => path.toLowerCase().replace(/[\\/]+$/, "");
+  const dir = normalize(cacheDir);
+  const base = normalize(home);
+  return dir === base || dir.startsWith(`${base}${separator}`);
+}
+
+export function assertSafeCacheDir(
+  cacheDir: string,
+  platform: string = process.platform,
+  home: string = homedir(),
+  // Windows のパス区切り。テストから POSIX の一時ディレクトリで win32 分岐を検証するために外出しする
+  separator: string = platform === "win32" ? "\\" : sep,
+): void {
   const dirStat = statSync(cacheDir);
   if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) {
     throw new Error(`cache directory is not owned by the current user: ${cacheDir}`);
   }
-  // Windows の statSync().mode は POSIX の permission bits を持たない（読み取り専用属性の
-  // 反映でしかなく、chmod でも 0700 にならない）。そのまま検証すると常に失敗し、
-  // キャッシュの読み書きが恒久的に無効化されて起動ごとに WARN が出る。
-  // Windows ではユーザープロファイル配下の NTFS ACL による保護に委ねる
-  // （他ユーザーからの改ざんを能動的に検証はしていない。残余リスクとして AGENTS.md に記載）
-  if (platform === "win32") { return; }
+  // Windows の statSync().mode は POSIX の permission bits を持たず（読み取り専用属性の
+  // 反映でしかなく chmod でも 0700 にならない）、process.getuid も存在しないため、
+  // 所有者・権限のどちらも Node から検証できない。そのまま 0700 を要求すると常に失敗し、
+  // キャッシュが恒久的に無効化される（起動ごとに WARN）。
+  //
+  // 代わりに「Windows が既定で他ユーザーから保護するユーザープロファイル配下か」で判定する。
+  // XDG_CACHE_HOME などで共有ディレクトリを指した場合は検証不能として fail-closed にする
+  // （NTFS ACL 自体は検証していない。プロファイルの ACL が緩められている場合は守れない）
+  if (platform === "win32") {
+    if (!isUnderUserProfile(cacheDir, home, separator)) {
+      throw new Error(
+        `cache directory is outside the user profile, and its permissions cannot be verified on Windows: ${cacheDir}`,
+      );
+    }
+    return;
+  }
   if (!isPrivateDirMode(dirStat.mode)) {
     throw new Error(`cache directory is not private (mode ${(dirStat.mode & 0o777).toString(8)}, expected 0700): ${cacheDir}`);
   }
