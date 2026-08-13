@@ -125,6 +125,10 @@ canvas { width: 100% !important; height: 100% !important; }
 /* 期間詳細パネル */
 .detail-panel {
   flex: 1 1 42%; min-width: 380px; max-width: 460px;
+  /* チャートカード（見出し + 300px キャンバス + 余白）と同じ高さに揃える。
+     モデル数が多い期間や比較カード表示時もカード全体が縦に伸びず、
+     テーブルと比較カードがパネル内でスクロールする */
+  max-height: 386px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -143,7 +147,7 @@ canvas { width: 100% !important; height: 100% !important; }
 }
 .detail-close:hover { color: var(--text); border-color: var(--muted); }
 .detail-note { color: var(--muted); font-size: 11px; margin-bottom: 10px; line-height: 1.5; }
-.detail-table { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.detail-table { overflow: auto; flex: 1 1 auto; min-height: 96px; }
 .detail-table table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 .detail-table thead th:nth-child(1) { width: 30%; }
 .detail-table thead th:nth-child(2) { width: 14%; }
@@ -190,8 +194,9 @@ canvas { width: 100% !important; height: 100% !important; }
 .tm-tip-fixed .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
 .tm-tip-fixed b { font-weight: 600; color: var(--text); }
 
-/* 2 モデル比較（カード型） */
-.detail-compare { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+/* 2 モデル比較（カード型）。パネルはチャートカードの高さに制約されているため、
+   比較カードも min-height: 0 で縮み、内部スクロールする（テーブルとスペースを分け合う） */
+.detail-compare { overflow: auto; min-height: 0; flex: 0 1 auto; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
 .compare-head { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
 .compare-empty { color: var(--muted); font-weight: 400; }
 .compare-note { color: var(--muted); font-size: 10px; margin-top: 6px; line-height: 1.5; }
@@ -301,8 +306,8 @@ td.num { font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) {
   .kpis { grid-template-columns: 1fr 1fr; }
   .grid { grid-template-columns: 1fr; }
-  /* 詳細パネルは縦積みにし、パネル幅の制約を外して横スクロールを防ぐ */
+  /* 詳細パネルは縦積みにし、パネル幅・高さの制約を外して横スクロールを防ぐ */
   .stacked-area { flex-direction: column; }
   .stacked-area.has-detail .stacked-chart-box { flex-basis: auto; }
-  .detail-panel { min-width: 0; max-width: none; }
+  .detail-panel { min-width: 0; max-width: none; max-height: none; }
 }
