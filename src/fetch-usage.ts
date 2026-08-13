@@ -494,11 +494,17 @@ function isPrivateDirMode(mode: number): boolean {
 // キャッシュを読み書きする前にディレクトリの安全性を検証する。他人が書き込み可能な
 // ディレクトリでは、キャッシュの改ざん・偽造（表示データのスプーフィング）ができるため
 // 所有権と 0700 を確認できなければ fail-closed（キャッシュなし扱い）にする
-export function assertSafeCacheDir(cacheDir: string): void {
+export function assertSafeCacheDir(cacheDir: string, platform: string = process.platform): void {
   const dirStat = statSync(cacheDir);
   if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) {
     throw new Error(`cache directory is not owned by the current user: ${cacheDir}`);
   }
+  // Windows の statSync().mode は POSIX の permission bits を持たない（読み取り専用属性の
+  // 反映でしかなく、chmod でも 0700 にならない）。そのまま検証すると常に失敗し、
+  // キャッシュの読み書きが恒久的に無効化されて起動ごとに WARN が出る。
+  // Windows ではユーザープロファイル配下の NTFS ACL による保護に委ねる
+  // （他ユーザーからの改ざんを能動的に検証はしていない。残余リスクとして AGENTS.md に記載）
+  if (platform === "win32") { return; }
   if (!isPrivateDirMode(dirStat.mode)) {
     throw new Error(`cache directory is not private (mode ${(dirStat.mode & 0o777).toString(8)}, expected 0700): ${cacheDir}`);
   }

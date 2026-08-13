@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, parseHostname, type AppWithUsage } from "./server";
+import { bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, parseHostname, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -541,6 +541,20 @@ describe("server isWithinBases", () => {
     expect(isWithinBases("/root/src/server.ts", ["/root/dist", "/root/public"])).toBe(false);
     expect(isWithinBases("/root/dist-other/x", ["/root/dist"])).toBe(false);
   });
+
+  test("Windows のパス区切り（\\）でも配下判定が機能する", () => {
+    // "/" 決め打ちで比較すると Windows では常に false になり、静的ファイルが
+    // すべて 404 になってダッシュボードが表示できなくなる
+    const base = "C:\\Users\\u\\node_modules\\ccusage-ledger";
+    expect(isWithinBases(`${base}\\dist\\bundle.js`, [`${base}\\dist`], "\\")).toBe(true);
+    expect(isWithinBases(`${base}\\index.html`, [base], "\\")).toBe(true);
+    expect(isWithinBases(base, [base], "\\")).toBe(true);
+  });
+
+  test("Windows でも前方一致の取り違えを起こさない", () => {
+    expect(isWithinBases("C:\\root\\dist-other\\x", ["C:\\root\\dist"], "\\")).toBe(false);
+    expect(isWithinBases("C:\\root\\src\\server.ts", ["C:\\root\\dist"], "\\")).toBe(false);
+  });
 });
 
 describe("server parseUrl", () => {
@@ -703,5 +717,24 @@ describe("server parseHostname", () => {
 
   test("空文字の HOST は拒否する（未設定はデフォルトで解決される）", () => {
     expect(() => parseHostname("")).toThrow(/Invalid HOST/);
+  });
+});
+
+describe("server bindError", () => {
+  test("EADDRINUSE にはポート変更の手段を添える", () => {
+    // 実際に踏んだ落とし穴: Windows では予約済みポート範囲や WSL の localhost forwarding でも
+    // EADDRINUSE になり、プロセスを探しても見つからない
+    const error = Object.assign(new Error("listen EADDRINUSE: address already in use 127.0.0.1:3000"), {
+      code: "EADDRINUSE",
+    });
+    const message = bindError(error, 3000).message;
+    expect(message).toContain("port 3000 is already in use");
+    expect(message).toContain("PORT");
+    expect(message).toContain("excludedportrange");
+  });
+
+  test("EADDRINUSE 以外のエラーはそのまま通す（原因を書き換えない）", () => {
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    expect(bindError(error, 3000)).toBe(error);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { browserUrl, openBrowser, shouldAutoOpen, type OpenEnv } from "./open-browser";
+import { browserCommand, browserUrl, openBrowser, shouldAutoOpen, type OpenEnv } from "./open-browser";
 
 const LOCAL: OpenEnv = { isTTY: true, platform: "linux", DISPLAY: ":0" };
 
@@ -32,8 +32,28 @@ describe("shouldAutoOpen", () => {
     expect(shouldAutoOpen({ isTTY: true, platform: "darwin" })).toBe(true);
   });
 
+  test("Windows では自動オープンする（cmd の start で開く）", () => {
+    expect(shouldAutoOpen({ isTTY: true, platform: "win32" })).toBe(true);
+  });
+
   test("不明なプラットフォームは自動オープンしない", () => {
-    expect(shouldAutoOpen({ isTTY: true, platform: "win32" })).toBe(false);
+    expect(shouldAutoOpen({ isTTY: true, platform: "aix" })).toBe(false);
+  });
+});
+
+describe("browserCommand", () => {
+  test("プラットフォーム別の起動コマンドを返す", () => {
+    expect(browserCommand("darwin", "http://127.0.0.1:3000")).toEqual(["open", "http://127.0.0.1:3000"]);
+    expect(browserCommand("linux", "http://127.0.0.1:3000")).toEqual(["xdg-open", "http://127.0.0.1:3000"]);
+    // Windows: start の第 2 引数の "" はウィンドウタイトル（省略すると URL がタイトル扱いになる）
+    expect(browserCommand("win32", "http://127.0.0.1:3000")).toEqual(["cmd", "/c", "start", "", "http://127.0.0.1:3000"]);
+  });
+
+  test("引数は配列で渡す（シェル経由の文字列結合をしない）", () => {
+    // spawnSync に配列で渡すため、URL がシェルのメタ文字で分割されることがない
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      expect(browserCommand(platform, "http://127.0.0.1:3000").every((part) => typeof part === "string")).toBe(true);
+    }
   });
 });
 

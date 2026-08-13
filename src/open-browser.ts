@@ -13,7 +13,7 @@ export interface OpenEnv {
 export function shouldAutoOpen(env: OpenEnv): boolean {
   if (env.SSH_CONNECTION || env.SSH_TTY) { return false; }
   if (!env.isTTY) { return false; }
-  if (env.platform === "darwin") { return true; }
+  if (env.platform === "darwin" || env.platform === "win32") { return true; }
   if (env.platform === "linux") {
     return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
   }
@@ -43,12 +43,22 @@ function defaultOpen(command: string[]): { exitCode: number } {
   return { exitCode: result.status ?? 1 };
 }
 
+// プラットフォーム別のブラウザ起動コマンド。Windows は cmd の start を使う
+// （第 2 引数の "" はウィンドウタイトル。省略すると URL がタイトルとして解釈される）。
+// browserUrl が生成するのは http://<host>:<port> のみで & や ^ を含まないため、
+// cmd のメタ文字によるコマンド分割は起こらない
+export function browserCommand(platform: string, url: string): string[] {
+  if (platform === "darwin") { return ["open", url]; }
+  if (platform === "win32") { return ["cmd", "/c", "start", "", url]; }
+  return ["xdg-open", url];
+}
+
 export function openBrowser(url: string, options: OpenOptions = {}): void {
   const platform = options.platform ?? process.platform;
   const spawn = options.spawn ?? defaultOpen;
-  const command = platform === "darwin" ? "open" : "xdg-open";
-  const result = spawn([command, url]);
+  const command = browserCommand(platform, url);
+  const result = spawn(command);
   if (result.exitCode !== 0) {
-    console.warn(`WARN: could not open the browser automatically (${command}). Open it manually: ${url}`);
+    console.warn(`WARN: could not open the browser automatically (${command[0]}). Open it manually: ${url}`);
   }
 }

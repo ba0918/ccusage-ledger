@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn as spawnProcess } from "node:child_process";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, readCache, isAllowUnverifiedNative, nativeIntegrityPolicy, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, readCache, assertSafeCacheDir, isAllowUnverifiedNative, nativeIntegrityPolicy, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -508,6 +508,20 @@ describe("fetchUsage", () => {
     const result = await fetchUsage({ cachePath, spawn });
 
     expect(result).toBeNull();
+  });
+
+  test("Windows では 0700 検証を行わない（POSIX 権限が無くキャッシュが恒久無効になるため）", () => {
+    // Windows の statSync().mode は読み取り専用属性の反映でしかなく、chmod でも 0700 に
+    // ならない。そのまま検証すると常に失敗し、キャッシュの読み書きが永久に無効化されて
+    // 起動ごとに WARN が出る（NTFS の ACL による保護に委ねる）
+    const dir = tempDir();
+    const cacheDir = join(dir, "data");
+    mkdirSync(cacheDir, { recursive: true });
+    chmodSync(cacheDir, 0o755);
+
+    expect(() => assertSafeCacheDir(cacheDir, "win32")).not.toThrow();
+    // POSIX プラットフォームでは従来どおり fail-closed のまま
+    expect(() => assertSafeCacheDir(cacheDir, "linux")).toThrow(/not private/);
   });
 
   test("spawn が例外を投げてもキャッシュがあればフォールバックする", async () => {
