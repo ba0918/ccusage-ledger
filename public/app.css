@@ -301,4 +301,8 @@ td.num { font-variant-numeric: tabular-nums; }
 @media (max-width: 860px) {
   .kpis { grid-template-columns: 1fr 1fr; }
   .grid { grid-template-columns: 1fr; }
+  /* 詳細パネルは縦積みにし、パネル幅の制約を外して横スクロールを防ぐ */
+  .stacked-area { flex-direction: column; }
+  .stacked-area.has-detail .stacked-chart-box { flex-basis: auto; }
+  .detail-panel { min-width: 0; max-width: none; }
 }

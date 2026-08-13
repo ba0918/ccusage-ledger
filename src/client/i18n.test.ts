@@ -83,6 +83,25 @@ describe("getMessage", () => {
     expect(getMessage("ja", "cacheCreation")).toBe("キャッシュ作成");
   });
 
+  test("詳細パネル・比較・ツールチップの文言を英語と日本語で返す", () => {
+    expect(getMessage("en", "detailPanelTitle")).toBe("Model details");
+    expect(getMessage("ja", "detailPanelTitle")).toBe("モデル詳細");
+    expect(getMessage("en", "closeDetail")).toBe("Close");
+    expect(getMessage("ja", "closeDetail")).toBe("閉じる");
+    expect(getMessage("en", "refBadge")).toBe("ref");
+    expect(getMessage("ja", "refBadge")).toBe("参考値");
+    expect(getMessage("en", "refBadgeTitle")).toBe("Total tokens < {threshold}");
+    expect(getMessage("ja", "refBadgeTitle")).toBe("総トークン {threshold} 未満");
+    expect(getMessage("en", "tokenMix")).toBe("Token mix");
+    expect(getMessage("ja", "tokenMix")).toBe("トークン構成");
+    expect(getMessage("en", "compareSelectTwo")).toBe("Click 2 models to compare them");
+    expect(getMessage("ja", "compareSelectTwo")).toBe("モデルを 2 つ選ぶと比較できます");
+    expect(getMessage("en", "compareSelectOneMore")).toBe("Select one more model to compare");
+    expect(getMessage("ja", "compareSelectOneMore")).toBe("比較するモデルをもう 1 つ選択してください");
+    expect(getMessage("en", "compareSummary")).toBe("unit price {unitPrice} · cost {cost} · tokens {tokens}");
+    expect(getMessage("ja", "compareSummary")).toBe("単価 {unitPrice} · コスト {cost} · トークン {tokens}");
+  });
+
   test("全キーが両言語で undefined にならない", () => {
     for (const key of MESSAGE_KEYS) {
       expect(getMessage("en", key)).toBeTypeOf("string");
@@ -249,6 +268,18 @@ describe("index.html の data-i18n キー", () => {
     expect(html).toContain('<button type="button" class="active" data-metric="cost" aria-pressed="true" data-i18n="cost">Cost</button>');
     expect(html).toContain('<button type="button" data-metric="tokens" aria-pressed="false" data-i18n="tokens">Tokens</button>');
     expect(html).toContain('id="chart-cost-stacked" aria-label="Cost stacked (by model)"');
+  });
+
+  test("積み上げグラフのカードに詳細パネルのコンテナを置く", () => {
+    const html = readFileSync(join(import.meta.dir, "..", "..", "index.html"), "utf-8");
+
+    expect(html).toContain('class="stacked-area" id="stacked-area"');
+    expect(html).toContain('class="detail-panel" id="detail-panel"');
+    expect(html).toContain('id="detail-period"');
+    expect(html).toContain('id="detail-close"');
+    expect(html).toContain('id="detail-table-body"');
+    expect(html).toContain('id="detail-compare"');
+    expect(html).toContain('data-i18n="tokenMix"');
   });
 });
 
