@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, type AppWithUsage } from "./server";
+import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, portSourceLabel, resolvePort, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -773,5 +773,35 @@ describe("server parseArgs / parsePort", () => {
     expect(() => parsePort("abc", "--port")).toThrow(/Invalid --port=abc/);
     expect(() => parsePort("0", "--port")).toThrow(/Invalid --port=0/);
     expect(() => parsePort("70000")).toThrow(/Invalid PORT=70000/);
+  });
+});
+
+describe("server resolvePort / portSourceLabel", () => {
+  test("優先順位どおりにポートと決定元を返す", () => {
+    expect(resolvePort("4000", "3000")).toEqual({ port: 4000, source: "--port" });
+    expect(resolvePort("4000", undefined)).toEqual({ port: 4000, source: "--port" });
+    expect(resolvePort(undefined, "3000")).toEqual({ port: 3000, source: "PORT" });
+    expect(resolvePort(undefined, undefined)).toEqual({ port: DEFAULT_PORT, source: "default" });
+  });
+
+  test("空文字の PORT は未設定として扱い、既定ポートで起動する", () => {
+    // 判定だけ「既定値」にして値の計算を分けると parsePort("") が Invalid PORT= で落ちる。
+    // 決定元と値を同じ関数で返すことで、両者が食い違わないようにしている
+    expect(resolvePort(undefined, "")).toEqual({ port: DEFAULT_PORT, source: "default" });
+  });
+
+  test("不正な値は指定元を明示して拒否する", () => {
+    expect(() => resolvePort("abc", undefined)).toThrow(/Invalid --port=abc/);
+    expect(() => resolvePort(undefined, "70000")).toThrow(/Invalid PORT=70000/);
+  });
+
+  test("既定値のときは起動ログに何も足さない", () => {
+    expect(portSourceLabel("default")).toBe("");
+  });
+
+  test("既定以外は決定元を表示する（既定を変えたのに違うポートで起動する理由が分かる）", () => {
+    // 環境変数の残存に気づけず「既定ポートが効いていない」と誤解する事例が実際に起きた
+    expect(portSourceLabel("PORT")).toContain("PORT");
+    expect(portSourceLabel("--port")).toContain("--port");
   });
 });
