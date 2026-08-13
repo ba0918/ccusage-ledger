@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, type AppWithUsage } from "./server";
+import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, portSourceLabel, resolvePortSource, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -773,5 +773,28 @@ describe("server parseArgs / parsePort", () => {
     expect(() => parsePort("abc", "--port")).toThrow(/Invalid --port=abc/);
     expect(() => parsePort("0", "--port")).toThrow(/Invalid --port=0/);
     expect(() => parsePort("70000")).toThrow(/Invalid PORT=70000/);
+  });
+});
+
+describe("server resolvePortSource / portSourceLabel", () => {
+  test("優先順位どおりに決定元を判定する", () => {
+    expect(resolvePortSource("4000", "3000")).toBe("--port");
+    expect(resolvePortSource("4000", undefined)).toBe("--port");
+    expect(resolvePortSource(undefined, "3000")).toBe("PORT");
+    expect(resolvePortSource(undefined, undefined)).toBe("default");
+  });
+
+  test("空文字の PORT は未設定として扱う（既定値が使われる）", () => {
+    expect(resolvePortSource(undefined, "")).toBe("default");
+  });
+
+  test("既定値のときは起動ログに何も足さない", () => {
+    expect(portSourceLabel("default")).toBe("");
+  });
+
+  test("既定以外は決定元を表示する（既定を変えたのに違うポートで起動する理由が分かる）", () => {
+    // 環境変数の残存に気づけず「既定ポートが効いていない」と誤解する事例が実際に起きた
+    expect(portSourceLabel("PORT")).toContain("PORT");
+    expect(portSourceLabel("--port")).toContain("--port");
   });
 });
