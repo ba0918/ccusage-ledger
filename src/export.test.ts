@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, chmodSync, writeFileSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { UsageData } from "./types";
-import { buildExportedHtml, exportOutputPath, writeExportedHtml, isForeignGitWorktree } from "./export";
+import { buildExportedHtml, exportOutputPath, writeExportedHtml, isForeignGitWorktree, exportForeignWorktreePolicy } from "./export";
 
 const HTML = [
   "<!doctype html><html><head><title>ccusage</title>",
@@ -117,6 +117,48 @@ describe("isForeignGitWorktree", () => {
       mkdirSync(join(pkgRoot, ".git"), { recursive: true });
       // 出力先は foreignRepo 内、パッケージルートは ccusage-ledger。git ルートが異なるため警告対象
       expect(isForeignGitWorktree(foreignRepo, pkgRoot)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("exportForeignWorktreePolicy", () => {
+  test("外部の git リポジトリ内への出力は env 無しでは refuse（誤コミット防止）", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const foreignRepo = join(dir, "other-project");
+      const pkgRoot = join(dir, "ccusage-ledger");
+      mkdirSync(join(foreignRepo, ".git"), { recursive: true });
+      mkdirSync(join(pkgRoot, ".git"), { recursive: true });
+      // 警告だけで続行すると誤コミットが起き得るため、デフォルトでは書き込みを拒否する
+      expect(exportForeignWorktreePolicy({}, foreignRepo, pkgRoot)).toBe("refuse");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("外部リポジトリでも明示オプトイン（CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1）なら ok", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      const foreignRepo = join(dir, "other-project");
+      const pkgRoot = join(dir, "ccusage-ledger");
+      mkdirSync(join(foreignRepo, ".git"), { recursive: true });
+      mkdirSync(join(pkgRoot, ".git"), { recursive: true });
+      for (const value of ["1", "true"]) {
+        expect(exportForeignWorktreePolicy({ CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN: value }, foreignRepo, pkgRoot)).toBe("ok");
+      }
+      expect(exportForeignWorktreePolicy({ CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN: "0" }, foreignRepo, pkgRoot)).toBe("refuse");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("外部リポジトリでない場合は env に関係なく ok", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccusage-export-"));
+    try {
+      mkdirSync(join(dir, ".git"), { recursive: true });
+      expect(exportForeignWorktreePolicy({}, dir, dir)).toBe("ok");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -342,6 +384,23 @@ describe("buildExportedHtml", () => {
     const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
     expect(embeddedScriptContent(out)).not.toContain("\u2028");
     expect(embeddedScriptContent(out)).not.toContain("\u2029");
+    expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
+  });
+
+  test("データに <!--（HTML コメント開始）が含まれてもエクスポート全体にリテラルを残さない", () => {
+    // < を \u003c に変換するため <!-- も \u003c!-- になる。script 内のリテラルを
+    // コメントとして終端させられないことを検証する（attack-review F17）
+    const data: UsageData = {
+      ...DATA,
+      daily: [
+        {
+          ...DATA.daily![0]!,
+          modelsUsed: ["claude<!--"],
+        },
+      ],
+    };
+    const out = buildExportedHtml(HTML, "chart", "bundle", "css", data);
+    expect(out).not.toContain("<!--");
     expect(JSON.parse(extractEmbeddedJson(out))).toEqual(data);
   });
 

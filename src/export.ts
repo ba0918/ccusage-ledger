@@ -82,6 +82,20 @@ export function isForeignGitWorktree(outputDir: string, packageDir: string): boo
   return outputRoot !== packageRoot;
 }
 
+// 外部の git リポジトリ内への書き込み方針。警告だけで続行すると誤コミットが起き得るため、
+// デフォルトでは書き込みを拒否し、CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1（または true）でのみ
+// 明示オプトインする（attack-review F12）
+export function exportForeignWorktreePolicy(
+  env: Record<string, string | undefined>,
+  outputDir: string,
+  packageDir: string,
+): "ok" | "refuse" {
+  if (!isForeignGitWorktree(outputDir, packageDir)) { return "ok"; }
+  const allow = env.CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN;
+  if (allow === "1" || allow === "true") { return "ok"; }
+  return "refuse";
+}
+
 export interface ExportFileOperations {
   rename?: (oldPath: string, newPath: string) => void;
   write?: (fd: number, data: Uint8Array, offset: number, length: number) => number;
@@ -179,18 +193,21 @@ async function main(): Promise<void> {
 
   const exported = buildExportedHtml(html, chartJs, bundle, css, usage.data);
   const outputPath = exportOutputPath(process.cwd());
+
+  // 他プロジェクトの git リポジトリ内への書き込みは、個人データ入り HTML の誤コミットを防ぐため
+  // デフォルトで拒否する（CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1 で明示オプトイン。attack-review F12）
+  if (exportForeignWorktreePolicy(process.env, dirname(outputPath), PACKAGE_DIR) === "refuse") {
+    console.error(
+      `ERROR: refusing to export into a git repository that is not ccusage-ledger (${findGitRoot(dirname(outputPath))}). ` +
+        "This file contains your ccusage usage data. Set CCUSAGE_LEDGER_EXPORT_ALLOW_FOREIGN=1 to export anyway.",
+    );
+    process.exit(1);
+  }
+
   writeExportedHtml(outputPath, exported);
 
   console.log(`exported: ${outputPath}`);
   console.warn("Note: this HTML contains your ccusage usage data. Only export it when sharing with someone you trust.");
-  // 他プロジェクトの git リポジトリ内に書き込む場合は、個人データ入り HTML が誤ってコミット
-  // されないよう明示的に警告する（F8。誤共有・誤公開の防止）
-  if (isForeignGitWorktree(dirname(outputPath), PACKAGE_DIR)) {
-    console.warn(
-      `WARN: the output is written inside a git repository that is not ccusage-ledger (${findGitRoot(dirname(outputPath))}). ` +
-        "This file contains your ccusage usage data. Make sure it is not committed, shared, or uploaded.",
-    );
-  }
 }
 
 if (import.meta.main) {

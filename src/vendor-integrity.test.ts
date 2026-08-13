@@ -27,6 +27,17 @@ describe("vendored assets integrity", () => {
     expect(hash).toBe(CHART_SHA256);
   });
 
+  test("vendored Chart.js に HTML 注入シンクが含まれない（canvas 描画の不変条件）", () => {
+    // Chart.js は canvas 描画のため tooltip / label を HTML として解釈しない。この性質が
+    // stored XSS の防衛線の一つ（モデル名を tooltip に渡しても HTML 実行にならない）なので、
+    // 依存を差し替えた場合に sink を持つビルドへ静かに後退しないことを機械的に検証する
+    // （attack-review F9）。setTimeout はアニメーションに使われるため対象外
+    const source = readFileSync(join(import.meta.dir, "..", "public", "vendor", "chart.umd.min.js"), "utf-8");
+    for (const sink of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"]) {
+      expect(source, `chart.umd.min.js に ${sink} を含めない（HTML 注入シンクの禁止）`).not.toContain(sink);
+    }
+  });
+
   test("ccusage ラッパー（プラットフォーム非依存）の sha256 が固定値と一致する", () => {
     // fetch-usage の computeWrapperHash は固定値 CCUSAGE_WRAPPER_SHA256 と起動時に照合する。
     // ラッパー（node_modules/ccusage）は cli.js + config-schema.json のみでプラットフォームに

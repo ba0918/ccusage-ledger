@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, closeSync, chmodSync, readdirSync, statSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, closeSync, chmodSync, readdirSync, statSync, lstatSync, fstatSync, mkdtempSync, rmSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -129,7 +129,6 @@ export const CCUSAGE_WRAPPER_SHA256 = "986573dbd113bcf093a5dd9a5253f26ebdd97500d
 // native バイナリはプラットフォームごとに内容が異なるため、単一固定値では照合できない。
 // 各プラットフォームの開発環境で再計算してテーブルに登録する。登録済みプラットフォームでは
 // 起動時に native 改ざんを検出し、未登録プラットフォームでは検証不可として WARN を出す
-// （検証不可のまま失敗し続けるとダッシュボードが常に空になり、改ざん検出の役割も失われる F4）
 export const CCUSAGE_NATIVE_SHA256_BY_PLATFORM: Record<string, string> = {
   "linux-x64": "2dfeb9fef4617794b35ef14e934127dd3f4a29a2afc922868c0f5595e79b6188",
 };
@@ -513,10 +512,24 @@ export function readCache(cachePath: string): FetchUsageResult | null {
     // 読み込み側も書込み側と同じ安全条件（所有権・0700・サイズ）で検証してから読む。
     // 他人に書かれた/偽造されたキャッシュを配信しない（fail-closed）
     assertSafeCacheDir(dirname(cachePath));
-    if (statSync(cachePath).size > MAX_CACHE_BYTES) {
-      throw new Error("usage cache is too large");
+    // lstat で symlink 自体を拒否する（statSync / readFileSync はリンク先を追うため、
+    // 検証だけでは同一ユーザーが仕掛けた symlink 経由の偽造 JSON を配信してしまう。
+    // writeExportedHtml と同じ安全条件。attack-review F22）
+    if (lstatSync(cachePath).isSymbolicLink()) {
+      throw new Error("usage cache is a symbolic link");
     }
-    const parsed: unknown = JSON.parse(readFileSync(cachePath, "utf-8"));
+    // サイズ検証と読取を同一 fd で行う（statSync → readFileSync の間に対象が
+    // 差し替わる TOCTOU を避け、「検証した対象」と「読む対象」を一致させる。attack-review F22）
+    const fd = openSync(cachePath, "r");
+    let parsed: unknown;
+    try {
+      if (fstatSync(fd).size > MAX_CACHE_BYTES) {
+        throw new Error("usage cache is too large");
+      }
+      parsed = JSON.parse(readFileSync(fd, "utf-8"));
+    } finally {
+      closeSync(fd);
+    }
     if (!isUsageData(parsed)) { throw new Error("invalid usage data shape"); }
     // キャッシュは投影済みで保存されているが、旧形式のキャッシュへの安全策として再投影する（冪等）
     return { data: projectUsageData(parsed), source: "cache" };

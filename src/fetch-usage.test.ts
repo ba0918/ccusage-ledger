@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn as spawnProcess } from "node:child_process";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, readCache, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -241,6 +241,28 @@ describe("userHomeDir", () => {
   test("HOME があればそれを使い、無ければ homedir() にフォールバックする", () => {
     expect(userHomeDir({ HOME: "/home/u" })).toBe("/home/u");
     expect(typeof userHomeDir({})).toBe("string");
+  });
+});
+
+describe("readCache", () => {
+  test("所有権・0700・スキーマ検証を通過したキャッシュは読み込む", () => {
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    writeCacheFixture(cachePath);
+    expect(readCache(cachePath)).not.toBeNull();
+  });
+
+  test("キャッシュファイルがシンボリックリンクの場合は読み込まない（lstat 検証）", () => {
+    // statSync / readFileSync は symlink を追うため、サイズ検証と読取だけでは
+    // リンク先の偽造 JSON を配信してしまう。lstat で symlink 自体を拒否する
+    // （writeExportedHtml と同じ安全条件。attack-review F22）
+    const dir = tempDir();
+    const cachePath = join(dir, "data", "usage.json");
+    mkdirSync(dirname(cachePath), { recursive: true, mode: 0o700 });
+    const target = join(dir, "forged.json");
+    writeFileSync(target, JSON.stringify(FIXTURE));
+    symlinkSync(target, cachePath);
+    expect(readCache(cachePath)).toBeNull();
   });
 });
 

@@ -67,6 +67,25 @@ describe("isUsageData", () => {
     expect(isUsageData({ daily: [{ ...VALID_ENTRY, modelBreakdowns: [{ modelName: "x", cost: "y" }] }], monthly: [] })).toBe(false);
   });
 
+  test("制御文字を含む文字列フィールドは false（描画・埋め込みの defense-in-depth）", () => {
+    // HTML エスケープでは制御文字を無害化しきれない文脈（script 埋め込み等）への将来の
+    // 流入に備えて、データ層で C0 制御文字（タブ・LF・CR 以外）と DEL を拒否する。
+    // モデル名・エージェント名に制御文字が現れることは正当な ccusage データでも無い
+    // （attack-review F9）
+    const withName = (name: string) => ({
+      daily: [{ ...VALID_ENTRY, modelsUsed: [name] }],
+      monthly: [],
+    });
+    expect(isUsageData(withName("claude\u0000x"))).toBe(false);
+    expect(isUsageData(withName("claude\u001fx"))).toBe(false);
+    expect(isUsageData(withName("claude\u007fx"))).toBe(false);
+    // タブ・改行・CR は拒否しない（HTML テキスト文脈では無害。正当データに含まれ得る）
+    expect(isUsageData(withName("claude\t-4\n-5\r"))).toBe(true);
+    const withAgent = (agent: string) => ({ daily: [{ ...VALID_ENTRY, agents: [{ agent, totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }] }], monthly: [] });
+    expect(isUsageData(withAgent("codex\u000bx"))).toBe(false);
+    expect(isUsageData({ daily: [{ ...VALID_ENTRY, device: "mac\u0000" }], monthly: [] })).toBe(false);
+  });
+
   test("エージェント別内訳の文字列・数値フィールドも検証する", () => {
     const withAgents = (agents: unknown) => ({ daily: [{ ...VALID_ENTRY, agents }], monthly: [] });
     expect(isUsageData(withAgents([{ agent: "claude-code", totalCost: 1, totalTokens: 1, inputTokens: 1, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, modelsUsed: [], modelBreakdowns: [] }]))).toBe(true);
