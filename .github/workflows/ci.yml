@@ -88,4 +88,28 @@ jobs:
           [ "$status" = "404" ] || { echo "ERROR: トラバーサルが 404 になりません ($status)" >&2; exit 1; }
 
           kill $SERVER_PID
+
+          # --host での LAN 公開が、配布物・Node ランタイムでもガードされることを確認する。
+          # 非 TTY では CCUSAGE_LEDGER_ALLOW_LAN が無ければ起動を拒否する（fail-closed）
+          set +e
+          lan_out=$(node ./node_modules/.bin/ccusage-ledger --host 0.0.0.0 < /dev/null 2>&1)
+          lan_code=$?
+          set -e
+          echo "$lan_out"
+          [ "$lan_code" = "1" ] || { echo "ERROR: --host 0.0.0.0 が非 TTY で拒否されません ($lan_code)" >&2; exit 1; }
+          echo "$lan_out" | grep -q -- "--host=0.0.0.0" || { echo "ERROR: 拒否メッセージに指定元が出ていません" >&2; exit 1; }
+
+          # --port と PORT の両方が効き、起動ログに決定元が出ることを確認する
+          PORT=3939 node ./node_modules/.bin/ccusage-ledger --host 127.0.0.1 > host.log 2>&1 &
+          HOST_PID=$!
+          for i in $(seq 1 30); do
+            if grep -q "ccusage ledger:" host.log 2>/dev/null; then break; fi
+            sleep 1
+          done
+          cat host.log
+          grep -q "http://127.0.0.1:3939" host.log || { echo "ERROR: --host / PORT が反映されていません" >&2; exit 1; }
+          grep -q -- "(host from --host)" host.log || { echo "ERROR: host の決定元が出ていません" >&2; exit 1; }
+          grep -q "(port from PORT)" host.log || { echo "ERROR: port の決定元が出ていません" >&2; exit 1; }
+          kill $HOST_PID
+
           echo "node smoke: OK"
