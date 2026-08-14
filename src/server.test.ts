@@ -331,6 +331,19 @@ describe("server セキュリティ", () => {
     expect(await res.text()).toContain("bundle");
   });
 
+  test("末尾がバックスラッシュのファイルへの symlink は配信しない（POSIX の区切り誤判定）", async () => {
+    // POSIX では "\\" は正当なファイル名文字。配下判定が両方の区切りを剥がすと
+    // rootDir/"dist\\"（dist ディレクトリの外にある兄弟ファイル）が rootDir/dist と
+    // 一致してしまい、allowlist されたパスで外のファイルを配信できてしまう
+    const sibling = join(rootDir, "dist\\");
+    writeFileSync(sibling, "TOP-SECRET-SIBLING");
+    rmSync(join(rootDir, "dist", "bundle.js"));
+    symlinkSync(sibling, join(rootDir, "dist", "bundle.js"));
+
+    const res = await get("/dist/bundle.js");
+    expect(res.status).toBe(404);
+  });
+
   test("symlink が許可リスト外（ルート直下の秘密ファイル）を指す場合は 404", async () => {
     rmSync(join(rootDir, "dist", "bundle.js"));
     symlinkSync(join(rootDir, "secret.txt"), join(rootDir, "dist", "bundle.js"));
@@ -763,7 +776,8 @@ describe("server parseArgs / parsePort", () => {
   });
 
   test("既定ポートは競合しやすい 3000 ではない", () => {
-    expect(parsePort(undefined)).toBe(DEFAULT_PORT);
+    // 既定値の適用は resolvePort だけが行う（parsePort は検証のみ）
+    expect(resolvePort(undefined, undefined).port).toBe(DEFAULT_PORT);
     expect(DEFAULT_PORT).not.toBe(3000);
     // Windows の既定動的ポート範囲（49152-65535）に入らない
     expect(DEFAULT_PORT).toBeLessThan(49152);
@@ -803,5 +817,30 @@ describe("server resolvePort / portSourceLabel", () => {
     // 環境変数の残存に気づけず「既定ポートが効いていない」と誤解する事例が実際に起きた
     expect(portSourceLabel("PORT")).toContain("PORT");
     expect(portSourceLabel("--port")).toContain("--port");
+  });
+});
+
+describe("server parseArgs の = 形式", () => {
+  test("値を取らないフラグに = で値を付けたら拒否する", () => {
+    // 黙って無視すると「指定したのに効かない」ことに気づけない
+    expect(() => parseArgs(["--help=json"])).toThrow(/does not take a value/);
+    expect(() => parseArgs(["--help="])).toThrow(/does not take a value/);
+  });
+
+  test("--port=4000 と --port 4000 が同じ結果になる", () => {
+    expect(parseArgs(["--port=4000"])).toEqual(parseArgs(["--port", "4000"]));
+  });
+
+  test("= 形式では次のトークンを消費しない", () => {
+    // --port=4000 --help のように後続がある場合、値として飲み込まれてはいけない
+    expect(parseArgs(["--port=4000", "--help"])).toEqual({ port: "4000", help: true });
+  });
+
+  test("= 形式で値が空なら拒否する", () => {
+    expect(() => parseArgs(["--port="])).toThrow(/requires a value/);
+  });
+
+  test("未知のオプションは = 形式でもオプション名だけを報告する", () => {
+    expect(() => parseArgs(["--prot=4000"])).toThrow(/Unknown option: --prot/);
   });
 });

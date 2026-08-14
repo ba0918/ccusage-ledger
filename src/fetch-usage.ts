@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { messageOf } from "./errors";
-import { PACKAGE_DIR, defaultCachePath } from "./paths";
+import { PACKAGE_DIR, defaultCachePath, isUnderBase } from "./paths";
 import type { UsageData } from "./types";
 import { SECTIONS, isUsageData, projectUsageData } from "./usage-data";
 
@@ -494,22 +494,13 @@ function isPrivateDirMode(mode: number): boolean {
 // キャッシュを読み書きする前にディレクトリの安全性を検証する。他人が書き込み可能な
 // ディレクトリでは、キャッシュの改ざん・偽造（表示データのスプーフィング）ができるため
 // 所有権と 0700 を確認できなければ fail-closed（キャッシュなし扱い）にする
-// Windows のユーザープロファイル配下かどうか。Windows は大文字小文字を区別しないため
-// 小文字化して比較し、末尾の区切りを落としてから前方一致を見る（Users と Users2 のような
-// 取り違えを防ぐため、区切りを付けて比較する）
-export function isUnderUserProfile(cacheDir: string, home: string, separator: string): boolean {
-  const normalize = (path: string): string => path.toLowerCase().replace(/[\\/]+$/, "");
-  const dir = normalize(cacheDir);
-  const base = normalize(home);
-  return dir === base || dir.startsWith(`${base}${separator}`);
-}
-
 export function assertSafeCacheDir(
   cacheDir: string,
   platform: string = process.platform,
   home: string = homedir(),
-  // Windows のパス区切り。テストから POSIX の一時ディレクトリで win32 分岐を検証するために外出しする
-  separator: string = platform === "win32" ? "\\" : sep,
+  // Windows のパス区切り。この引数は win32 分岐でのみ読まれる
+  // （テストから POSIX の一時ディレクトリで win32 分岐を検証するために外出しする）
+  separator: string = "\\",
 ): void {
   const dirStat = statSync(cacheDir);
   if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) {
@@ -524,7 +515,8 @@ export function assertSafeCacheDir(
   // XDG_CACHE_HOME などで共有ディレクトリを指した場合は検証不能として fail-closed にする
   // （NTFS ACL 自体は検証していない。プロファイルの ACL が緩められている場合は守れない）
   if (platform === "win32") {
-    if (!isUnderUserProfile(cacheDir, home, separator)) {
+    // Windows は大文字小文字を区別しないため caseInsensitive で比較する
+    if (!isUnderBase(cacheDir, home, { separator, caseInsensitive: true })) {
       throw new Error(
         `cache directory is outside the user profile, and its permissions cannot be verified on Windows: ${cacheDir}`,
       );

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn as spawnProcess } from "node:child_process";
-import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, readCache, assertSafeCacheDir, isUnderUserProfile, isAllowUnverifiedNative, nativeIntegrityPolicy, type SpawnResult } from "./fetch-usage";
+import { fetchUsage, DEFAULT_COMMAND, spawnEnv, userHomeDir, ccusageCliPath, buildCcusageCommand, resolvePackageRoot, toPosixRelPath, waitForExit, collectProcessOutput, readCache, assertSafeCacheDir, isAllowUnverifiedNative, nativeIntegrityPolicy, type SpawnResult } from "./fetch-usage";
 import { projectUsageData } from "./usage-data";
 
 const FIXTURE = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8"));
@@ -48,19 +48,6 @@ describe("resolvePackageRoot", () => {
 
   test("解決できない場合はスコープを分割してネストパスを組み立てる", () => {
     expect(resolvePackageRoot("@scope/pkg", "/pkg")).toBe(join("/pkg", "node_modules", "@scope", "pkg"));
-  });
-});
-
-describe("isUnderUserProfile", () => {
-  test("プロファイル配下は true、外は false（Windows のパス区切り・大文字小文字非依存）", () => {
-    const home = "C:\\Users\\mizum";
-    expect(isUnderUserProfile(`${home}\\.cache\\ccusage-ledger`, home, "\\")).toBe(true);
-    expect(isUnderUserProfile(home, home, "\\")).toBe(true);
-    // Windows は大文字小文字を区別しない
-    expect(isUnderUserProfile("c:\\users\\mizum\\.cache", home, "\\")).toBe(true);
-    // 前方一致の取り違えを起こさない
-    expect(isUnderUserProfile("C:\\Users\\mizum2\\.cache", home, "\\")).toBe(false);
-    expect(isUnderUserProfile("C:\\Temp\\shared", home, "\\")).toBe(false);
   });
 });
 
@@ -535,7 +522,14 @@ describe("fetchUsage", () => {
     // 実プロファイル配下を模して home に親ディレクトリを渡す
     // 一時ディレクトリは POSIX パスのため、区切りを "/" として win32 分岐を検証する
     expect(() => assertSafeCacheDir(cacheDir, "win32", dir, "/")).not.toThrow();
-    // POSIX プラットフォームでは従来どおり fail-closed のまま
+  });
+
+  test("POSIX は 0700 でないキャッシュディレクトリを従来どおり拒否する", () => {
+    const dir = tempDir();
+    const cacheDir = join(dir, "data");
+    mkdirSync(cacheDir, { recursive: true });
+    chmodSync(cacheDir, 0o755);
+
     expect(() => assertSafeCacheDir(cacheDir, "linux", dir)).toThrow(/not private/);
   });
 
