@@ -24,7 +24,7 @@
     "access": "public"
   },
   "scripts": {
-    "dev": "bun run build && bun run src/server.ts",
+    "dev": "bun run build && bun run src/cli.ts",
     "build": "bun build src/client/main.ts --outfile dist/bundle.js && bun build src/cli.ts --target=node --outfile dist/ccusage-ledger.js",
     "export": "bun run build && bun run src/export.ts",
     "prepare": "bun run build",

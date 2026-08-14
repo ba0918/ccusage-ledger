@@ -42,14 +42,17 @@
 
 ## 起動・配布
 
-- リポジトリ内でのサーバ起動: `bun run dev`（フロントのビルド後に起動。`bun run src/server.ts` のみの起動でも可）
+- リポジトリ内でのサーバ起動: `bun run dev`（フロントのビルド後に起動。`bun run src/cli.ts` のみの起動でも可）
 - npm 配布版の起動: `npx ccusage-ledger` / `bunx ccusage-ledger`（bin は `dist/ccusage-ledger.js` のバンドルで Node / Bun のどちらでも動く。ローカル対話環境では起動時にブラウザを自動で開く）
-- サーバはデフォルトで `127.0.0.1:3737` に bind する。ポートは `--port`（最優先）/ `PORT` 環境変数で、bind アドレスは `HOST` 環境変数で変更可。既定値以外で決まった場合は起動ログに決定元（`(port from --port)` / `(port from PORT)`）を表示する（環境変数の残存で「既定ポートが効かない」と誤解する事例が実際に起きたため）（例: `HOST=0.0.0.0` で LAN 公開）。既定を 3000 にしないのは、React / Next / Rails 等の開発サーバーと競合して初回起動が EADDRINUSE になりやすいため（Windows の動的ポート範囲 49152-65535 も避ける）。`HOST` は IP リテラルまたはホスト名のみ受け付ける（`parseHostname` が検証。シェルメタ文字等は起動時に拒否）
+- サーバはデフォルトで `127.0.0.1:3737` に bind する。既定を 3000 にしないのは、React / Next / Rails 等の開発サーバーと競合して初回起動が EADDRINUSE になりやすいため（Windows の動的ポート範囲 49152-65535 も避ける）
+- ポートは `--port` / `-p` / `PORT`、bind アドレスは `--host` / `HOST` で変更できる（`--name=value` 形式も可）。優先順位はどちらも CLI オプション > 環境変数 > 既定値で、解決規則は `resolveSetting` に共通化する（host / port で別々に書いた結果、`HOST=""` は起動不能・`PORT=""` は既定値、という非対称が実際に生まれた）。既定値以外で決まった場合は起動ログに決定元（`(host from --host)` / `(port from PORT)` 等）を表示する（環境変数の残存で「既定値が効かない」と誤解する事例が実際に起きたため）
+- `--host` に短縮形は与えない（`-h` は help。紛らわしい短縮形は取り違えて意図せず LAN 公開する事故につながる）。LAN 公開のガードは解決後の bind アドレスだけで判定し、`--host` が環境変数より緩い抜け道にならないようにする（`cli.test.ts` が両者のポリシー一致を固定している）
+- bind アドレスは IP リテラルまたはホスト名のみ受け付ける（`parseHostname` が検証。値が `browserUrl` → `openBrowser` に流れるため、シェルメタ文字等は起動時に拒否する）
 - 認証は意図的に実装しない。フロントが全データを受信して描画する設計のため、ダッシュボード画面が見える相手＝全データが見える相手であり、認証は対症療法になる。境界は「画面に届ける人」の制限で担保する
 - ループバック TCP ポートは同一マシンの全ローカルユーザーから閲覧できる（共有マシンではリスク。単一ユーザー前提の設計。起動時にその旨の警告を出す）
 - `/api/usage` は接続元 IP がループバックの場合のみ配信する（bind ホスト名ではなく接続の実 source IP で判定。判定はパスをデコードした後に行うため、パーセントエンコード（`/%61pi/usage` 等）でゲートを迂回できない）。さらに `/api/*` は Host ヘッダもループバックを要求する（bind モードに関係なく適用。LAN モードで Host 検証が無効化されるため、DNS rebinding ページが 127.0.0.1 への同一オリジン fetch で全履歴を読めるのを防ぐ）。非ループバック bind（LAN 公開）でも SSH トンネル経由のループバック接続は配信される。403 ボディは generic な文言のみで、エンドポイント名・ポート・トンネルコマンドを含めない（トンネル案内は起動時コンソール出力と LAN 案内ページで行う）。rate limit は Host 検証・`/api` ゲートより後に適用する（Host 拒否・403 になるリクエストが rate limit の予算を消費しない。悪意ある Web ページの DNS-rebinding ループで被害者自身の予算を枯渇させてダッシュボードを 429 にするドライブバイ自己 DoS を防ぐ）。rate limit のキーは (source IP, Host) のペアで、Host 別のリクエストは別バケットになる（Host: 127.0.0.1 の img ループによる共有バケット枯渇はループバック共有の残余リスクとして許容）
 - ローカルリバースプロキシ（nginx の `proxy_pass` 等）で `127.0.0.1:3737` に転送すると、すべての接続がループバック発に見え、`/api/usage` がプロキシの届く範囲へ配信される（LAN bind の警告・案内ページを経由しない）。LAN 向けリバースプロキシの背後にこのダッシュボードを置くのは意図しない限り避ける（README にも明記）
-- 非ループバック bind（例: `HOST=0.0.0.0`）では、非ループバック接続には「SSH トンネルを使え」という静的な案内ページのみを配信し、bundle.js 等のクライアント資産をネットワークに配信しない（平文 HTTP 上で on-path 攻撃者が改ざん・注入できる JS の攻撃面をなくす）。ループバック接続には通常のダッシュボードを配信する
+- 非ループバック bind（例: `--host 0.0.0.0`）では、非ループバック接続には「SSH トンネルを使え」という静的な案内ページのみを配信し、bundle.js 等のクライアント資産をネットワークに配信しない（平文 HTTP 上で on-path 攻撃者が改ざん・注入できる JS の攻撃面をなくす）。ループバック接続には通常のダッシュボードを配信する
 - 静的配信は固定 allowlist（`/` → index.html、`/dist/bundle.js`、`/public/app.css`、`/public/vendor/chart.umd.min.js`）のみ。サーバ CLI バンドル（`/dist/ccusage-ledger.js`）やエクスポート成果物、それ以外のファイルは配信しない（hardlink / symlink による漏出と未知パスへの同期 FS アクセスを構造的に防ぐ）
 - 非ループバック bind は起動時に警告を表示し、TTY では確認プロンプトを出す。非 TTY 環境では `CCUSAGE_LEDGER_ALLOW_LAN=1` を設定しない限り起動を拒否する（fail-closed）。`CCUSAGE_LEDGER_ALLOW_LAN=1` を設定すると確認なしで起動できる（警告のみ）
 - LAN 上の別端末から見る場合は `ssh -L 3737:127.0.0.1:3737` による SSH トンネルを推奨する（トンネル自体がアクセス制限になり、接続元はループバックになるため `/api/usage` も利用できる）
@@ -58,7 +61,7 @@
 - エクスポート HTML の CSP は `<meta>` タグで注入し、script は生成時にランダム nonce を付与して `script-src 'unsafe-inline'` を避ける（エスケープ漏れがあっても nonce を持たない注入タグは CSP でブロックされる。style 属性のみ `style-src-attr 'unsafe-inline'` を許す）。ブラウザは `<meta>` の `frame-ancestors` を無視するため、フレーム検出 JS（frame buster）を注入して iframe 埋め込み時の表示を防ぎ、JS 無効環境には `<noscript>` 警告を注入する。ただし、JS を無効化した環境や CSP 無効化時は防げないため、外部配信する場合はサーバーのレスポンスヘッダで `X-Frame-Options: DENY` を付与すること
 - 公開: `npm publish`（publish 直前に `bun run build` が実行される。`files` は明示 allowlist（bun.lock / index.html / dist/bundle.js / dist/ccusage-ledger.js / public/app.css / public/vendor/chart.umd.min.js）のため、エクスポート成果物や dist/ に置いた未知のファイルはリスト外としてそもそもパックされず、publish.yml の pack 検証でも混入を確認する。データ・シークレットはパッケージに含まれない）
 - CI の GitHub Actions 参照は完全 SHA ピン + バージョンコメント必須で、`workflow-pins.test.ts` が機械的に検証する。Actions の更新は dependabot が提案するが auto-merge は無効（手動で再ピン確認する）
-- 既定ポートなど「コードとドキュメントの両方に現れる値」は `docs-consistency.test.ts` が突き合わせる（`--help` / README / `docs/spec` が同じ既定ポートを示すこと、`--help` と README の環境変数一覧が一致すること）。既定ポートを 3000 → 3737 に変えた際に片側だけ直して取り残した経緯があるため、機械的に固定する
+- 既定ポートなど「コードとドキュメントの両方に現れる値」は `docs-consistency.test.ts` が突き合わせる（`--help` / README / `docs/spec` が同じ既定ポート・既定 bind アドレスを示すこと、README と仕様書が CLI オプションに触れていること、`--help` と README の環境変数一覧が一致すること）。既定ポートを 3000 → 3737 に変えた際に片側だけ直して取り残した経緯があるため、機械的に固定する
 
 ## リリース手順
 

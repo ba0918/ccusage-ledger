@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, portSourceLabel, resolvePort, type AppWithUsage } from "./server";
+import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseUrl, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -683,6 +683,11 @@ describe("server LAN bind 警告", () => {
     const warning = lanBindWarning("0.0.0.0", 5000)!;
     expect(warning).toContain("ssh -L 5000:127.0.0.1:5000");
   });
+
+  test("指定元を渡すと警告に含める（HOST の残存に気付けるようにする）", () => {
+    expect(lanBindWarning("0.0.0.0", 3000, "HOST=0.0.0.0")).toContain("binding to HOST=0.0.0.0");
+    expect(lanBindWarning("0.0.0.0", 3000, "--host=0.0.0.0")).toContain("binding to --host=0.0.0.0");
+  });
 });
 
 describe("server LAN bind 起動ポリシー", () => {
@@ -719,28 +724,6 @@ describe("server LAN 公開オプトイン環境変数", () => {
   });
 });
 
-describe("server parseHostname", () => {
-  test("有効な HOST（IP リテラル / localhost / ホスト名）はそのまま返す", () => {
-    expect(parseHostname(undefined)).toBe("127.0.0.1");
-    expect(parseHostname("0.0.0.0")).toBe("0.0.0.0");
-    expect(parseHostname("127.0.0.1")).toBe("127.0.0.1");
-    expect(parseHostname("::")).toBe("::");
-    expect(parseHostname("::1")).toBe("::1");
-    expect(parseHostname("localhost")).toBe("localhost");
-    expect(parseHostname("myhost.local")).toBe("myhost.local");
-  });
-
-  test("シェルメタ文字や URL を壊す文字を含む HOST は拒否する（openBrowser への不正 URL 流入を防ぐ）", () => {
-    for (const bad of ["127.0.0.1$(touch /tmp/pwn)", "127.0.0.1;id", "host|nc", "a b", "a/b", "a%20b", "<script>", '"', "a$b"]) {
-      expect(() => parseHostname(bad)).toThrow(/Invalid HOST/);
-    }
-  });
-
-  test("空文字の HOST は拒否する（未設定はデフォルトで解決される）", () => {
-    expect(() => parseHostname("")).toThrow(/Invalid HOST/);
-  });
-});
-
 describe("server bindError", () => {
   test("EADDRINUSE にはポート変更の手段を添える", () => {
     // 実際に踏んだ落とし穴: Windows では予約済みポート範囲や WSL の localhost forwarding でも
@@ -757,98 +740,5 @@ describe("server bindError", () => {
   test("EADDRINUSE 以外のエラーはそのまま通す（原因を書き換えない）", () => {
     const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
     expect(bindError(error, 3000)).toBe(error);
-  });
-});
-
-describe("server parseArgs / parsePort", () => {
-  test("--port と -p で値を受け取る（= 記法も含む）", () => {
-    expect(parseArgs(["--port", "4000"]).port).toBe("4000");
-    expect(parseArgs(["-p", "4000"]).port).toBe("4000");
-    expect(parseArgs(["--port=4000"]).port).toBe("4000");
-  });
-
-  test("--help を認識する", () => {
-    expect(parseArgs(["--help"]).help).toBe(true);
-    expect(parseArgs(["-h"]).help).toBe(true);
-    expect(parseArgs([]).help).toBe(false);
-  });
-
-  test("値のない --port はエラーにする（次のフラグを値として飲み込まない）", () => {
-    expect(() => parseArgs(["--port"])).toThrow(/requires a value/);
-    expect(() => parseArgs(["--port", "--help"])).toThrow(/requires a value/);
-  });
-
-  test("未知のオプションは黙って無視せずエラーにする", () => {
-    // 打ち間違い（--prot 4000 等）が黙って既定ポート起動になると原因に気づけない
-    expect(() => parseArgs(["--prot", "4000"])).toThrow(/Unknown option/);
-  });
-
-  test("既定ポートは競合しやすい 3000 ではない", () => {
-    // 既定値の適用は resolvePort だけが行う（parsePort は検証のみ）
-    expect(resolvePort(undefined, undefined).port).toBe(DEFAULT_PORT);
-    expect(DEFAULT_PORT).not.toBe(3000);
-    // Windows の既定動的ポート範囲（49152-65535）に入らない
-    expect(DEFAULT_PORT).toBeLessThan(49152);
-  });
-
-  test("不正な値は指定元を明示して拒否する（--port と PORT を取り違えない）", () => {
-    expect(() => parsePort("abc", "--port")).toThrow(/Invalid --port=abc/);
-    expect(() => parsePort("0", "--port")).toThrow(/Invalid --port=0/);
-    expect(() => parsePort("70000")).toThrow(/Invalid PORT=70000/);
-  });
-});
-
-describe("server resolvePort / portSourceLabel", () => {
-  test("優先順位どおりにポートと決定元を返す", () => {
-    expect(resolvePort("4000", "3000")).toEqual({ port: 4000, source: "--port" });
-    expect(resolvePort("4000", undefined)).toEqual({ port: 4000, source: "--port" });
-    expect(resolvePort(undefined, "3000")).toEqual({ port: 3000, source: "PORT" });
-    expect(resolvePort(undefined, undefined)).toEqual({ port: DEFAULT_PORT, source: "default" });
-  });
-
-  test("空文字の PORT は未設定として扱い、既定ポートで起動する", () => {
-    // 判定だけ「既定値」にして値の計算を分けると parsePort("") が Invalid PORT= で落ちる。
-    // 決定元と値を同じ関数で返すことで、両者が食い違わないようにしている
-    expect(resolvePort(undefined, "")).toEqual({ port: DEFAULT_PORT, source: "default" });
-  });
-
-  test("不正な値は指定元を明示して拒否する", () => {
-    expect(() => resolvePort("abc", undefined)).toThrow(/Invalid --port=abc/);
-    expect(() => resolvePort(undefined, "70000")).toThrow(/Invalid PORT=70000/);
-  });
-
-  test("既定値のときは起動ログに何も足さない", () => {
-    expect(portSourceLabel("default")).toBe("");
-  });
-
-  test("既定以外は決定元を表示する（既定を変えたのに違うポートで起動する理由が分かる）", () => {
-    // 環境変数の残存に気づけず「既定ポートが効いていない」と誤解する事例が実際に起きた
-    expect(portSourceLabel("PORT")).toContain("PORT");
-    expect(portSourceLabel("--port")).toContain("--port");
-  });
-});
-
-describe("server parseArgs の = 形式", () => {
-  test("値を取らないフラグに = で値を付けたら拒否する", () => {
-    // 黙って無視すると「指定したのに効かない」ことに気づけない
-    expect(() => parseArgs(["--help=json"])).toThrow(/does not take a value/);
-    expect(() => parseArgs(["--help="])).toThrow(/does not take a value/);
-  });
-
-  test("--port=4000 と --port 4000 が同じ結果になる", () => {
-    expect(parseArgs(["--port=4000"])).toEqual(parseArgs(["--port", "4000"]));
-  });
-
-  test("= 形式では次のトークンを消費しない", () => {
-    // --port=4000 --help のように後続がある場合、値として飲み込まれてはいけない
-    expect(parseArgs(["--port=4000", "--help"])).toEqual({ port: "4000", help: true });
-  });
-
-  test("= 形式で値が空なら拒否する", () => {
-    expect(() => parseArgs(["--port="])).toThrow(/requires a value/);
-  });
-
-  test("未知のオプションは = 形式でもオプション名だけを報告する", () => {
-    expect(() => parseArgs(["--prot=4000"])).toThrow(/Unknown option: --prot/);
   });
 });

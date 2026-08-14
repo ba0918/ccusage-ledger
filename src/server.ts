@@ -1,14 +1,12 @@
-import { readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isIP } from "node:net";
 import { dirname, join, sep } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
 import { messageOf } from "./errors";
-import { fetchUsage, DEFAULT_COMMAND, readCache } from "./fetch-usage";
-import { PACKAGE_DIR, defaultCachePath, isUnderBase } from "./paths";
-import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
-import { projectUsageData } from "./usage-data";
+import { readCache } from "./fetch-usage";
+import { isUnderBase } from "./paths";
 
 // 静的配信 allowlist（STATIC_ALLOWLIST）が配信するファイルの拡張子だけを持つ。
 // allowlist 外の拡張子（.json / .svg / .png / .ico / .mjs 等）を宣言すると死んだ設定になるため、
@@ -46,10 +44,15 @@ const COMMON_HEADERS: Record<string, string> = {
 // 既定値のリテラルはここ 1 箇所に置く（createApp・--help・エラーメッセージが同じ値を指す）
 export const DEFAULT_PORT = 3737;
 
+// 既定の bind アドレス。ループバック限定が既定であることがこのアプリの安全境界そのもの
+// （認証を持たないため、境界は「画面に届く範囲」の制限で担保する）。
+// DEFAULT_PORT と同じく、既定値のリテラルはここ 1 箇所に置く（createApp・--help が同じ値を指す）
+export const DEFAULT_HOST = "127.0.0.1";
+
 // LAN 公開時・/api/usage 拒否時に案内する推奨トンネルコマンド。ポートは実際の bind ポート
 // （--port / PORT 環境変数で決まった値）を反映する。起動時警告・LAN 案内ページ・
 // 拒否メッセージが同一文言を使う
-function sshTunnelHint(port: number): string {
+export function sshTunnelHint(port: number): string {
   return `ssh -L ${port}:127.0.0.1:${port}`;
 }
 
@@ -105,10 +108,13 @@ function mappedIPv4(host: string): string | null {
   return null;
 }
 
-export function lanBindWarning(bindHostname: string, port: number): string | null {
+// setting には「どの指定でこの bind になったか」（`HOST=0.0.0.0` / `--host=0.0.0.0`）を渡す。
+// 警告を見て中止したユーザーが、シェルプロファイルに残った環境変数に気付けるようにするため
+// （prompt パスでは決定元を含む起動ログまで到達しないので、ここで出さないと手がかりが無い）
+export function lanBindWarning(bindHostname: string, port: number, setting: string = bindHostname): string | null {
   if (isLoopbackHost(bindHostname)) { return null; }
   // 平文 HTTP は同一セグメントの攻撃者が応答を改ざん・盗聴でき、CSP も意味を失うことを明記する
-  return `WARN: binding to HOST=${bindHostname} exposes the dashboard and /api/usage data to anyone on the network (no authentication, plaintext HTTP: traffic can be eavesdropped and tampered with). To view from another device, use an SSH tunnel: ${sshTunnelHint(port)}`;
+  return `WARN: binding to ${setting} exposes the dashboard and /api/usage data to anyone on the network (no authentication, plaintext HTTP: traffic can be eavesdropped and tampered with). To view from another device, use an SSH tunnel: ${sshTunnelHint(port)}`;
 }
 
 export type LanStartPolicy = "ok" | "warn" | "prompt" | "refuse";
@@ -207,7 +213,7 @@ export function createApp(options: {
   port?: number;
   rateLimit?: (key: string) => boolean;
 }): AppWithUsage {
-  const { rootDir, cachePath, hostname = "127.0.0.1", port = DEFAULT_PORT } = options;
+  const { rootDir, cachePath, hostname = DEFAULT_HOST, port = DEFAULT_PORT } = options;
 
   // /api/usage は起動時にキャッシュを読み込んでメモリから配信する（リクエスト毎のファイル読込で DoS 面を作らない）。
   // 読み込みは fetchUsage の readCache を共用する（所有権・0700・サイズ検証 + スキーマ検証 + 白リスト投影が
@@ -544,18 +550,6 @@ function extensionName(path: string): string {
   return dot >= 0 ? path.slice(dot) : "";
 }
 
-function confirmLanStart(): boolean {
-  const buf = new Uint8Array(64);
-  let n = 0;
-  try {
-    n = readSync(0, buf);
-  } catch {
-    return false;
-  }
-  const answer = new TextDecoder().decode(buf.subarray(0, n)).trim().toLowerCase();
-  return answer === "y" || answer === "yes";
-}
-
 // ランタイム判定: Bun 実行時のみ process.versions.bun が存在する
 function isBun(): boolean {
   return process.versions.bun !== undefined;
@@ -577,7 +571,7 @@ export function bindError(error: Error, port: number): Error {
 // bind 失敗の案内文言への変換は呼び出し側（main）で 1 回だけ行う。Bun は同期 throw、
 // Node は error イベントと通知経路が違うが、async 関数の拒否として同じ形で表に出るため、
 // ここでランタイムごとに包み直す必要はない
-async function startServer(app: AppWithUsage, hostname: string, port: number): Promise<number> {
+export async function startServer(app: AppWithUsage, hostname: string, port: number): Promise<number> {
   if (isBun()) {
     const server = Bun.serve({
       hostname,
@@ -616,201 +610,5 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
       }
       reject(error);
     });
-  });
-}
-
-export type PortSource = "--port" | "PORT" | "default";
-
-// 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、
-// bind 失敗が「判りにくいエラー」になるため、設定ミスを起動時に明確なメッセージで報告する
-// （cli.ts の catch が `ERROR: <message>` を出力して exit 1 する）。
-// 既定値の適用は resolvePort だけが行う（両方が既定値を持つと、どちらが決めたのか読めなくなる）。
-// source を持ち回るのは、--port で指定したのに "Invalid PORT=..." と言われて
-// 原因を取り違えるのを防ぐため
-export function parsePort(value: string, source: PortSource = "PORT"): number {
-  const invalid = new Error(`Invalid ${source}=${value}: expected an integer between 1 and 65535`);
-  if (!/^\d+$/.test(value)) { throw invalid; }
-  const port = Number(value);
-  if (port < 1 || port > 65535) { throw invalid; }
-  return port;
-}
-
-export interface ResolvedPort {
-  port: number;
-  source: PortSource;
-}
-
-// ポート番号と「どこで決まったか」を同時に返す。優先順位は --port > PORT > 既定値。
-// 判定と値の計算を分けると両者が食い違い得るため（空文字の PORT を「既定値」と判定しながら
-// parsePort("") を呼んで Invalid PORT= で落ちる、という不整合が実際に起きた）、1 箇所で決める
-export function resolvePort(cliPort: string | undefined, envPort: string | undefined): ResolvedPort {
-  if (cliPort !== undefined) { return { port: parsePort(cliPort, "--port"), source: "--port" }; }
-  // 空文字は未設定と同等に扱う（シェルで PORT= と書いた場合に起動できないのを避ける）
-  if (envPort !== undefined && envPort !== "") { return { port: parsePort(envPort), source: "PORT" }; }
-  return { port: DEFAULT_PORT, source: "default" };
-}
-
-// 起動ログに付ける決定元の表示。既定値のときは何も付けない（通常の起動を煩わせない）。
-// 「既定を変えたはずなのに違うポートで起動している」ときに、環境変数の残存や
-// --port の指定を即座に見分けられるようにする
-export function portSourceLabel(source: PortSource): string {
-  if (source === "default") { return ""; }
-  return `  (port from ${source})`;
-}
-
-export interface CliOptions {
-  port?: string;
-  help: boolean;
-}
-
-export const USAGE = `Usage: ccusage-ledger [options]
-
-Options:
-  -p, --port <number>  Port to listen on (default: ${DEFAULT_PORT}, env: PORT)
-  -h, --help           Show this help
-
-Environment:
-  HOST                                      Bind address (default: 127.0.0.1)
-  PORT                                      Port to listen on (overridden by --port)
-  CCUSAGE_LEDGER_ALLOW_LAN                  Set to 1 to allow a non-loopback bind
-  CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE    Set to 1 to warn instead of refusing when the
-                                            ccusage native binary hash is not recorded`;
-
-// 引数解析。未知のフラグは黙って無視せずエラーにする（打ち間違いに気づけるようにする）。
-// --name=value の分解はオプション個別ではなくループ先頭で行う。長いオプション一般の
-// 書き方であって --port 固有の性質ではないため、オプションを増やしたときに
-// 「= 形式だけ対応が漏れる」事故を構造的に防ぐ
-export function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { help: false };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    const equals = arg.indexOf("=");
-    const name = arg.startsWith("--") && equals !== -1 ? arg.slice(0, equals) : arg;
-    const inlineValue = arg.startsWith("--") && equals !== -1 ? arg.slice(equals + 1) : undefined;
-
-    if (name === "--help" || name === "-h") {
-      // 値を取らないフラグに = で値を付けた場合は黙って無視せず拒否する
-      // （--help=json のような指定が「無視された」と気づけないのを防ぐ）
-      if (inlineValue !== undefined) {
-        throw new Error(`${name} does not take a value`);
-      }
-      options.help = true;
-      continue;
-    }
-    if (name === "--port" || name === "-p") {
-      // 値が別トークンの場合だけ次を読み進める（--port --help のように次がフラグなら拒否する）
-      const value = inlineValue ?? argv[i + 1];
-      // --port= のように = の後ろが空の場合も「値が無い」として扱う
-      if (value === undefined || value === "" || (inlineValue === undefined && value.startsWith("-"))) {
-        throw new Error(`${name} requires a value (e.g. ${name} ${DEFAULT_PORT})`);
-      }
-      options.port = value;
-      if (inlineValue === undefined) { i++; }
-      continue;
-    }
-    throw new Error(`Unknown option: ${name} (run with --help for usage)`);
-  }
-  return options;
-}
-
-// HOST は IP リテラルまたはホスト名のみ受け付ける。bind に渡す値がそのまま browserUrl →
-// openBrowser（xdg-open / open への URL 引数）に流れるため、シェルメタ文字や URL を
-// 壊す文字を事前に弾く（parsePort と対称の設定ミス検出。bind 失敗の「判りにくいエラー」を防ぎ、
-// 意図しない URL がブラウザ起動に渡るのを防ぐ）。[A-Za-z0-9.:-] 以外（IPv6 の括弧、シェル
-// メタ文字、空白等）は拒否する
-export function parseHostname(value: string | undefined): string {
-  const raw = value ?? "127.0.0.1";
-  if (raw === "" || !/^[A-Za-z0-9.:-]+$/.test(raw)) {
-    throw new Error(`Invalid HOST=${raw}: expected an IP literal or hostname (allowed: [A-Za-z0-9.:-])`);
-  }
-  return raw;
-}
-
-export async function main(): Promise<void> {
-  const rootDir = PACKAGE_DIR;
-  const cachePath = defaultCachePath(process.env);
-
-  const cli = parseArgs(process.argv.slice(2));
-  if (cli.help) {
-    console.log(USAGE);
-    return;
-  }
-  // 優先順位: --port > PORT > 既定値。指定元をエラーメッセージと起動ログに反映する
-  const { port, source: portSource } = resolvePort(cli.port, process.env.PORT);
-  // HOST は IP リテラル/ホスト名以外を起動時に拒否する（browserUrl → openBrowser に流れるため）。
-  // bind 失敗の「判りにくいエラー」より先に、設定ミスを明確なメッセージで報告する
-  const hostname = parseHostname(process.env.HOST);
-
-  const lanPolicy = lanStartPolicy(hostname, Boolean(process.stdin.isTTY), isLanAllowed(process.env));
-  if (lanPolicy === "refuse") {
-    console.error(
-      `ERROR: HOST=${hostname} (non-loopback bind) would expose the dashboard and usage data to the network. ` +
-        "Set CCUSAGE_LEDGER_ALLOW_LAN=1 to override, or use a loopback bind with an SSH tunnel: " +
-        sshTunnelHint(port),
-    );
-    process.exit(1);
-  }
-  if (lanPolicy === "prompt") {
-    const warning = lanBindWarning(hostname, port)!;
-    console.warn(warning);
-    process.stdout.write("Start anyway? (y/N): ");
-    if (!confirmLanStart()) {
-      console.error("Aborted. Set HOST to a loopback address, or set CCUSAGE_LEDGER_ALLOW_LAN=1 to start without confirmation.");
-      process.exit(1);
-    }
-  } else if (lanPolicy === "warn") {
-    console.warn(lanBindWarning(hostname, port)!);
-  }
-
-  const app = createApp({ rootDir, cachePath, hostname, port });
-
-  // bind する。Bun 実行時は Bun.serve（requestIP を提供）、Node 実行時は @hono/node-server を使う
-  // bind 失敗はランタイムを問わずここで案内文言に変換する（Bun / Node で 2 箇所に散らさない）
-  const boundPort = await startServer(app, hostname, port).catch((error: unknown) => {
-    throw bindError(error instanceof Error ? error : new Error(String(error)), port);
-  });
-
-  // ループバック TCP ポートは同一マシンの全ローカルユーザー/プロセスから閲覧できる。
-  // 共有マシンでは他のローカルユーザーが /api/usage の全履歴を読めるため、その旨を起動時に警告する
-  // （認証は意図的に実装していない。境界は「画面に届ける人」の制限で担保する設計。AGENTS.md 参照）
-  if (isLoopbackHost(hostname)) {
-    console.warn(
-      "NOTE: the dashboard is bound to loopback and is readable by any local user/process on this machine. " +
-        "On a shared machine this exposes your ccusage usage data to other local users.",
-    );
-  }
-
-  // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）。
-  // fresh のときだけ usageBody を差し替える。cache フォールバック時は createApp が起動時に
-  // 同じ readCache で既に読み込んでいるため、重複読み込み・再設定をしない
-  const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath });
-  if (result !== null && result.source === "fresh") {
-    app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
-  }
-
-  console.log(`ccusage ledger: http://${displayHostname(hostname)}:${boundPort}${portSourceLabel(portSource)}`);
-  if (result === null) {
-    console.warn("WARN: failed to fetch ccusage data and no cache exists. /api/usage will return an empty dataset.");
-  } else {
-    console.log(`Data source: ${result.source === "fresh" ? "ccusage cli.js (fresh)" : "cache"}`);
-  }
-
-  const autoOpenEnv = {
-    SSH_CONNECTION: process.env.SSH_CONNECTION,
-    SSH_TTY: process.env.SSH_TTY,
-    DISPLAY: process.env.DISPLAY,
-    WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
-    isTTY: Boolean(process.stdout.isTTY),
-    platform: process.platform,
-  };
-  if (shouldAutoOpen(autoOpenEnv)) {
-    openBrowser(browserUrl(hostname, boundPort));
-  }
-}
-
-if (import.meta.main) {
-  main().catch((error) => {
-    console.error(`ERROR: ${messageOf(error)}`);
-    process.exit(1);
   });
 }

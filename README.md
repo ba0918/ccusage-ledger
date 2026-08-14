@@ -41,10 +41,13 @@ npx ccusage-ledger --port 4000
 
 | Option | Description |
 |---|---|
+| `--host <address>` | Bind address (default: `127.0.0.1`, also accepts `--host=<address>`). Takes precedence over the `HOST` env var |
 | `-p`, `--port <number>` | Port to listen on (default: `3737`, also accepts `--port=<number>`). Takes precedence over the `PORT` env var |
 | `-h`, `--help` | Show usage and exit |
 
-When the port is not the default, the startup log shows where it came from (`(port from --port)` / `(port from PORT)`).
+`--host` has no short form on purpose, so it cannot be confused with `-h` (help) and expose the dashboard by accident. A non-loopback `--host` goes through exactly the same guards as `HOST` — see [About LAN exposure](#about-lan-exposure).
+
+When a value is not the default, the startup log shows where it came from (`(host from --host)`, `(port from PORT)`, and so on), so a leftover env var is easy to spot.
 
 ## What it shows
 
@@ -60,14 +63,14 @@ When the port is not the default, the startup log shows where it came from (`(po
 
 | Env var | Default | Description |
 |---|---|---|
-| `HOST` | `127.0.0.1` | Bind address |
+| `HOST` | `127.0.0.1` | Bind address (overridden by `--host`) |
 | `PORT` | `3737` | Bind port (overridden by `--port`) |
 | `CCUSAGE_LEDGER_ALLOW_LAN` | (none) | Set to `1` to start with only a warning for a non-loopback bind |
 | `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE` | (none) | Set to `1` to start with a warning (instead of refusing) when the ccusage native binary hash for the platform is not recorded |
 
 ### About LAN exposure
 
-By default the server binds only to `127.0.0.1`. With a non-loopback bind such as `HOST=0.0.0.0`, anyone on the network can view the dashboard (usage data), and plaintext HTTP can be eavesdropped and tampered with.
+By default the server binds only to `127.0.0.1`. With a non-loopback bind such as `--host 0.0.0.0` or `HOST=0.0.0.0`, anyone on the network can view the dashboard (usage data), and plaintext HTTP can be eavesdropped and tampered with. Both spellings are treated identically — the guards below apply to the resolved bind address, not to how it was specified.
 
 - On a TTY, a warning is shown and confirmation is requested at startup
 - On a non-TTY, startup is refused unless `CCUSAGE_LEDGER_ALLOW_LAN=1` is set
