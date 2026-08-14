@@ -58,6 +58,7 @@
 - エクスポート HTML の CSP は `<meta>` タグで注入し、script は生成時にランダム nonce を付与して `script-src 'unsafe-inline'` を避ける（エスケープ漏れがあっても nonce を持たない注入タグは CSP でブロックされる。style 属性のみ `style-src-attr 'unsafe-inline'` を許す）。ブラウザは `<meta>` の `frame-ancestors` を無視するため、フレーム検出 JS（frame buster）を注入して iframe 埋め込み時の表示を防ぎ、JS 無効環境には `<noscript>` 警告を注入する。ただし、JS を無効化した環境や CSP 無効化時は防げないため、外部配信する場合はサーバーのレスポンスヘッダで `X-Frame-Options: DENY` を付与すること
 - 公開: `npm publish`（publish 直前に `bun run build` が実行される。`files` は明示 allowlist（bun.lock / index.html / dist/bundle.js / dist/ccusage-ledger.js / public/app.css / public/vendor/chart.umd.min.js）のため、エクスポート成果物や dist/ に置いた未知のファイルはリスト外としてそもそもパックされず、publish.yml の pack 検証でも混入を確認する。データ・シークレットはパッケージに含まれない）
 - CI の GitHub Actions 参照は完全 SHA ピン + バージョンコメント必須で、`workflow-pins.test.ts` が機械的に検証する。Actions の更新は dependabot が提案するが auto-merge は無効（手動で再ピン確認する）
+- 既定ポートなど「コードとドキュメントの両方に現れる値」は `docs-consistency.test.ts` が突き合わせる（`--help` / README / `docs/spec` が同じ既定ポートを示すこと、`--help` と README の環境変数一覧が一致すること）。既定ポートを 3000 → 3737 に変えた際に片側だけ直して取り残した経緯があるため、機械的に固定する
 
 ## リリース手順
 
