@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readFileSync, linkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, type AppWithUsage } from "./server";
+import { DEFAULT_PORT, bindError, createApp, createRateLimiter, isLanAllowed, isLoopbackHost, isWithinBases, lanBindWarning, lanStartPolicy, parseArgs, parsePort, parseUrl, parseHostname, portSourceLabel, resolvePort, type AppWithUsage } from "./server";
 
 const FIXTURE = readFileSync(join(import.meta.dir, "fixtures", "usage.json"), "utf-8");
 
@@ -329,6 +329,19 @@ describe("server セキュリティ", () => {
     const res = await call(app, "/dist/bundle.js");
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("bundle");
+  });
+
+  test("末尾がバックスラッシュのファイルへの symlink は配信しない（POSIX の区切り誤判定）", async () => {
+    // POSIX では "\\" は正当なファイル名文字。配下判定が両方の区切りを剥がすと
+    // rootDir/"dist\\"（dist ディレクトリの外にある兄弟ファイル）が rootDir/dist と
+    // 一致してしまい、allowlist されたパスで外のファイルを配信できてしまう
+    const sibling = join(rootDir, "dist\\");
+    writeFileSync(sibling, "TOP-SECRET-SIBLING");
+    rmSync(join(rootDir, "dist", "bundle.js"));
+    symlinkSync(sibling, join(rootDir, "dist", "bundle.js"));
+
+    const res = await get("/dist/bundle.js");
+    expect(res.status).toBe(404);
   });
 
   test("symlink が許可リスト外（ルート直下の秘密ファイル）を指す場合は 404", async () => {
@@ -763,7 +776,8 @@ describe("server parseArgs / parsePort", () => {
   });
 
   test("既定ポートは競合しやすい 3000 ではない", () => {
-    expect(parsePort(undefined)).toBe(DEFAULT_PORT);
+    // 既定値の適用は resolvePort だけが行う（parsePort は検証のみ）
+    expect(resolvePort(undefined, undefined).port).toBe(DEFAULT_PORT);
     expect(DEFAULT_PORT).not.toBe(3000);
     // Windows の既定動的ポート範囲（49152-65535）に入らない
     expect(DEFAULT_PORT).toBeLessThan(49152);
@@ -773,5 +787,60 @@ describe("server parseArgs / parsePort", () => {
     expect(() => parsePort("abc", "--port")).toThrow(/Invalid --port=abc/);
     expect(() => parsePort("0", "--port")).toThrow(/Invalid --port=0/);
     expect(() => parsePort("70000")).toThrow(/Invalid PORT=70000/);
+  });
+});
+
+describe("server resolvePort / portSourceLabel", () => {
+  test("優先順位どおりにポートと決定元を返す", () => {
+    expect(resolvePort("4000", "3000")).toEqual({ port: 4000, source: "--port" });
+    expect(resolvePort("4000", undefined)).toEqual({ port: 4000, source: "--port" });
+    expect(resolvePort(undefined, "3000")).toEqual({ port: 3000, source: "PORT" });
+    expect(resolvePort(undefined, undefined)).toEqual({ port: DEFAULT_PORT, source: "default" });
+  });
+
+  test("空文字の PORT は未設定として扱い、既定ポートで起動する", () => {
+    // 判定だけ「既定値」にして値の計算を分けると parsePort("") が Invalid PORT= で落ちる。
+    // 決定元と値を同じ関数で返すことで、両者が食い違わないようにしている
+    expect(resolvePort(undefined, "")).toEqual({ port: DEFAULT_PORT, source: "default" });
+  });
+
+  test("不正な値は指定元を明示して拒否する", () => {
+    expect(() => resolvePort("abc", undefined)).toThrow(/Invalid --port=abc/);
+    expect(() => resolvePort(undefined, "70000")).toThrow(/Invalid PORT=70000/);
+  });
+
+  test("既定値のときは起動ログに何も足さない", () => {
+    expect(portSourceLabel("default")).toBe("");
+  });
+
+  test("既定以外は決定元を表示する（既定を変えたのに違うポートで起動する理由が分かる）", () => {
+    // 環境変数の残存に気づけず「既定ポートが効いていない」と誤解する事例が実際に起きた
+    expect(portSourceLabel("PORT")).toContain("PORT");
+    expect(portSourceLabel("--port")).toContain("--port");
+  });
+});
+
+describe("server parseArgs の = 形式", () => {
+  test("値を取らないフラグに = で値を付けたら拒否する", () => {
+    // 黙って無視すると「指定したのに効かない」ことに気づけない
+    expect(() => parseArgs(["--help=json"])).toThrow(/does not take a value/);
+    expect(() => parseArgs(["--help="])).toThrow(/does not take a value/);
+  });
+
+  test("--port=4000 と --port 4000 が同じ結果になる", () => {
+    expect(parseArgs(["--port=4000"])).toEqual(parseArgs(["--port", "4000"]));
+  });
+
+  test("= 形式では次のトークンを消費しない", () => {
+    // --port=4000 --help のように後続がある場合、値として飲み込まれてはいけない
+    expect(parseArgs(["--port=4000", "--help"])).toEqual({ port: "4000", help: true });
+  });
+
+  test("= 形式で値が空なら拒否する", () => {
+    expect(() => parseArgs(["--port="])).toThrow(/requires a value/);
+  });
+
+  test("未知のオプションは = 形式でもオプション名だけを報告する", () => {
+    expect(() => parseArgs(["--prot=4000"])).toThrow(/Unknown option: --prot/);
   });
 });

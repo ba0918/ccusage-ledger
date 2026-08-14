@@ -6,7 +6,7 @@ import type { Context } from "hono";
 
 import { messageOf } from "./errors";
 import { fetchUsage, DEFAULT_COMMAND, readCache } from "./fetch-usage";
-import { PACKAGE_DIR, defaultCachePath } from "./paths";
+import { PACKAGE_DIR, defaultCachePath, isUnderBase } from "./paths";
 import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
 import { projectUsageData } from "./usage-data";
 
@@ -471,9 +471,9 @@ const STATIC_ALLOWLIST: Record<string, string> = {
 
 // 配下判定はプラットフォームのパス区切りで行う。"/" 決め打ちにすると Windows（区切りが "\"）で
 // 常に「配下ではない」と判定され、静的ファイルがすべて 404 になる。
-// 区切りを付けて比較するのは、/foo と /foobar のような前方一致の取り違えを防ぐため
+// 判定規則そのものは paths.ts の isUnderBase に集約している（キャッシュディレクトリの検証と共通）
 export function isWithinBases(target: string, bases: string[], separator: string = sep): boolean {
-  return bases.some((base) => target === base || target.startsWith(`${base}${separator}`));
+  return bases.some((base) => isUnderBase(target, base, { separator }));
 }
 
 async function serveStatic(rootDir: string, pathname: string, staticCache: Map<string, ArrayBuffer>): Promise<Response> {
@@ -566,27 +566,25 @@ export function bindError(error: Error, port: number): Error {
   );
 }
 
-// サーバを bind して実際のポートを返す。Bun / Node どちらのランタイムでも動く
+// サーバを bind して実際のポートを返す。Bun / Node どちらのランタイムでも動く。
+// bind 失敗の案内文言への変換は呼び出し側（main）で 1 回だけ行う。Bun は同期 throw、
+// Node は error イベントと通知経路が違うが、async 関数の拒否として同じ形で表に出るため、
+// ここでランタイムごとに包み直す必要はない
 async function startServer(app: AppWithUsage, hostname: string, port: number): Promise<number> {
   if (isBun()) {
-    try {
-      const server = Bun.serve({
-        hostname,
-        port,
-        // Bun サーバが接続情報（requestIP を含む）を fetch の第二引数で提供する
-        fetch: (request, server) => app(request, server as unknown),
-      });
-      return server.port ?? port;
-    } catch (error) {
-      // Bun.serve は bind 失敗を同期 throw する。Node 側と同じ案内文言に揃える
-      throw bindError(error instanceof Error ? error : new Error(String(error)), port);
-    }
+    const server = Bun.serve({
+      hostname,
+      port,
+      // Bun サーバが接続情報（requestIP を含む）を fetch の第二引数で提供する
+      fetch: (request, server) => app(request, server as unknown),
+    });
+    return server.port ?? port;
   }
 
   // Node 実行時: @hono/node-server で起動する。serve が env に { incoming, outgoing } を渡すため、
   // createApp のミドルウェアが incoming.socket.remoteAddress から IP を解決できる。
   // bind エラー（EADDRINUSE 等）は Node では非同期に飛ぶため、Promise で待ち受けて
-  // 同期 throw する Bun.serve と同じく main() のエラーハンドラに載せる
+  // Bun の同期 throw と同じく呼び出し側の拒否として扱えるようにする
   const { serve } = await import("@hono/node-server");
   return new Promise<number>((resolve, reject) => {
     let listening = false;
@@ -609,28 +607,53 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
         console.error(`ERROR: server error: ${messageOf(error)}`);
         return;
       }
-      reject(bindError(error, port));
+      reject(error);
     });
   });
 }
 
-// PORT は 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、
-// bind 失敗が「判りにくいエラー」になるため、設定ミスを起動時に明確なメッセージで報告する
-// （cli.ts の catch が `ERROR: <message>` を出力して exit 1 する）
 // 既定ポート。3000 は React / Next / Rails 等の開発サーバーが使う最も競合しやすい番号で、
 // 初回起動がいきなり EADDRINUSE になりやすい。IANA の well-known / 一般的な開発用ポートを
 // 避け、Windows の動的ポート範囲（既定 49152-65535）にも入らない番号を既定にする
 export const DEFAULT_PORT = 3737;
 
-// ポート指定の出所を、エラーメッセージに正しく出すために持ち回る
-// （--port で指定したのに "Invalid PORT=..." と言われると原因を取り違える）
-export function parsePort(value: string | undefined, source: string = "PORT"): number {
-  const raw = value ?? String(DEFAULT_PORT);
-  const invalid = new Error(`Invalid ${source}=${raw}: expected an integer between 1 and 65535`);
-  if (!/^\d+$/.test(raw)) { throw invalid; }
-  const port = Number(raw);
+export type PortSource = "--port" | "PORT" | "default";
+
+// 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、
+// bind 失敗が「判りにくいエラー」になるため、設定ミスを起動時に明確なメッセージで報告する
+// （cli.ts の catch が `ERROR: <message>` を出力して exit 1 する）。
+// 既定値の適用は resolvePort だけが行う（両方が既定値を持つと、どちらが決めたのか読めなくなる）。
+// source を持ち回るのは、--port で指定したのに "Invalid PORT=..." と言われて
+// 原因を取り違えるのを防ぐため
+export function parsePort(value: string, source: PortSource = "PORT"): number {
+  const invalid = new Error(`Invalid ${source}=${value}: expected an integer between 1 and 65535`);
+  if (!/^\d+$/.test(value)) { throw invalid; }
+  const port = Number(value);
   if (port < 1 || port > 65535) { throw invalid; }
   return port;
+}
+
+export interface ResolvedPort {
+  port: number;
+  source: PortSource;
+}
+
+// ポート番号と「どこで決まったか」を同時に返す。優先順位は --port > PORT > 既定値。
+// 判定と値の計算を分けると両者が食い違い得るため（空文字の PORT を「既定値」と判定しながら
+// parsePort("") を呼んで Invalid PORT= で落ちる、という不整合が実際に起きた）、1 箇所で決める
+export function resolvePort(cliPort: string | undefined, envPort: string | undefined): ResolvedPort {
+  if (cliPort !== undefined) { return { port: parsePort(cliPort, "--port"), source: "--port" }; }
+  // 空文字は未設定と同等に扱う（シェルで PORT= と書いた場合に起動できないのを避ける）
+  if (envPort !== undefined && envPort !== "") { return { port: parsePort(envPort), source: "PORT" }; }
+  return { port: DEFAULT_PORT, source: "default" };
+}
+
+// 起動ログに付ける決定元の表示。既定値のときは何も付けない（通常の起動を煩わせない）。
+// 「既定を変えたはずなのに違うポートで起動している」ときに、環境変数の残存や
+// --port の指定を即座に見分けられるようにする
+export function portSourceLabel(source: PortSource): string {
+  if (source === "default") { return ""; }
+  return `  (port from ${source})`;
 }
 
 export interface CliOptions {
@@ -649,30 +672,39 @@ Environment:
   PORT                       Port to listen on (overridden by --port)
   CCUSAGE_LEDGER_ALLOW_LAN   Set to 1 to allow a non-loopback bind`;
 
-// 引数解析。未知のフラグは黙って無視せずエラーにする（打ち間違いに気づけるようにする）
+// 引数解析。未知のフラグは黙って無視せずエラーにする（打ち間違いに気づけるようにする）。
+// --name=value の分解はオプション個別ではなくループ先頭で行う。長いオプション一般の
+// 書き方であって --port 固有の性質ではないため、オプションを増やしたときに
+// 「= 形式だけ対応が漏れる」事故を構造的に防ぐ
 export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = { help: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--help" || arg === "-h") {
+    const equals = arg.indexOf("=");
+    const name = arg.startsWith("--") && equals !== -1 ? arg.slice(0, equals) : arg;
+    const inlineValue = arg.startsWith("--") && equals !== -1 ? arg.slice(equals + 1) : undefined;
+
+    if (name === "--help" || name === "-h") {
+      // 値を取らないフラグに = で値を付けた場合は黙って無視せず拒否する
+      // （--help=json のような指定が「無視された」と気づけないのを防ぐ）
+      if (inlineValue !== undefined) {
+        throw new Error(`${name} does not take a value`);
+      }
       options.help = true;
       continue;
     }
-    if (arg === "--port" || arg === "-p") {
-      const value = argv[i + 1];
-      if (value === undefined || value.startsWith("-")) {
-        throw new Error(`${arg} requires a value (e.g. ${arg} ${DEFAULT_PORT})`);
+    if (name === "--port" || name === "-p") {
+      // 値が別トークンの場合だけ次を読み進める（--port --help のように次がフラグなら拒否する）
+      const value = inlineValue ?? argv[i + 1];
+      // --port= のように = の後ろが空の場合も「値が無い」として扱う
+      if (value === undefined || value === "" || (inlineValue === undefined && value.startsWith("-"))) {
+        throw new Error(`${name} requires a value (e.g. ${name} ${DEFAULT_PORT})`);
       }
       options.port = value;
-      i++;
+      if (inlineValue === undefined) { i++; }
       continue;
     }
-    const inline = arg.match(/^--port=(.*)$/);
-    if (inline) {
-      options.port = inline[1]!;
-      continue;
-    }
-    throw new Error(`Unknown option: ${arg}\n\n${USAGE}`);
+    throw new Error(`Unknown option: ${name} (run with --help for usage)`);
   }
   return options;
 }
@@ -699,8 +731,8 @@ export async function main(): Promise<void> {
     console.log(USAGE);
     return;
   }
-  // 優先順位: --port > PORT > 既定値。指定元をエラーメッセージに反映する
-  const port = cli.port !== undefined ? parsePort(cli.port, "--port") : parsePort(process.env.PORT);
+  // 優先順位: --port > PORT > 既定値。指定元をエラーメッセージと起動ログに反映する
+  const { port, source: portSource } = resolvePort(cli.port, process.env.PORT);
   // HOST は IP リテラル/ホスト名以外を起動時に拒否する（browserUrl → openBrowser に流れるため）。
   // bind 失敗の「判りにくいエラー」より先に、設定ミスを明確なメッセージで報告する
   const hostname = parseHostname(process.env.HOST);
@@ -729,7 +761,10 @@ export async function main(): Promise<void> {
   const app = createApp({ rootDir, cachePath, hostname, port });
 
   // bind する。Bun 実行時は Bun.serve（requestIP を提供）、Node 実行時は @hono/node-server を使う
-  const boundPort = await startServer(app, hostname, port);
+  // bind 失敗はランタイムを問わずここで案内文言に変換する（Bun / Node で 2 箇所に散らさない）
+  const boundPort = await startServer(app, hostname, port).catch((error: unknown) => {
+    throw bindError(error instanceof Error ? error : new Error(String(error)), port);
+  });
 
   // ループバック TCP ポートは同一マシンの全ローカルユーザー/プロセスから閲覧できる。
   // 共有マシンでは他のローカルユーザーが /api/usage の全履歴を読めるため、その旨を起動時に警告する
@@ -749,7 +784,7 @@ export async function main(): Promise<void> {
     app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
   }
 
-  console.log(`ccusage ledger: http://${displayHostname(hostname)}:${boundPort}`);
+  console.log(`ccusage ledger: http://${displayHostname(hostname)}:${boundPort}${portSourceLabel(portSource)}`);
   if (result === null) {
     console.warn("WARN: failed to fetch ccusage data and no cache exists. /api/usage will return an empty dataset.");
   } else {
