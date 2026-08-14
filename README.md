@@ -37,6 +37,15 @@ Use `--port` to listen on a different port:
 npx ccusage-ledger --port 4000
 ```
 
+## Options
+
+| Option | Description |
+|---|---|
+| `-p`, `--port <number>` | Port to listen on (default: `3737`, also accepts `--port=<number>`). Takes precedence over the `PORT` env var |
+| `-h`, `--help` | Show usage and exit |
+
+When the port is not the default, the startup log shows where it came from (`(port from --port)` / `(port from PORT)`).
+
 ## What it shows
 
 - **Period granularity**: daily / monthly / yearly

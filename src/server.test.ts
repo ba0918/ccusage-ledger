@@ -510,6 +510,14 @@ describe("server LAN 案内ページ", () => {
     expect(chart.status).toBe(404);
   });
 
+  test("port を省略したときの案内ページは既定ポートを示す", async () => {
+    // createApp の既定値が DEFAULT_PORT とずれると、案内ページの ssh コマンドが
+    // 実際には繋がらないポートを案内する（既定ポート変更時に取り残された経緯がある）
+    const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
+    const page = await call(app, "/", "192.168.1.10");
+    expect(await page.text()).toContain(`ssh -L ${DEFAULT_PORT}:127.0.0.1:${DEFAULT_PORT}`);
+  });
+
   test("LAN bind のループバック接続（SSH トンネル）には通常のダッシュボードを配信する", async () => {
     const app = createApp({ rootDir, cachePath, hostname: "0.0.0.0" });
     const page = await call(app, "/", "127.0.0.1");

@@ -40,8 +40,15 @@ const COMMON_HEADERS: Record<string, string> = {
   "permissions-policy": "camera=(), microphone=(), geolocation=()",
 };
 
+// 既定ポート。3000 は React / Next / Rails 等の開発サーバーが使う最も競合しやすい番号で、
+// 初回起動がいきなり EADDRINUSE になりやすい。IANA の well-known / 一般的な開発用ポートを
+// 避け、Windows の動的ポート範囲（既定 49152-65535）にも入らない番号を既定にする。
+// 既定値のリテラルはここ 1 箇所に置く（createApp・--help・エラーメッセージが同じ値を指す）
+export const DEFAULT_PORT = 3737;
+
 // LAN 公開時・/api/usage 拒否時に案内する推奨トンネルコマンド。ポートは実際の bind ポート
-// （PORT 環境変数）を反映する。起動時警告・LAN 案内ページ・拒否メッセージが同一文言を使う
+// （--port / PORT 環境変数で決まった値）を反映する。起動時警告・LAN 案内ページ・
+// 拒否メッセージが同一文言を使う
 function sshTunnelHint(port: number): string {
   return `ssh -L ${port}:127.0.0.1:${port}`;
 }
@@ -200,7 +207,7 @@ export function createApp(options: {
   port?: number;
   rateLimit?: (key: string) => boolean;
 }): AppWithUsage {
-  const { rootDir, cachePath, hostname = "127.0.0.1", port = 3000 } = options;
+  const { rootDir, cachePath, hostname = "127.0.0.1", port = DEFAULT_PORT } = options;
 
   // /api/usage は起動時にキャッシュを読み込んでメモリから配信する（リクエスト毎のファイル読込で DoS 面を作らない）。
   // 読み込みは fetchUsage の readCache を共用する（所有権・0700・サイズ検証 + スキーマ検証 + 白リスト投影が
@@ -612,11 +619,6 @@ async function startServer(app: AppWithUsage, hostname: string, port: number): P
   });
 }
 
-// 既定ポート。3000 は React / Next / Rails 等の開発サーバーが使う最も競合しやすい番号で、
-// 初回起動がいきなり EADDRINUSE になりやすい。IANA の well-known / 一般的な開発用ポートを
-// 避け、Windows の動的ポート範囲（既定 49152-65535）にも入らない番号を既定にする
-export const DEFAULT_PORT = 3737;
-
 export type PortSource = "--port" | "PORT" | "default";
 
 // 1..65535 の整数文字列のみ受け付ける。Number() 直読みだと PORT=abc が NaN になり、
@@ -668,9 +670,11 @@ Options:
   -h, --help           Show this help
 
 Environment:
-  HOST                       Bind address (default: 127.0.0.1)
-  PORT                       Port to listen on (overridden by --port)
-  CCUSAGE_LEDGER_ALLOW_LAN   Set to 1 to allow a non-loopback bind`;
+  HOST                                      Bind address (default: 127.0.0.1)
+  PORT                                      Port to listen on (overridden by --port)
+  CCUSAGE_LEDGER_ALLOW_LAN                  Set to 1 to allow a non-loopback bind
+  CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE    Set to 1 to warn instead of refusing when the
+                                            ccusage native binary hash is not recorded`;
 
 // 引数解析。未知のフラグは黙って無視せずエラーにする（打ち間違いに気づけるようにする）。
 // --name=value の分解はオプション個別ではなくループ先頭で行う。長いオプション一般の
