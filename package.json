@@ -1,6 +1,6 @@
 {
   "name": "ccusage-ledger",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent CLI usage dashboard: visualize cost, tokens, and cache hit rates from ccusage data",
   "type": "module",
   "license": "MIT",
