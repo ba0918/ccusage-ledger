@@ -683,6 +683,11 @@ describe("server LAN bind 警告", () => {
     const warning = lanBindWarning("0.0.0.0", 5000)!;
     expect(warning).toContain("ssh -L 5000:127.0.0.1:5000");
   });
+
+  test("指定元を渡すと警告に含める（HOST の残存に気付けるようにする）", () => {
+    expect(lanBindWarning("0.0.0.0", 3000, "HOST=0.0.0.0")).toContain("binding to HOST=0.0.0.0");
+    expect(lanBindWarning("0.0.0.0", 3000, "--host=0.0.0.0")).toContain("binding to --host=0.0.0.0");
+  });
 });
 
 describe("server LAN bind 起動ポリシー", () => {

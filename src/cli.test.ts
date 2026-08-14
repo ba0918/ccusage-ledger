@@ -218,6 +218,54 @@ describe("cli LAN 公開ガード（実際の起動経路）", () => {
   }, 30_000);
 });
 
+describe("cli LAN 公開の警告にも指定元を出す", () => {
+  // 警告を見て中止したユーザーは決定元を含む起動ログまで到達しないため、
+  // 警告自体に指定元が無いと「なぜ LAN 公開になったのか」に気付けない。
+  // 警告が出るのは起動を続行する経路なので、警告を確認できた時点で止める
+  async function warningOf(env: Record<string, string>): Promise<string> {
+    const proc = Bun.spawn([process.execPath, "run", join(import.meta.dir, "cli.ts")], {
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    let seen = "";
+    try {
+      for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
+        seen += new TextDecoder().decode(chunk);
+        if (seen.includes("WARN: binding to")) { break; }
+      }
+    } finally {
+      proc.kill();
+    }
+    return seen;
+  }
+
+  test("HOST 由来の LAN 公開は警告に HOST= を出す", async () => {
+    const warning = await warningOf({ HOST: "0.0.0.0", CCUSAGE_LEDGER_ALLOW_LAN: "1", PORT: "3971" });
+    expect(warning).toContain("WARN: binding to HOST=0.0.0.0");
+  }, 30_000);
+
+  test("--host 由来の LAN 公開は警告に --host= を出す", async () => {
+    const proc = Bun.spawn([process.execPath, "run", join(import.meta.dir, "cli.ts"), "--host", "0.0.0.0", "--port", "3972"], {
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", CCUSAGE_LEDGER_ALLOW_LAN: "1" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    let seen = "";
+    try {
+      for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) {
+        seen += new TextDecoder().decode(chunk);
+        if (seen.includes("WARN: binding to")) { break; }
+      }
+    } finally {
+      proc.kill();
+    }
+    expect(seen).toContain("WARN: binding to --host=0.0.0.0");
+  }, 30_000);
+});
+
 describe("cli sourceLabel / hostSetting", () => {
   test("既定値のときは起動ログに何も足さない", () => {
     expect(sourceLabel("port", "default")).toBe("");

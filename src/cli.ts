@@ -207,16 +207,20 @@ export async function main(): Promise<void> {
   // LAN 公開の判定は解決後のホスト名だけを見る。--host で指定しても HOST で指定しても
   // 同じガード（TTY は確認プロンプト、非 TTY は CCUSAGE_LEDGER_ALLOW_LAN=1 が無ければ拒否）を通す
   const lanPolicy = lanStartPolicy(hostname, Boolean(process.stdin.isTTY), isLanAllowed(process.env));
+  // LAN 公開を伝えるすべての経路（refuse / prompt / warn）で決定元を示す。
+  // prompt で中止した場合は決定元を含む起動ログまで到達しないため、ここで出さないと
+  // 「なぜ LAN 公開になったのか」（シェルプロファイルに残った HOST など）に気付けない
+  const setting = hostSetting(hostname, hostSource);
   if (lanPolicy === "refuse") {
     console.error(
-      `ERROR: ${hostSetting(hostname, hostSource)} (non-loopback bind) would expose the dashboard and usage data to the network. ` +
+      `ERROR: ${setting} (non-loopback bind) would expose the dashboard and usage data to the network. ` +
         "Set CCUSAGE_LEDGER_ALLOW_LAN=1 to override, or use a loopback bind with an SSH tunnel: " +
         sshTunnelHint(port),
     );
     process.exit(1);
   }
   if (lanPolicy === "prompt") {
-    const warning = lanBindWarning(hostname, port)!;
+    const warning = lanBindWarning(hostname, port, setting)!;
     console.warn(warning);
     process.stdout.write("Start anyway? (y/N): ");
     if (!confirmLanStart()) {
@@ -226,7 +230,7 @@ export async function main(): Promise<void> {
       process.exit(1);
     }
   } else if (lanPolicy === "warn") {
-    console.warn(lanBindWarning(hostname, port)!);
+    console.warn(lanBindWarning(hostname, port, setting)!);
   }
 
   const app = createApp({ rootDir, cachePath, hostname, port });

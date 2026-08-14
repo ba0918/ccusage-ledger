@@ -108,10 +108,13 @@ function mappedIPv4(host: string): string | null {
   return null;
 }
 
-export function lanBindWarning(bindHostname: string, port: number): string | null {
+// setting には「どの指定でこの bind になったか」（`HOST=0.0.0.0` / `--host=0.0.0.0`）を渡す。
+// 警告を見て中止したユーザーが、シェルプロファイルに残った環境変数に気付けるようにするため
+// （prompt パスでは決定元を含む起動ログまで到達しないので、ここで出さないと手がかりが無い）
+export function lanBindWarning(bindHostname: string, port: number, setting: string = bindHostname): string | null {
   if (isLoopbackHost(bindHostname)) { return null; }
   // 平文 HTTP は同一セグメントの攻撃者が応答を改ざん・盗聴でき、CSP も意味を失うことを明記する
-  return `WARN: binding to ${bindHostname} exposes the dashboard and /api/usage data to anyone on the network (no authentication, plaintext HTTP: traffic can be eavesdropped and tampered with). To view from another device, use an SSH tunnel: ${sshTunnelHint(port)}`;
+  return `WARN: binding to ${setting} exposes the dashboard and /api/usage data to anyone on the network (no authentication, plaintext HTTP: traffic can be eavesdropped and tampered with). To view from another device, use an SSH tunnel: ${sshTunnelHint(port)}`;
 }
 
 export type LanStartPolicy = "ok" | "warn" | "prompt" | "refuse";
