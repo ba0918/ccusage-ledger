@@ -1,12 +1,30 @@
 # Dependabot で依存の定期更新を確認する
-# bun は npm レジストリ互換のため、エコシステムは npm として扱う
 version: 2
 updates:
-  - package-ecosystem: "npm"
+  # bun.lock を更新できるのは bun エコシステムだけなので、version update はこちらで受ける。
+  # npm エコシステムは package.json しか触らないため、bun install --frozen-lockfile が
+  # 「lockfile had changes, but lockfile is frozen」で必ず失敗する（#22 / #23 / #24 の実例）。
+  # 対応するのはテキスト形式の bun.lock のみ（バイナリの bun.lockb は非対応）で、bun 1.1.39 以上が必要。
+  # なお ccusage の更新 PR は、起動時の sha256 照合の固定値が古いままになるため単体では
+  # テストが落ちる。`bun run refresh-ccusage-hashes` で固定値を再計算してから取り込むこと
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5
+  # bun エコシステムは security update に非対応（GitHub のサポート表）のため、その経路が
+  # npm エコシステム側で残ることを期待して宣言を置いておく。open-pull-requests-limit: 0 は
+  # version update だけを止める指定で、security update はこの上限の対象外なので影響しない
+  # （bun 側と重複した version update PR が出るのを防ぎつつ、security update の経路は塞がない）。
+  # ただし security update がどちらのエコシステムで解決されるかは Dependabot 側の判断に依存する。
+  # 脆弱性の検知を依存しきらないよう、CI では push ごとと毎週の定期実行で bun audit を回している。
+  # ここから security update PR が出た場合は bun.lock を更新しないので CI は赤くなる。
+  # 取り込むときは bun install で lockfile を再生成すること
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 0
   # GitHub Actions の更新（SHA 固定は手動確認で実施）
   - package-ecosystem: "github-actions"
     directory: "/"
