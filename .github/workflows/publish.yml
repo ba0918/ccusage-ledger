@@ -60,7 +60,7 @@ jobs:
       # registry-url は指定しない: 指定すると NODE_AUTH_TOKEN を参照する .npmrc が生成され、
       # 値が空のトークン認証として扱われて OIDC の経路に入らない。
       # Node は 22.14.0 以上が必要（node-version: 22 は 22 系の最新を入れる）
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
       # Trusted Publishing は npm CLI 11.5.1 以上が必要だが、Node 22 に同梱されるのは 10 系。
