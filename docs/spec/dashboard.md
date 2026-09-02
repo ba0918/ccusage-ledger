@@ -19,7 +19,7 @@
 ## アーキテクチャ
 
 ```
-依存として固定した ccusage@20.0.19 の node_modules/ccusage/src/cli.js を実行中ランタイム（Bun / Node の process.execPath）で spawn して `--json --sections daily,monthly --by-agent` を渡す（サーバ起動時に1回実行）
+依存として固定した ccusage@20.0.20 の node_modules/ccusage/src/cli.js を実行中ランタイム（Bun / Node の process.execPath）で spawn して `--json --sections daily,monthly --by-agent` を渡す（サーバ起動時に1回実行）
         │
         ▼
 ~/.cache/ccusage-ledger/usage.json  （最新1ファイルキャッシュ。XDG_CACHE_HOME があればそれを基準）
@@ -37,7 +37,7 @@ Hono（Bun.serve / Node の @hono/node-server）   （ローカルサーバ）
 
 ## データ取得
 
-1. サーバ起動時に、依存として固定した `ccusage@20.0.19` の `node_modules/ccusage/src/cli.js` を実行中ランタイム（`process.execPath`。`bunx` / `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）で `--json --sections daily,monthly --by-agent` 付きで子プロセスとして spawn して実行
+1. サーバ起動時に、依存として固定した `ccusage@20.0.20` の `node_modules/ccusage/src/cli.js` を実行中ランタイム（`process.execPath`。`bunx` / `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）で `--json --sections daily,monthly --by-agent` 付きで子プロセスとして spawn して実行
 2. 標準出力の JSON を `~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）に上書き保存
 3. サーバはこのキャッシュファイルを API 経由で配信
 
@@ -154,13 +154,13 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 - 静的配信は固定 allowlist（`/` → index.html、`/dist/bundle.js`、`/public/app.css`、`/public/vendor/chart.umd.min.js`）のみで、URL からパスを組み立てない。パストラバーサル・ディレクトリ要求は構造的に排除され、配信対象外のファイル（サーバ CLI バンドル・エクスポート成果物等）や symlink が許可対象外の場所を指す場合は配信しない
 - データキャッシュはファイルパーミッション 0600 で書き、一時ファイルへの書き込み → rename で原子的に更新する
 - `ccusage` から取得した JSON はキャッシュ保存・配信・描画より前に検証する。すべてのコストとトークン数は有限かつ `0` 以上 `1e12` 以下とし、`metadata` が存在する場合は `null` や配列ではないオブジェクトだけを受理する。不正な取得結果は拒否し、安全な既存キャッシュがあればフォールバックする
-- ccusage コマンドはバージョン固定で実行する。依存として固定した `ccusage@20.0.19` の `node_modules/ccusage/src/cli.js` を、実行中ランタイム（Bun / Node の `process.execPath`）で直接 spawn して実行する（`bunx` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）。ccusage はレジストリから取得される外部コードであり、その実行は信頼を前提とする。バージョン固定は「毎回最新を取得」の移動標的リスクを減らすものであり、起動ごとの sha256 照合（下記）が完全な整合性検証ではないことは自明である
+- ccusage コマンドはバージョン固定で実行する。依存として固定した `ccusage@20.0.20` の `node_modules/ccusage/src/cli.js` を、実行中ランタイム（Bun / Node の `process.execPath`）で直接 spawn して実行する（`bunx` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）。ccusage はレジストリから取得される外部コードであり、その実行は信頼を前提とする。バージョン固定は「毎回最新を取得」の移動標的リスクを減らすものであり、起動ごとの sha256 照合（下記）が完全な整合性検証ではないことは自明である
 - `ccusage` 子プロセスには実効的な実行期限を設ける。期限超過時は通常の終了要求を送り、猶予時間内に終了しなければ強制終了する。強制終了後の待機にも上限を設け、サーバ起動や HTML エクスポートが無期限に停止しないようにする
 - 起動ごとにインストール済み ccusage の完全性を sha256 で照合する。ラッパー（`node_modules/ccusage`）はプラットフォーム非依存のため固定値（`CCUSAGE_WRAPPER_SHA256`）と全プラットフォームで照合し、実行プラットフォームの native バイナリ（`@ccusage/ccusage-<platform>-<arch>`）はプラットフォーム別テーブル（`CCUSAGE_NATIVE_SHA256_BY_PLATFORM`）と照合する。テーブルに未登録のプラットフォームでは検証不可として実行を拒否する（fail-closed。`CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` で明示オプトインすると WARN のみで続行する）。照合ハッシュは同一成果物内に同梱されるため、固定版そのものの悪意ある publish や同一ユーザーの改ざんは検知できない（自己参照の限界。検知対象はローカル/レジストリ上の post-install 改ざん）
 
 ### 将来調査
 
-- period 合計値と model/agent 内訳の意味的整合性および許容差は、固定版 `ccusage@20.0.19` の保証を確認してから別途定義する。推測した整合条件で正常データを拒否しない
+- period 合計値と model/agent 内訳の意味的整合性および許容差は、固定版 `ccusage@20.0.20` の保証を確認してから別途定義する。推測した整合条件で正常データを拒否しない
 - 巨大 JSON のピークメモリ対策は、全履歴表示という製品要件と、子プロセス出力・JSON解析・投影・ブラウザ描画の各段階を分けて実測する。固定版はストリーミング取得用の公開 API を提供していないため非公開 API には依存せず、将来公開 API を採用する場合も秘密情報・障害・メモリ消費をサーバ本体から隔離するプロセス境界を維持する
 
 ## 多言語対応（i18n）

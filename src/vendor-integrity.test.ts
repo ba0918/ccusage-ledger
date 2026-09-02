@@ -73,7 +73,7 @@ describe("vendored assets integrity", () => {
 
   test("native プラットフォーム別テーブルは全 6 プラットフォームを網羅する（未登録プラットフォームは fail-closed）", () => {
     // native バイナリはプラットフォームごとに内容が異なるため、プラットフォーム別テーブルで
-    // 検証する。ccusage@20.0.19 が提供する全プラットフォーム（npm tarball から計算・裏取り済み）
+    // 検証する。ccusage@20.0.20 が提供する全プラットフォーム（npm tarball から計算・裏取り済み）
     // が登録されていないと、そのプラットフォームでは起動時に検証不可となる
     const registered = [
       "darwin-arm64",
