@@ -95,9 +95,16 @@ publish ワークフロー（`.github/workflows/publish.yml`）が以下の順�
 - バージョンを間違えてタグを打った場合は、push 前ならタグを消してやり直す。既に publish まで通った場合はそのバージョンは再利用できないため、次の番号で出し直す
 - `CHANGELOG.md` は持たず、GitHub Release の自動生成ノート（マージされた PR の一覧）を変更履歴とする
 
+## 依存更新（Dependabot）
+
+- version update は `bun` エコシステムで受ける。`npm` エコシステムは `package.json` しか更新せず `bun.lock` を触らないため、PR 単体で `bun install --frozen-lockfile` が失敗する
+- `npm` エコシステムの宣言は `open-pull-requests-limit: 0` で version update だけを止めて残してある。`bun` は security update に非対応（GitHub のサポート表）なので、その経路を塞がないための保険。脆弱性検知はこれに依存しきらず、CI が push ごとと毎週の定期実行で `bun audit` を回している
+- `ccusage` の更新 PR は、起動時の sha256 照合の固定値が古いままになるためテストが落ちる。`bun run refresh-ccusage-hashes` で `CCUSAGE_WRAPPER_SHA256` と `CCUSAGE_NATIVE_SHA256_BY_PLATFORM`（全 6 プラットフォーム）を再計算してから取り込む。スクリプトは npm tarball を `bun.lock` の integrity と照合してから展開し、起動時の照合と同じ `hashPackageFiles` で算出するため、算出側と検証側のアルゴリズムがずれない
+
 ## 主要コマンド
 
 - フロントビルド: `bun run build`
 - テスト: `bun test`
 - 型チェック: `bunx tsc --noEmit`
 - リント: `bun run lint`（biome。`noNonNullAssertion` は `noUncheckedIndexedAccess` との併用慣用のため biome.jsonc で無効化している）
+- ccusage 更新時の固定値再計算: `bun run refresh-ccusage-hashes`（`--check` で書き換えずに要更新かどうかだけを見る）

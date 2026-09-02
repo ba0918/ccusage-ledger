@@ -122,7 +122,7 @@ export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
 // ccusage@20.0.20 のラッパー（node_modules/ccusage = cli.js + config-schema.json）の sha256。
 // ラッパーは cli.js + config-schema.json のみでプラットフォーム非依存のため、全プラットフォームで
 // 同一の固定値を照合できる。依存を更新した場合は再計算して必ず更新する
-// （vendor-integrity.test.ts の固定値と同一アルゴリズムで算出する）
+// （更新は `bun run refresh-ccusage-hashes` で行う。手順は scripts/refresh-ccusage-hashes.ts 参照）
 export const CCUSAGE_WRAPPER_SHA256 = "f5a269e7257f7a8dea675fb678d864d81990c04b2f2562d094cf3835005ec7e4";
 
 // 実行プラットフォームの native バイナリ（@ccusage/ccusage-<platform>-<arch>）の sha256。
@@ -130,6 +130,7 @@ export const CCUSAGE_WRAPPER_SHA256 = "f5a269e7257f7a8dea675fb678d864d81990c04b2
 // 登録値は ccusage@20.0.20 の npm tarball（registry が配布する実体）から、hashPackageFiles と
 // 同一アルゴリズムで計算した固定値（linux-x64 は node_modules 実インストールとの一致を裏取り済み）。
 // 依存を更新した場合は全プラットフォームで再計算して必ず更新する
+// （更新は `bun run refresh-ccusage-hashes` で行う。手順は scripts/refresh-ccusage-hashes.ts 参照）
 export const CCUSAGE_NATIVE_SHA256_BY_PLATFORM: Record<string, string> = {
   "darwin-arm64": "2978cc210aeb5ee8aa1ed3a6f70805c9e46d9f9245bcbe0db392aa259c5f60c2",
   "darwin-x64": "43c45514f19d89641642c3257f0a690529ab815d28f983d89ebf146a39f49423",
@@ -204,7 +205,7 @@ export function toPosixRelPath(name: string, separator: string = sep): string {
   return name.split(separator).join("/");
 }
 
-function hashPackageFiles(root: string): string {
+export function hashPackageFiles(root: string): string {
   const files = (readdirSync(root, { recursive: true, encoding: "utf8" }) as string[])
     .filter((name) => statSync(join(root, name)).isFile())
     .map((name) => ({ name, key: toPosixRelPath(name) }))

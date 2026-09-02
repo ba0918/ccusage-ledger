@@ -30,8 +30,9 @@
     "prepare": "bun run build",
     "prepublishOnly": "bun test && bunx tsc --noEmit && bun run lint && bun run build",
     "test": "bun test",
-    "lint": "bunx biome lint src/",
-    "typecheck": "bunx tsc --noEmit"
+    "lint": "bunx biome lint src/ scripts/",
+    "typecheck": "bunx tsc --noEmit",
+    "refresh-ccusage-hashes": "bun run scripts/refresh-ccusage-hashes.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.7",
