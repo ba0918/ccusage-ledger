@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, closeSync, chmodSync, readdirSync, statSync, lstatSync, fstatSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
@@ -16,7 +16,7 @@ export interface SpawnResult {
   exitCode: number;
 }
 
-export type SpawnFn = (command: string[]) => Promise<SpawnResult>;
+export type SpawnFn = (command: string[], signal?: AbortSignal) => Promise<SpawnResult>;
 
 export interface FetchUsageOptions {
   command?: string[];
@@ -24,12 +24,16 @@ export interface FetchUsageOptions {
   spawn?: SpawnFn;
   now?: Date;
   rebuildCache?: boolean;
+  signal?: AbortSignal;
+  onStage?: (stage: string) => void;
+  onWarning?: (message: string) => void;
 }
 
 export interface FetchUsageResult {
   data: UsageData;
   source: "fresh" | "cache";
   metadata?: CacheMetadata;
+  cacheWriteWarning?: boolean;
 }
 
 // セクション集合は usage-data.ts の SECTIONS と常に一致させる（検証と取得がずれるとキャッシュが常に無効化される）
@@ -244,7 +248,7 @@ export function computeNativeHash(packageDir: string = PACKAGE_DIR): string | nu
 // 単一固定値として使えない。代わりに computeWrapperHash / computeNativeHash を
 // それぞれ CCUSAGE_WRAPPER_SHA256 / CCUSAGE_NATIVE_SHA256_BY_PLATFORM と照合する
 
-function assertCcusageIntegrity(packageDir: string = PACKAGE_DIR): void {
+function assertCcusageIntegrity(packageDir: string = PACKAGE_DIR, warn: (message: string) => void = console.warn): void {
   // インストール済みの ccusage が改ざんされていないかを起動ごとに検証する。
   // ラッパーは全プラットフォームで固定値と照合し、native バイナリはプラットフォーム別テーブルが
   // 登録済みのプラットフォームでのみ照合する（F4）。
@@ -274,7 +278,7 @@ function assertCcusageIntegrity(packageDir: string = PACKAGE_DIR): void {
     // ハッシュの登録方法は CCUSAGE_NATIVE_SHA256_BY_PLATFORM のコメントを参照）
     const policy = nativeIntegrityPolicy(process.env, null);
     if (policy === "unverified-override") {
-      console.warn(
+      warn(
         `WARN: ccusage native binary integrity is not verified on ${ccusagePlatformKey()} (no expected hash recorded). ` +
           "Running with CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1 override.",
       );
@@ -334,6 +338,22 @@ export interface ExitTimeoutOptions {
   terminationGraceMs: number;
   forceKillWaitMs: number;
   onTimeout?: () => void;
+  signal?: AbortSignal;
+  processGroup?: boolean;
+}
+
+// A dedicated POSIX process group contains both the JS wrapper and native work.
+// Windows has no POSIX groups; taskkill /T terminates that owned process tree.
+function killCollection(proc: ChildProcess, signal: NodeJS.Signals, processGroup: boolean): void {
+  try {
+    if (processGroup && proc.pid) {
+      if (process.platform === "win32") {
+        spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      } else { process.kill(-proc.pid, signal); }
+    } else { proc.kill(signal); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") { throw error; }
+  }
 }
 
 export function waitForExit(proc: ChildProcess, timeout?: ExitTimeoutOptions): Promise<number> {
@@ -342,10 +362,13 @@ export function waitForExit(proc: ChildProcess, timeout?: ExitTimeoutOptions): P
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     let forceCompletionTimer: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
+    let terminating = false;
+    const kill = (signal: NodeJS.Signals): void => killCollection(proc, signal, timeout?.processGroup ?? false);
     const cleanup = (): void => {
-      if (terminationTimer) { clearTimeout(terminationTimer); }
-      if (forceKillTimer) { clearTimeout(forceKillTimer); }
-      if (forceCompletionTimer) { clearTimeout(forceCompletionTimer); }
+      clearTimeout(terminationTimer);
+      clearTimeout(forceKillTimer);
+      clearTimeout(forceCompletionTimer);
+      timeout?.signal?.removeEventListener("abort", onAbort);
       proc.off("error", onError);
       proc.off("close", onClose);
     };
@@ -356,53 +379,67 @@ export function waitForExit(proc: ChildProcess, timeout?: ExitTimeoutOptions): P
       action();
     };
     const onError = (error: Error): void => finish(() => reject(error));
-    const onClose = (code: number | null): void => finish(() => resolve(code ?? 1));
+    const onClose = (code: number | null): void => {
+      if (terminating && timeout?.processGroup) { kill("SIGKILL"); }
+      finish(() => resolve(code ?? 1));
+    };
+    const terminate = (): void => {
+      if (terminating || settled) { return; }
+      terminating = true;
+      forceKillTimer = setTimeout(() => {
+        kill("SIGKILL");
+        forceCompletionTimer = setTimeout(() => finish(() => resolve(1)), timeout?.forceKillWaitMs ?? 1000);
+      }, timeout?.terminationGraceMs ?? 1000);
+      kill("SIGTERM");
+    };
+    const onAbort = (): void => terminate();
     proc.on("error", onError);
     proc.on("close", onClose);
-
     if (timeout) {
-      terminationTimer = setTimeout(() => {
-        timeout.onTimeout?.();
-        proc.kill("SIGTERM");
-        forceKillTimer = setTimeout(() => {
-          proc.kill("SIGKILL");
-          forceCompletionTimer = setTimeout(
-            () => finish(() => resolve(1)),
-            timeout.forceKillWaitMs,
-          );
-        }, timeout.terminationGraceMs);
-      }, timeout.timeoutMs);
+      terminationTimer = setTimeout(() => { timeout.onTimeout?.(); terminate(); }, timeout.timeoutMs);
+      timeout.signal?.addEventListener("abort", onAbort, { once: true });
+      if (timeout.signal?.aborted) { onAbort(); }
     }
   });
 }
 
-export async function collectProcessOutput(
-  proc: ChildProcess,
-  timeout: ExitTimeoutOptions,
-): Promise<SpawnResult> {
+export async function collectProcessOutput(proc: ChildProcess, timeout: ExitTimeoutOptions): Promise<SpawnResult> {
   const stdout = proc.stdout;
   if (stdout === null) { throw new Error("ccusage stdout is not available"); }
-  const timeoutError = new Error("ccusage process timed out");
-  const [output, exitCode] = await Promise.all([
-    readStdoutWithLimit(stdout),
-    waitForExit(proc, {
-      ...timeout,
-      onTimeout: () => {
-        stdout.destroy(timeoutError);
-        timeout.onTimeout?.();
-      },
-    }),
-  ]);
-  return { stdout: output, exitCode };
+  const controller = new AbortController();
+  const onAbort = (): void => {
+    stdout.destroy(new Error("ccusage collection cancelled"));
+    controller.abort();
+  };
+  const exited = waitForExit(proc, {
+    ...timeout,
+    signal: controller.signal,
+    onTimeout: () => {
+      stdout.destroy(new Error("ccusage process timed out"));
+      timeout.onTimeout?.();
+    },
+  });
+  const output = readStdoutWithLimit(stdout).catch((error: unknown) => { controller.abort(); throw error; });
+  timeout.signal?.addEventListener("abort", onAbort, { once: true });
+  if (timeout.signal?.aborted) { onAbort(); }
+  try {
+    // Wait for termination even if stdout fails: temporary HOME must outlive work.
+    const [read, exit] = await Promise.allSettled([output, exited]);
+    if (read.status === "rejected") { throw read.reason; }
+    if (exit.status === "rejected") { throw exit.reason; }
+    return { stdout: read.value, exitCode: exit.value };
+  } finally {
+    timeout.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
-async function defaultSpawn(args: string[]): Promise<SpawnResult> {
+async function defaultSpawn(args: string[], signal?: AbortSignal, warn: (message: string) => void = console.warn): Promise<SpawnResult> {
+  signal?.throwIfAborted();
   const cliPath = ccusageCliPath();
   if (!existsSync(cliPath)) {
     throw new Error(`ccusage is not installed: ${cliPath} (run \`bun install\`)`);
   }
   // 依存として固定した cli.js を実行する前に、インストール済みパッケージの完全性を検証する
-  assertCcusageIntegrity();
 
   // HOME を渡さないための空の一時ディレクトリ。ccusage がデフォルトで ~/.claude 等を
   // 探索しないようにし、データソースは spawnEnv が渡すデータディレクトリ env に限定する
@@ -421,6 +458,8 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     proc = spawn(command[0]!, command.slice(1), {
       env: spawnEnv(process.env, { userHome: userHomeDir(process.env), emptyHome }),
       stdio: ["ignore", "pipe", "ignore"] as const,
+      detached: process.platform !== "win32",
+      windowsHide: true,
     });
 
     // stdout をバイト上限付きで収集する（readStdoutWithLimit と同一実装）。上限超過時は
@@ -431,41 +470,57 @@ async function defaultSpawn(args: string[]): Promise<SpawnResult> {
     // stdout の EOF は必ずしもプロセス終了と同時ではないため、exitCode は 'close' を
     // 待って読む（待たずに proc.exitCode を見ると null になり、失敗を成功と誤判定する）
     return await collectProcessOutput(proc, {
+      signal,
+      processGroup: true,
       timeoutMs: 60_000,
       terminationGraceMs: 1_000,
       forceKillWaitMs: 1_000,
     });
   } finally {
     if (proc !== null && proc.exitCode === null && !proc.killed) {
-      proc.kill();
+      killCollection(proc, "SIGKILL", true);
     }
     // 一時 HOME は子プロセス終了後に掃除する。掃除の失敗で fetch 自体を失敗させず、
     // 取得済みの結果をキャッシュフォールバックで上書きしない（best-effort）
     try {
       rmSync(emptyHome, { recursive: true, force: true });
     } catch (error) {
-      console.warn(`WARN: failed to remove temporary HOME: ${messageOf(error)}`);
+      warn(`WARN: failed to remove temporary HOME: ${messageOf(error)}`);
     }
   }
 }
 
 export async function fetchUsage(options: FetchUsageOptions = {}): Promise<FetchUsageResult | null> {
+  options.signal?.throwIfAborted();
+  options.onStage?.("Verifying ccusage");
+  const warn = options.onWarning ?? ((message: string) => console.warn(message));
   const command = options.command ?? DEFAULT_COMMAND;
   const cachePath = options.cachePath ?? defaultCachePath(process.env);
-  const spawn = options.spawn ?? defaultSpawn;
+  const spawn = options.spawn ?? ((args: string[], signal?: AbortSignal) => defaultSpawn(args, signal, warn));
 
   const now = options.now ?? new Date();
+  let cacheable = true;
   let context: ReturnType<typeof collectionContext>;
   try { context = collectionContext(command); } catch {
-    console.warn("WARN: cannot verify usage cache configuration; no compatible cache is available");
-    return null;
+    warn("WARN: cannot fingerprint usage configuration; collecting full history without cache reuse or persistence");
+    cacheable = false;
+    context = { fingerprint: "", timezone: "UTC", windowSafe: false };
   }
   const { fingerprint, timezone, windowSafe } = context;
-  const cached = readCache(cachePath, fingerprint);
+  const cached = cacheable ? readCache(cachePath, fingerprint) : null;
   const since = !options.rebuildCache && windowSafe ? refreshSince(now, cached?.metadata, fingerprint, timezone) : null;
   const args = since ? [...command, "--since", since.replaceAll("-", "")] : command;
   try {
-    const result = await spawn(args);
+    if (!options.spawn) { assertCcusageIntegrity(PACKAGE_DIR, warn); }
+    options.signal?.throwIfAborted();
+    options.onStage?.(since ? `Collecting usage since ${since}` : "Collecting full history");
+    const result = await spawn(args, options.signal);
+    options.signal?.throwIfAborted();
+    options.onStage?.("Validating and saving usage");
+    if (cacheable && collectionFingerprint(command) !== fingerprint) {
+      warn("WARN: usage configuration changed during collection; discarded the result");
+      return null;
+    }
     if (result.exitCode === 0) {
       const parsed: unknown = JSON.parse(result.stdout);
       if (isUsageData(parsed)) {
@@ -474,32 +529,36 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
         const fresh = projectUsageData(parsed);
         const projected = since && cached ? replaceCoverage(cached.data, fresh, since) : fresh;
         const metadata: CacheMetadata = { version: 1, refreshedAt: now.getTime(), fingerprint, fullAt: since ? cached!.metadata!.fullAt : now.getTime() };
+        let cacheWriteWarning = false;
         try {
+          if (!cacheable) { throw new Error("configuration fingerprint is unavailable"); }
           writeCache(cachePath, { ...projected, _ledger: metadata });
         } catch (error) {
           // キャッシュ書き込み失敗はベストエフォートで扱う。取得済みの新鮮データを捨てずに返す
-          console.warn(`WARN: failed to write usage cache: ${messageOf(error)}`);
+          cacheWriteWarning = true;
+          warn(`WARN: failed to write usage cache: ${messageOf(error)}`);
         }
-        return { data: projected, source: "fresh" };
+        return { data: projected, source: "fresh", ...(cacheWriteWarning ? { cacheWriteWarning } : {}) };
       }
       // スキーマ不一致の出力はキャッシュへフォールバックする。警告なしで静かに stale を
       // 配信し続けないよう、ここで WARN を出す（integrity check の失敗は下の catch で ERROR）
-      console.warn("WARN: ccusage produced invalid usage data; falling back to cache");
+      warn("WARN: ccusage produced invalid usage data; falling back to cache");
     } else {
-      console.warn(`WARN: ccusage exited with code ${result.exitCode}; falling back to cache`);
+      warn(`WARN: ccusage exited with code ${result.exitCode}; falling back to cache`);
     }
   } catch (error) {
+    options.signal?.throwIfAborted();
     // コマンド実行・パース失敗はキャッシュフォールバックへ。ただし integrity check の失敗は
     // 改ざん検出という性質上、WARN ではなく明示的な ERROR でオペレータに知らせる
     // （キャッシュフォールバックで stale データを配信し続けても気づかないのを防ぐ）
     if (error instanceof Error && error.message.includes("integrity check failed")) {
-      console.error(`ERROR: ${error.message}`);
+      warn(`ERROR: ${error.message}`);
     } else {
-      console.warn(`WARN: ccusage fetch failed; falling back to cache: ${messageOf(error)}`);
+      warn(`WARN: ccusage fetch failed; falling back to cache: ${messageOf(error)}`);
     }
   }
 
-  return cached;
+  try { return readCache(cachePath, collectionFingerprint(command)); } catch { return null; }
 }
 
 // ディレクトリのパーミッションが 0700（所有者のみ読み書き可）かどうか。
@@ -592,7 +651,8 @@ export function collectionContext(command: string[] = DEFAULT_COMMAND): { finger
   const explicit = command.find((arg) => arg.startsWith("--config="))?.slice(9) ?? (command.includes("--config") ? command[command.indexOf("--config") + 1] : undefined);
   const configPaths = explicit ? [explicit] : [join(process.cwd(), ".ccusage", "ccusage.json"), ...(env.CLAUDE_CONFIG_DIR ?? "").split(",").map((dir) => dir.trim()).filter(Boolean).map((dir) => join(dir, "ccusage.json"))];
   let config: Record<string, unknown> | undefined;
-  const configs = configPaths.map((path) => {
+  const configs: Array<[string, string | null]> = [];
+  for (const path of configPaths) {
     try {
       const fd = openSync(path, "r");
       try {
@@ -604,13 +664,15 @@ export function collectionContext(command: string[] = DEFAULT_COMMAND): { finger
             if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) { config = parsed as Record<string, unknown>; }
           } catch { /* Upstream skips malformed JSON during discovery. */ }
         }
-        return [resolve(path), createHash("sha256").update(bytes).digest("hex")];
+        configs.push([resolve(path), createHash("sha256").update(bytes).digest("hex")]);
       } finally { closeSync(fd); }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") { return [resolve(path), null]; }
-      throw error;
+      if (error instanceof Error && error.message === "ccusage config exceeds fingerprint limit") { throw error; }
+      // Rust discovery skips unreadable paths and continues to the next candidate.
+      configs.push([resolve(path), null]);
     }
-  });
+    if (config) { break; }
+  }
   const defaults = config?.defaults as Record<string, unknown> | undefined;
   const daily = (config?.commands as Record<string, Record<string, unknown>> | undefined)?.daily;
   const configuredZone = daily?.timezone ?? defaults?.timezone;

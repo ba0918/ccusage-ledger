@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fetchUsage, readCache } from "./fetch-usage";
+import { fetchUsage, readCache, collectionContext } from "./fetch-usage";
 import { refreshSince, replaceCoverage, type CacheMetadata } from "./month-cache";
 import type { PeriodEntry } from "./types";
 
@@ -168,4 +168,69 @@ test("preloading refuses cache from incompatible configuration", async () => {
   const options = setup();
   await fetchUsage({ ...options, command: ["--json", "--since", "20260101"], spawn: async () => ({ exitCode: 0, stdout: '{"daily":[],"monthly":[]}' }) });
   expect(readCache(options.cachePath)).toBeNull();
+});
+
+test("collection reports observed stages and cancellation cannot save or return fallback", async () => {
+  const options = setup();
+  const stages: string[] = [];
+  const empty = { exitCode: 0, stdout: '{"daily":[],"monthly":[]}' };
+  await fetchUsage({ ...options, onStage: (stage) => stages.push(stage), spawn: async () => empty });
+  expect(stages).toEqual(["Verifying ccusage", "Collecting full history", "Validating and saving usage"]);
+  const before = readFileSync(options.cachePath, "utf8");
+  const controller = new AbortController();
+  await expect(fetchUsage({ ...options, signal: controller.signal, spawn: async () => { controller.abort(); return empty; } })).rejects.toThrow();
+  expect(readFileSync(options.cachePath, "utf8")).toBe(before);
+});
+
+test("already cancelled startup never launches collection", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let spawned = false;
+  await expect(fetchUsage({ ...setup(), signal: controller.signal, spawn: async () => { spawned = true; return { exitCode: 0, stdout: '{"daily":[],"monthly":[]}' }; } })).rejects.toThrow();
+  expect(spawned).toBe(false);
+});
+
+test("config discovery stops after its first valid object", () => {
+  const old = process.env.CLAUDE_CONFIG_DIR;
+  const first = mkdtempSync(join(tmpdir(), "ledger-config-"));
+  const ignored = mkdtempSync(join(tmpdir(), "ledger-config-"));
+  try {
+    writeFileSync(join(first, "ccusage.json"), '{"defaults":{"timezone":"UTC"}}');
+    writeFileSync(join(ignored, "ccusage.json"), " ".repeat(1024 * 1024 + 1));
+    process.env.CLAUDE_CONFIG_DIR = `${first},${ignored}`;
+    expect(collectionContext().timezone).toBe("UTC");
+  } finally {
+    if (old === undefined) { delete process.env.CLAUDE_CONFIG_DIR; } else { process.env.CLAUDE_CONFIG_DIR = old; }
+  }
+});
+
+test("configuration changing during collection cannot merge into the earlier source", async () => {
+  const options = setup();
+  const old = process.env.CODEX_HOME;
+  try {
+    process.env.CODEX_HOME = "/synthetic/source-a";
+    const empty = { exitCode: 0, stdout: '{"daily":[],"monthly":[]}' };
+    await fetchUsage({ ...options, spawn: async () => empty });
+    expect(await fetchUsage({ ...options, spawn: async () => { process.env.CODEX_HOME = "/synthetic/source-b"; return empty; } })).toBeNull();
+  } finally {
+    if (old === undefined) { delete process.env.CODEX_HOME; } else { process.env.CODEX_HOME = old; }
+  }
+});
+
+test("an un-fingerprintable active config still permits a full collection without cache reuse", async () => {
+  const options = setup();
+  const old = process.env.CLAUDE_CONFIG_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "ledger-config-"));
+  try {
+    process.env.CLAUDE_CONFIG_DIR = dir;
+    writeFileSync(join(dir, "ccusage.json"), `{}${" ".repeat(1024 * 1024)}`);
+    let args: string[] = [];
+    const result = await fetchUsage({ ...options, spawn: async (command) => { args = command; return { exitCode: 0, stdout: '{"daily":[],"monthly":[]}' }; } });
+    expect(result?.source).toBe("fresh");
+    expect(result?.cacheWriteWarning).toBe(true);
+    expect(args).not.toContain("--since");
+    expect(readCache(options.cachePath)).toBeNull();
+  } finally {
+    if (old === undefined) { delete process.env.CLAUDE_CONFIG_DIR; } else { process.env.CLAUDE_CONFIG_DIR = old; }
+  }
 });

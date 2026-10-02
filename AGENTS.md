@@ -5,14 +5,18 @@
 ## 技術スタック
 
 - **サーバ**: Bun + TypeScript。HTTP レイヤーは Hono（`hono`）を使用し、Bun 実行時は `Bun.serve`、Node 実行時は `@hono/node-server` で起動する
-- **データ取得**: dependencies で固定した `ccusage@20.0.26`（bun.lock で integrity 固定）の `node_modules/ccusage/src/cli.js` を、実行中ランタイムの `process.execPath`（Bun / Node）で直接 spawn して `--json --sections daily,monthly --by-agent` で全履歴を取得（`bunx` や `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）
+- **データ取得**: dependencies で固定した `ccusage@20.0.26`（bun.lock で integrity 固定）の `node_modules/ccusage/src/cli.js` を、実行中ランタイムの `process.execPath`（Bun / Node）で直接 spawn して `--json --sections daily,monthly --by-agent` で初回全履歴、以後は互換キャッシュへ前月初日以降を置換して取得（`bunx` や `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）
 - **フロント**: 素の TypeScript + Chart.js (vendored)。`bun run build` でバンドル
 
 ## データフロー
 
-1. サーバ起動時に依存の `ccusage@20.0.26` を直接実行し、そのマシンの全履歴を取得（子プロセスには許可リストの環境変数のみ渡す。API キー等の秘密は渡さない。HOME は渡さず空の一時ディレクトリを設定し、データソースは各エージェントのデータディレクトリ env（`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_DATA_DIR` / `OPENCODE_DATA_DIR`）だけを渡す。ccusage がデフォルト探索で `~/.ssh` 等のエージェント以外の秘密に触れるのを防ぐ。ただし実行ユーザーが同じであるため、改ざんされたバイナリがファイルシステムを直接探索することは防げない。post-install の改ざん検出として、起動ごとに `node_modules/ccusage` ラッパーの sha256 を固定値（`CCUSAGE_WRAPPER_SHA256`）と照合する。ラッパーはプラットフォーム非依存のため全プラットフォームで検証される。実行プラットフォームの native バイナリ（`@ccusage/ccusage-<platform>-<arch>`）はプラットフォーム別テーブル（`CCUSAGE_NATIVE_SHA256_BY_PLATFORM`）と照合する（ccusage@20.0.26 が提供する全 6 プラットフォームを npm tarball から計算して登録済み。登録は各プラットフォームで再計算する）。将来の新プラットフォームで未登録の場合は検証不可として実行を拒否する（fail-closed。`CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` で明示オプトインすると WARN のみで続行）。照合ハッシュは同一成果物内に同梱されるため、固定版そのものの悪意ある publish や同一ユーザーの改ざんは検知できない（自己参照の限界。検知対象はローカル/レジストリ上の post-install 改ざん））
+1. サーバ起動時に依存の `ccusage@20.0.26` を直接実行し、初回は全履歴、互換キャッシュがある場合は前月初日以降を取得（子プロセスには許可リストの環境変数のみ渡す。API キー等の秘密は渡さない。HOME は渡さず空の一時ディレクトリを設定し、データソースは各エージェントのデータディレクトリ env（`CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_DATA_DIR` / `OPENCODE_DATA_DIR`）だけを渡す。ccusage がデフォルト探索で `~/.ssh` 等のエージェント以外の秘密に触れるのを防ぐ。ただし実行ユーザーが同じであるため、改ざんされたバイナリがファイルシステムを直接探索することは防げない。post-install の改ざん検出として、起動ごとに `node_modules/ccusage` ラッパーの sha256 を固定値（`CCUSAGE_WRAPPER_SHA256`）と照合する。ラッパーはプラットフォーム非依存のため全プラットフォームで検証される。実行プラットフォームの native バイナリ（`@ccusage/ccusage-<platform>-<arch>`）はプラットフォーム別テーブル（`CCUSAGE_NATIVE_SHA256_BY_PLATFORM`）と照合する（ccusage@20.0.26 が提供する全 6 プラットフォームを npm tarball から計算して登録済み。登録は各プラットフォームで再計算する）。将来の新プラットフォームで未登録の場合は検証不可として実行を拒否する（fail-closed。`CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` で明示オプトインすると WARN のみで続行）。照合ハッシュは同一成果物内に同梱されるため、固定版そのものの悪意ある publish や同一ユーザーの改ざんは検知できない（自己参照の限界。検知対象はローカル/レジストリ上の post-install 改ざん））
 2. 結果を `~/.cache/ccusage-ledger/usage.json` に上書き保存（最新1ファイルキャッシュ方式。`XDG_CACHE_HOME` があればそれを基準。キャッシュディレクトリが自分所有かつ 0700 であることを確認できない場合は読み書きとも行わない（fail-closed。書込みは 0700 へ修復を試み、読込みはキャッシュなし扱いになる）。Windows は `statSync().mode` が POSIX 権限を持たず `process.getuid` も無いため所有者・権限のどちらも Node から検証できない。代わりに「ユーザープロファイル配下か」で判定し、`XDG_CACHE_HOME` 等でプロファイル外を指した場合は検証不能として拒否する（NTFS ACL 自体は検証していない。プロファイルの ACL が緩められている場合は守れないのが残余リスク））
-3. サーバが JSON を配信し、フロントがクライアント側で集計して描画
+3. 前月初日以降の daily / monthly を追加ではなく全置換する（取得結果に無くなった期間も削除）。以前の期間は保持し、monthly は upstream の値を使う。最終 full 成功から 7 日以上の起動、または `--rebuild-cache` で全履歴を再照合する。古い編集・削除・backfill・再価格計算は次の full 成功で反映される。価格取得の設定は変えない
+4. キャッシュにはデータと同じ atomic write で `_ledger` メタデータを保存する。スキーマ・集計 revision、固定 upstream、command、探索設定、実効データディレクトリ、cwd、timezone を fingerprint 化し、生のパスは保存しない。互換性のない設定/ソースは fallback 配信もしない。旧形式は full 取得まで stale fallback として使える。カスタム command、設定の期間制限、判定不能 timezone、親の `TZ` 指定時は window 最適化を行わない（子の環境変数 allowlist は変更しない）
+5. サーバが JSON を配信し、フロントがクライアント側で集計して描画
+
+起動時は stderr TTY（CI を除く）に実ステージと monotonic 経過時間を一行表示する。非 TTY は通常の行出力。fresh / valid empty / stale fallback / 初回失敗 / cache write warning を区別し、ブラウザは usable な結果が出た後だけ開く。Ctrl+C は wrapper/native の処理とサーバを停止し、一時 HOME と表示タイマーを片付ける。取得期限は 60 秒を維持する。詳細は `docs/spec/startup-month-cache.md` と `docs/measurements/startup-month-cache.md`。
 
 ## データ構造（ccusage JSON）
 

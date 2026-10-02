@@ -604,3 +604,27 @@ describe("spawn デフォルト（stdout 上限）", () => {
     expect(text).toBe("hello");
   });
 });
+
+test("cancellation terminates and reaps a running collection before returning", async () => {
+  const proc = spawnProcess(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: ["ignore", "pipe", "ignore"] });
+  const controller = new AbortController();
+  const promise = collectProcessOutput(proc, { timeoutMs: 500, terminationGraceMs: 50, forceKillWaitMs: 50, signal: controller.signal });
+  controller.abort();
+  await expect(promise).rejects.toThrow("cancelled");
+  expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
+});
+
+test.skipIf(process.platform !== "linux")("cancellation force-kills owned native descendants that ignore SIGTERM", async () => {
+  const childCode = "process.on('SIGTERM', () => {}); console.log(process.pid); setInterval(() => {}, 1000)";
+  const wrapperCode = `const {spawn} = require('node:child_process'); process.on('SIGTERM', () => {}); spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], {stdio: ['ignore', 'inherit', 'ignore']}); setInterval(() => {}, 1000);`;
+  const proc = spawnProcess(process.execPath, ["-e", wrapperCode], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const childPid = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (data: Buffer) => resolve(data.toString().trim()))));
+  const controller = new AbortController();
+  const pending = collectProcessOutput(proc, { timeoutMs: 1000, terminationGraceMs: 20, forceKillWaitMs: 20, signal: controller.signal, processGroup: true });
+  controller.abort();
+  await expect(pending).rejects.toThrow("cancelled");
+  // A killed orphan may briefly be a zombie until the OS reaps it; it cannot work.
+  let state: string | undefined;
+  try { state = readFileSync(`/proc/${childPid}/stat`, "utf8").split(") ")[1]?.split(" ")[0]; } catch { /* Reaped. */ }
+  expect(state === undefined || state === "Z").toBe(true);
+});
