@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fetchUsage, readCache, collectionContext } from "./fetch-usage";
@@ -230,6 +230,37 @@ test("an un-fingerprintable active config still permits a full collection withou
     expect(result?.cacheWriteWarning).toBe(true);
     expect(args).not.toContain("--since");
     expect(readCache(options.cachePath)).toBeNull();
+  } finally {
+    if (old === undefined) { delete process.env.CLAUDE_CONFIG_DIR; } else { process.env.CLAUDE_CONFIG_DIR = old; }
+  }
+});
+
+test("retargeting a configured pi store invalidates both window coverage and fallback", async () => {
+  const options = setup();
+  const old = process.env.CLAUDE_CONFIG_DIR;
+  const root = mkdtempSync(join(tmpdir(), "ledger-pi-store-"));
+  const first = join(root, "first");
+  const second = join(root, "second");
+  const link = join(root, "store");
+  mkdirSync(first);
+  mkdirSync(second);
+  symlinkSync(first, link, "junction");
+  try {
+    process.env.CLAUDE_CONFIG_DIR = root;
+    writeFileSync(join(root, "ccusage.json"), JSON.stringify({ pi: { stores: [{ name: "synthetic", path: link }] } }));
+    const empty = { exitCode: 0, stdout: '{"daily":[],"monthly":[]}' };
+    await fetchUsage({ ...options, spawn: async () => empty });
+    const prior = readFileSync(options.cachePath, "utf8");
+    unlinkSync(link);
+    symlinkSync(second, link, "junction");
+    expect(readCache(options.cachePath)).toBeNull();
+    let args: string[] = [];
+    expect(await fetchUsage({ ...options, spawn: async (command) => { args = command; return { exitCode: 1, stdout: "" }; } })).toBeNull();
+    expect(args).not.toContain("--since");
+    expect(readFileSync(options.cachePath, "utf8")).toBe(prior);
+    await fetchUsage({ ...options, spawn: async (command) => { args = command; return empty; } });
+    expect(args).not.toContain("--since");
+    expect(readCache(options.cachePath)).not.toBeNull();
   } finally {
     if (old === undefined) { delete process.env.CLAUDE_CONFIG_DIR; } else { process.env.CLAUDE_CONFIG_DIR = old; }
   }

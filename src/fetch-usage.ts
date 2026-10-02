@@ -673,6 +673,22 @@ export function collectionContext(command: string[] = DEFAULT_COMMAND): { finger
     }
     if (config) { break; }
   }
+  // Named pi stores are additional sources in the default all-agent command.
+  // Match upstream's comma-separated, existing-directory path list; config bytes
+  // alone cannot detect a symlink being retargeted to another history.
+  const stores = (config?.pi as { stores?: unknown } | undefined)?.stores;
+  const namedSources = Array.isArray(stores) ? stores.map((store: unknown) => {
+    const raw = (store as { path?: unknown } | null)?.path;
+    if (typeof raw !== "string") { return []; }
+    return raw.split(",").map((path) => path.trim()).filter(Boolean).flatMap((path) => {
+      if (path === "~" || path.startsWith("~/")) {
+        throw new Error("named store depends on temporary HOME; cache identity is unavailable");
+      }
+      const absolute = resolve(path);
+      try { if (!statSync(absolute).isDirectory()) { return []; } } catch { return []; }
+      try { return [realpathSync(absolute)]; } catch { return [absolute]; }
+    });
+  }) : [];
   const defaults = config?.defaults as Record<string, unknown> | undefined;
   const daily = (config?.commands as Record<string, Record<string, unknown>> | undefined)?.daily;
   const configuredZone = daily?.timezone ?? defaults?.timezone;
@@ -680,7 +696,7 @@ export function collectionContext(command: string[] = DEFAULT_COMMAND): { finger
   let windowSafe = JSON.stringify(command) === JSON.stringify(DEFAULT_COMMAND) && process.env.TZ === undefined &&
     ![defaults, daily].some((map) => map && ["since", "until", "last"].some((key) => map[key] !== undefined));
   try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); } catch { windowSafe = false; }
-  const fingerprint = createHash("sha256").update(JSON.stringify({ revision: 1, wrapper: CCUSAGE_WRAPPER_SHA256, native: expectedNativeCcusageHash(), command, sources, configs, cwd: process.cwd(), timezone, parentTZ: process.env.TZ })).digest("hex");
+  const fingerprint = createHash("sha256").update(JSON.stringify({ revision: 1, wrapper: CCUSAGE_WRAPPER_SHA256, native: expectedNativeCcusageHash(), command, sources, namedSources, configs, cwd: process.cwd(), timezone, parentTZ: process.env.TZ })).digest("hex");
   return { fingerprint, timezone, windowSafe };
 }
 
