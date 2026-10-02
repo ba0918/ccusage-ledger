@@ -38,8 +38,12 @@ Hono（Bun.serve / Node の @hono/node-server）   （ローカルサーバ）
 ## データ取得
 
 1. サーバ起動時に、依存として固定した `ccusage@20.0.26` の `node_modules/ccusage/src/cli.js` を実行中ランタイム（`process.execPath`。`bunx` / `bun run` は使わない。PATH ハイジャック対策としてランタイムを直接指定する）で `--json --sections daily,monthly --by-agent` 付きで子プロセスとして spawn して実行
-2. 標準出力の JSON を `~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）に上書き保存
+2. 初回は全履歴、以後は前月初日以降の daily / monthly を置換し、`~/.cache/ccusage-ledger/usage.json`（`XDG_CACHE_HOME` があればそれを基準）へ互換性・full 成功時刻のメタデータと一緒に atomic write で保存。取得で消えた期間も削除する
 3. サーバはこのキャッシュファイルを API 経由で配信
+
+最終 full 成功から 7 日以上経過した起動、または `--rebuild-cache` で全履歴を再照合する。古い編集・削除・backfill・価格更新は次の full 成功で反映され、失敗では期限を延長しない。価格設定は upstream のまま。設定・ソース等の fingerprint が異なるキャッシュを merge / fallback 配信しない。期間を指定したカスタム command / 設定や安全に判定できない timezone は full 取得に戻す。詳細は [起動取得・進捗仕様](startup-month-cache.md)。
+
+進捗は stderr TTY（CI 以外）の一行表示で、実ステージと monotonic 経過時間だけを出す。非 TTY は通常の行出力。Ctrl+C は子処理・サーバ・タイマーを終了して一時資源を削除し、ブラウザを後から開かない。fresh、valid empty、stale fallback、初回取得失敗、cache write warning を区別する。
 
 ## データ構造（ccusage JSON）
 
@@ -126,7 +130,7 @@ ccusage の JSON はトップレベルに `daily` / `weekly` / `monthly` など�
 - `--host` に短縮形は与えない。`-h`（help）と紛らわしい短縮形は、取り違えて意図せず LAN 公開する事故につながるため
 - 未知のオプションと、値を取らないフラグへの `=値` 指定はエラーにする（打ち間違いが黙って無視されないようにする）
 - LAN からアクセスする場合、bind アドレスを非ループバックに変更する（例: `--host 0.0.0.0` / `HOST=0.0.0.0`）。LAN 公開の判定は解決後の bind アドレスだけで行い、CLI オプションと環境変数で扱いを変えない（CLI 側がガードの緩い抜け道にならないようにする）
-- ローカル対話環境では起動時にブラウザを自動で開く。開き方はプラットフォーム別に切り替える（Windows は `cmd /c start`、macOS は `open`、それ以外は `xdg-open`）。非 TTY・SSH 接続時は開かず、Linux では `DISPLAY` / `WAYLAND_DISPLAY` があるときのみ開く
+- ローカル対話環境では usable な取得結果（valid empty を含む）または互換キャッシュ fallback が確定した後にブラウザを自動で開く。初回取得失敗やキャンセルでは開かない。開き方はプラットフォーム別に切り替える（Windows は `cmd /c start`、macOS は `open`、それ以外は `xdg-open`）。非 TTY・SSH 接続時は開かず、Linux では `DISPLAY` / `WAYLAND_DISPLAY` があるときのみ開く
 
 ## 配布（npm）とセキュリティ方針
 

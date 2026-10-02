@@ -43,6 +43,7 @@ npx ccusage-ledger --port 4000
 |---|---|
 | `--host <address>` | Bind address (default: `127.0.0.1`, also accepts `--host=<address>`). Takes precedence over the `HOST` env var |
 | `-p`, `--port <number>` | Port to listen on (default: `3737`, also accepts `--port=<number>`). Takes precedence over the `PORT` env var |
+| `--rebuild-cache` | Reconcile the entire usage history, including older edits and pricing changes |
 | `-h`, `--help` | Show usage and exit |
 
 `--host` has no short form on purpose, so it cannot be confused with `-h` (help) and expose the dashboard by accident. A non-loopback `--host` goes through exactly the same guards as `HOST` — see [About LAN exposure](#about-lan-exposure).
@@ -98,7 +99,16 @@ Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working 
 
 ## Data
 
-The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.26`) directly to fetch the full history and caches it at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
+The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.26`) directly and keeps a private aggregate cache at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
+
+The first collection reads full history. Repeat startups refresh from the first day of the previous calendar month, replacing all daily and monthly records in that coverage, including deleted or now-empty periods. Earlier months stay cached. Monthly totals still come from ccusage itself.
+
+Run `npx ccusage-ledger --rebuild-cache` to reconcile older edits, deletions, backfills, or pricing changes immediately. Otherwise the next startup at least seven days after the last successful full collection rebuilds the history. Failed collections do not advance that deadline. Upstream pricing behavior is preserved, so historical costs outside the refreshed months may remain stale until reconciliation.
+
+Cache metadata is stored atomically with the data and fingerprints the pinned implementation, aggregation revision, command, discovered configuration, source directories, working directory, and timezone; it does not store raw configuration or source paths. Incompatible source/configuration caches are neither merged nor served as fallback. Legacy aggregate caches can remain explicitly stale fallback while a full collection is attempted. Custom commands, configured date limits, or a timezone that cannot safely be matched disable window collection. The child still excludes `TZ`; when the parent sets it, collection conservatively uses the full command. If configuration cannot be fingerprinted within the bounded read, full collection remains available without cache reuse or persistence. Configured named pi store directories are included in source identity; stores using `~` or `~/` also take this conservative full-collection path because their upstream home is temporary.
+
+Startup shows observed stages and elapsed monotonic time on a single stderr line in an interactive terminal. CI/nonterminal runs use ordinary lines. Fresh data, valid empty data, stale fallback, initial failure, and cache-write warnings have distinct outcomes. The browser opens only after usable fresh/fallback data is ready. Ctrl+C cancels collection and its child processes, clears the display, removes temporary resources, and prevents browser opening. The collection timeout remains 60 seconds.
+
 
 The child process gets an empty temporary `HOME` and only a small allowlist of non-secret env vars (`PATH`, `TERM`, `TMPDIR`, etc.) plus the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` or API keys — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. At startup the installed ccusage wrapper is sha256-verified against a pinned value on every platform, and the platform native binary against a per-platform table (all 6 platforms shipped by ccusage@20.0.26 are registered; on an unregistered platform startup is refused unless `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` is set).
 

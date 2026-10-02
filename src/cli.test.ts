@@ -286,3 +286,8 @@ describe("cli sourceLabel / hostSetting", () => {
     expect(hostSetting("127.0.0.1", "default")).toBe("host 127.0.0.1");
   });
 });
+
+test("--rebuild-cache is a valueless opt-in", () => {
+  expect(parseArgs(["--rebuild-cache"]).rebuildCache).toBe(true);
+  expect(() => parseArgs(["--rebuild-cache=yes"])).toThrow("does not take a value");
+});

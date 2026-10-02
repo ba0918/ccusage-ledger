@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readSync } from "node:fs";
 
+import { createStartupProgress } from "./startup-progress";
 import { messageOf } from "./errors";
 import { DEFAULT_COMMAND, fetchUsage } from "./fetch-usage";
 import { browserUrl, displayHostname, openBrowser, shouldAutoOpen } from "./open-browser";
@@ -104,6 +105,7 @@ export interface CliOptions {
   host?: string;
   port?: string;
   help: boolean;
+  rebuildCache?: boolean;
 }
 
 // 値を取るオプションの表。名前ごとに分岐を書くと「= 形式の対応漏れ」「次トークンを
@@ -115,8 +117,9 @@ const VALUE_OPTIONS: Record<string, { key: "host" | "port"; example: string }> =
   "-p": { key: "port", example: String(DEFAULT_PORT) },
 };
 
-const FLAG_OPTIONS: Record<string, "help"> = {
+const FLAG_OPTIONS: Record<string, "help" | "rebuildCache"> = {
   "--help": "help",
+  "--rebuild-cache": "rebuildCache",
   "-h": "help",
 };
 
@@ -125,6 +128,7 @@ export const USAGE = `Usage: ccusage-ledger [options]
 Options:
       --host <address>  Bind address (default: ${DEFAULT_HOST}, env: HOST)
   -p, --port <number>   Port to listen on (default: ${DEFAULT_PORT}, env: PORT)
+      --rebuild-cache   Reconcile the entire usage history
   -h, --help            Show this help
 
 Environment:
@@ -234,51 +238,71 @@ export async function main(): Promise<void> {
   }
 
   const app = createApp({ rootDir, cachePath, hostname, port });
+  const controller = new AbortController();
+  const progress = createStartupProgress();
+  const cancel = (): void => controller.abort();
+  process.on("SIGINT", cancel);
+  process.on("SIGTERM", cancel);
+  try {
 
-  // bind する。Bun 実行時は Bun.serve（requestIP を提供）、Node 実行時は @hono/node-server を使う
-  // bind 失敗はランタイムを問わずここで案内文言に変換する（Bun / Node で 2 箇所に散らさない）
-  const boundPort = await startServer(app, hostname, port).catch((error: unknown) => {
-    throw bindError(error instanceof Error ? error : new Error(String(error)), port);
-  });
+    // bind する。Bun 実行時は Bun.serve（requestIP を提供）、Node 実行時は @hono/node-server を使う
+    // bind 失敗はランタイムを問わずここで案内文言に変換する（Bun / Node で 2 箇所に散らさない）
+    const boundPort = await startServer(app, hostname, port, controller.signal).catch((error: unknown) => {
+      throw bindError(error instanceof Error ? error : new Error(String(error)), port);
+    });
 
-  // ループバック TCP ポートは同一マシンの全ローカルユーザー/プロセスから閲覧できる。
-  // 共有マシンでは他のローカルユーザーが /api/usage の全履歴を読めるため、その旨を起動時に警告する
-  // （認証は意図的に実装していない。境界は「画面に届ける人」の制限で担保する設計。AGENTS.md 参照）
-  if (isLoopbackHost(hostname)) {
-    console.warn(
-      "NOTE: the dashboard is bound to loopback and is readable by any local user/process on this machine. " +
-        "On a shared machine this exposes your ccusage usage data to other local users.",
+    // ループバック TCP ポートは同一マシンの全ローカルユーザー/プロセスから閲覧できる。
+    // 共有マシンでは他のローカルユーザーが /api/usage の全履歴を読めるため、その旨を起動時に警告する
+    // （認証は意図的に実装していない。境界は「画面に届ける人」の制限で担保する設計。AGENTS.md 参照）
+    if (isLoopbackHost(hostname)) {
+      console.warn(
+        "NOTE: the dashboard is bound to loopback and is readable by any local user/process on this machine. " +
+          "On a shared machine this exposes your ccusage usage data to other local users.",
+      );
+    }
+
+    const result = await fetchUsage({
+      command: DEFAULT_COMMAND,
+      cachePath,
+      rebuildCache: cli.rebuildCache,
+      signal: controller.signal,
+      onStage: progress.stage,
+      onWarning: progress.warn,
+    });
+    controller.signal.throwIfAborted();
+    // Always replace preloaded data, including a now-incompatible fallback.
+    app.setUsageBody(JSON.stringify(projectUsageData(result?.data ?? { daily: [], monthly: [] })));
+    const empty = result !== null && !(result.data.daily?.length || result.data.monthly?.length);
+    const outcome = result === null ? "Unavailable" : result.source === "cache" ? "Ready (stale cache)" : empty ? "Ready (empty data)" : "Ready";
+    progress.finish(
+      `${outcome}: ccusage ledger: http://${displayHostname(hostname)}:${boundPort}` +
+        `${sourceLabel("host", hostSource)}${sourceLabel("port", portSource)}`,
     );
-  }
+    if (result === null) {
+      console.warn("WARN: failed to fetch ccusage data and no compatible cache exists. /api/usage will return an empty dataset.");
+    } else {
+      console.log(`Data source: ${result.source === "fresh" ? "ccusage cli.js (fresh)" : "cache (stale; collection failed)"}${empty ? "; empty dataset" : ""}${result.cacheWriteWarning ? "; cache write failed" : ""}`);
+    }
 
-  // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）。
-  // fresh のときだけ usageBody を差し替える。cache フォールバック時は createApp が起動時に
-  // 同じ readCache で既に読み込んでいるため、重複読み込み・再設定をしない
-  const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath });
-  if (result !== null && result.source === "fresh") {
-    app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
-  }
-
-  console.log(
-    `ccusage ledger: http://${displayHostname(hostname)}:${boundPort}` +
-      `${sourceLabel("host", hostSource)}${sourceLabel("port", portSource)}`,
-  );
-  if (result === null) {
-    console.warn("WARN: failed to fetch ccusage data and no cache exists. /api/usage will return an empty dataset.");
-  } else {
-    console.log(`Data source: ${result.source === "fresh" ? "ccusage cli.js (fresh)" : "cache"}`);
-  }
-
-  const autoOpenEnv = {
-    SSH_CONNECTION: process.env.SSH_CONNECTION,
-    SSH_TTY: process.env.SSH_TTY,
-    DISPLAY: process.env.DISPLAY,
-    WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
-    isTTY: Boolean(process.stdout.isTTY),
-    platform: process.platform,
-  };
-  if (shouldAutoOpen(autoOpenEnv)) {
-    openBrowser(browserUrl(hostname, boundPort));
+    const autoOpenEnv = {
+      SSH_CONNECTION: process.env.SSH_CONNECTION,
+      SSH_TTY: process.env.SSH_TTY,
+      DISPLAY: process.env.DISPLAY,
+      WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
+      isTTY: Boolean(process.stdout.isTTY),
+      platform: process.platform,
+    };
+    if (result !== null && !controller.signal.aborted && shouldAutoOpen(autoOpenEnv)) {
+      openBrowser(browserUrl(hostname, boundPort));
+    }
+  } catch (error) {
+    if (!controller.signal.aborted) { throw error; }
+    progress.finish("Cancelled startup.");
+    process.exitCode = 130;
+  } finally {
+    progress.dispose();
+    process.off("SIGINT", cancel);
+    process.off("SIGTERM", cancel);
   }
 }
 

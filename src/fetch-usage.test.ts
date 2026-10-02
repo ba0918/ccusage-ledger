@@ -319,7 +319,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
     await fetchUsage({ cachePath, spawn });
 
     expect(statSync(cachePath).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
   });
 
   test("キャッシュは白リスト投影済みで保存する（totals などの未知フィールドを永続化しない）", async () => {
@@ -359,7 +359,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
 
     // 書き込み成功し、攻撃者の symlink は置き換えられていない
     expect(existsSync(cachePath)).toBe(true);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
     expect(lstatSync(decoy).isSymbolicLink()).toBe(true);
   });
 
@@ -375,7 +375,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
 
     // 共有パーミッションのままキャッシュを書かない（fail-closed: 自分所有なら 0700 に直す）
     expect(statSync(cacheDir).mode & 0o777).toBe(0o700);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
   });
 
   test("キャッシュディレクトリが他人所有なら書き込まない（fail-closed）", async () => {
@@ -417,7 +417,7 @@ describe("fetchUsage", () => {
     expect(result!.source).toBe("fresh");
     expect(result!.data.daily).toHaveLength(3);
     expect(result!.data).toEqual(PROJECTED);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
   });
 
   test("取得失敗時は既存キャッシュへフォールバックする", async () => {
@@ -603,4 +603,28 @@ describe("spawn デフォルト（stdout 上限）", () => {
     const text = await readStdoutWithLimit(reader as ReadableStream<Uint8Array>, 1024);
     expect(text).toBe("hello");
   });
+});
+
+test("cancellation terminates and reaps a running collection before returning", async () => {
+  const proc = spawnProcess(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: ["ignore", "pipe", "ignore"] });
+  const controller = new AbortController();
+  const promise = collectProcessOutput(proc, { timeoutMs: 500, terminationGraceMs: 50, forceKillWaitMs: 50, signal: controller.signal });
+  controller.abort();
+  await expect(promise).rejects.toThrow("cancelled");
+  expect(proc.exitCode !== null || proc.signalCode !== null).toBe(true);
+});
+
+test.skipIf(process.platform !== "linux")("cancellation force-kills owned native descendants that ignore SIGTERM", async () => {
+  const childCode = "process.on('SIGTERM', () => {}); console.log(process.pid); setInterval(() => {}, 1000)";
+  const wrapperCode = `const {spawn} = require('node:child_process'); process.on('SIGTERM', () => {}); spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], {stdio: ['ignore', 'inherit', 'ignore']}); setInterval(() => {}, 1000);`;
+  const proc = spawnProcess(process.execPath, ["-e", wrapperCode], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+  const childPid = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (data: Buffer) => resolve(data.toString().trim()))));
+  const controller = new AbortController();
+  const pending = collectProcessOutput(proc, { timeoutMs: 1000, terminationGraceMs: 20, forceKillWaitMs: 20, signal: controller.signal, processGroup: true });
+  controller.abort();
+  await expect(pending).rejects.toThrow("cancelled");
+  // A killed orphan may briefly be a zombie until the OS reaps it; it cannot work.
+  let state: string | undefined;
+  try { state = readFileSync(`/proc/${childPid}/stat`, "utf8").split(") ")[1]?.split(" ")[0]; } catch { /* Reaped. */ }
+  expect(state === undefined || state === "Z").toBe(true);
 });

@@ -571,7 +571,8 @@ export function bindError(error: Error, port: number): Error {
 // bind 失敗の案内文言への変換は呼び出し側（main）で 1 回だけ行う。Bun は同期 throw、
 // Node は error イベントと通知経路が違うが、async 関数の拒否として同じ形で表に出るため、
 // ここでランタイムごとに包み直す必要はない
-export async function startServer(app: AppWithUsage, hostname: string, port: number): Promise<number> {
+export async function startServer(app: AppWithUsage, hostname: string, port: number, signal?: AbortSignal): Promise<number> {
+  signal?.throwIfAborted();
   if (isBun()) {
     const server = Bun.serve({
       hostname,
@@ -579,6 +580,7 @@ export async function startServer(app: AppWithUsage, hostname: string, port: num
       // Bun サーバが接続情報（requestIP を含む）を fetch の第二引数で提供する
       fetch: (request, server) => app(request, server as unknown),
     });
+    signal?.addEventListener("abort", () => { server.stop(true); }, { once: true });
     return server.port ?? port;
   }
 
@@ -601,6 +603,12 @@ export async function startServer(app: AppWithUsage, hostname: string, port: num
         resolve(info.port);
       },
     );
+    const close = (): void => {
+      server.close();
+      (server as { closeAllConnections?: () => void }).closeAllConnections?.();
+    };
+    signal?.addEventListener("abort", close, { once: true });
+    if (signal?.aborted) { close(); }
     server.on("error", (error: Error) => {
       // bind 後のサーバーエラーで reject しても解決済みで無視されるため、起動後は明示的に
       // ログへ出す（error リスナーがある間 Node は throw しないので、黙って消える）
