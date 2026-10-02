@@ -42,6 +42,6 @@
   "dependencies": {
     "@hono/node-server": "2.1.1",
     "ccusage": "20.0.20",
-    "hono": "4.13.5"
+    "hono": "4.13.10"
   }
 }
