@@ -43,6 +43,7 @@ npx ccusage-ledger --port 4000
 |---|---|
 | `--host <address>` | Bind address (default: `127.0.0.1`, also accepts `--host=<address>`). Takes precedence over the `HOST` env var |
 | `-p`, `--port <number>` | Port to listen on (default: `3737`, also accepts `--port=<number>`). Takes precedence over the `PORT` env var |
+| `--rebuild-cache` | Reconcile the entire usage history, including older edits and pricing changes |
 | `-h`, `--help` | Show usage and exit |
 
 `--host` has no short form on purpose, so it cannot be confused with `-h` (help) and expose the dashboard by accident. A non-loopback `--host` goes through exactly the same guards as `HOST` — see [About LAN exposure](#about-lan-exposure).

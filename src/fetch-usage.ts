@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, closeSync, chmodSync, readdirSync, statSync, lstatSync, fstatSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, closeSync, chmodSync, readdirSync, statSync, lstatSync, fstatSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, sep, resolve } from "node:path";
+import { refreshSince, replaceCoverage, type CacheMetadata } from "./month-cache";
 import { messageOf } from "./errors";
 import { PACKAGE_DIR, defaultCachePath, isUnderBase } from "./paths";
 import type { UsageData } from "./types";
@@ -21,11 +22,14 @@ export interface FetchUsageOptions {
   command?: string[];
   cachePath?: string;
   spawn?: SpawnFn;
+  now?: Date;
+  rebuildCache?: boolean;
 }
 
 export interface FetchUsageResult {
   data: UsageData;
   source: "fresh" | "cache";
+  metadata?: CacheMetadata;
 }
 
 // セクション集合は usage-data.ts の SECTIONS と常に一致させる（検証と取得がずれるとキャッシュが常に無効化される）
@@ -450,16 +454,28 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
   const cachePath = options.cachePath ?? defaultCachePath(process.env);
   const spawn = options.spawn ?? defaultSpawn;
 
+  const now = options.now ?? new Date();
+  let context: ReturnType<typeof collectionContext>;
+  try { context = collectionContext(command); } catch {
+    console.warn("WARN: cannot verify usage cache configuration; no compatible cache is available");
+    return null;
+  }
+  const { fingerprint, timezone, windowSafe } = context;
+  const cached = readCache(cachePath, fingerprint);
+  const since = !options.rebuildCache && windowSafe ? refreshSince(now, cached?.metadata, fingerprint, timezone) : null;
+  const args = since ? [...command, "--since", since.replaceAll("-", "")] : command;
   try {
-    const result = await spawn(command);
+    const result = await spawn(args);
     if (result.exitCode === 0) {
       const parsed: unknown = JSON.parse(result.stdout);
       if (isUsageData(parsed)) {
         // キャッシュは白リスト投影済みで保存する（未知フィールドをディスクに永続化しない）。
         // 取得結果も投影済みを返すため、配信側で再投影しても冪等になる
-        const projected = projectUsageData(parsed);
+        const fresh = projectUsageData(parsed);
+        const projected = since && cached ? replaceCoverage(cached.data, fresh, since) : fresh;
+        const metadata: CacheMetadata = { version: 1, refreshedAt: now.getTime(), fingerprint, fullAt: since ? cached!.metadata!.fullAt : now.getTime() };
         try {
-          writeCache(cachePath, projected);
+          writeCache(cachePath, { ...projected, _ledger: metadata });
         } catch (error) {
           // キャッシュ書き込み失敗はベストエフォートで扱う。取得済みの新鮮データを捨てずに返す
           console.warn(`WARN: failed to write usage cache: ${messageOf(error)}`);
@@ -483,7 +499,7 @@ export async function fetchUsage(options: FetchUsageOptions = {}): Promise<Fetch
     }
   }
 
-  return readCache(cachePath);
+  return cached;
 }
 
 // ディレクトリのパーミッションが 0700（所有者のみ読み書き可）かどうか。
@@ -534,7 +550,7 @@ export function assertSafeCacheDir(
 // 片方だけが変わる事故を防ぐため、MAX_STDOUT_BYTES から導出する
 export const MAX_CACHE_BYTES = MAX_STDOUT_BYTES;
 
-function writeCache(cachePath: string, data: UsageData): void {
+function writeCache(cachePath: string, data: UsageData & { _ledger?: FetchUsageResult["metadata"] }): void {
   const cacheDir = dirname(cachePath);
   mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
   // 共有ディレクトリ（例: 0755 の ~/.cache）にキャッシュを書くと他ユーザーから読まれる/改ざんされる。
@@ -550,22 +566,69 @@ function writeCache(cachePath: string, data: UsageData): void {
   // キャッシュは JSON.parse で読むだけなので、可読性のためのインデントを付けない
   // （巨大な全履歴を 1 ファイルに書く場面で、文字列生成時間・ファイルサイズ・一時メモリを削る）
   const tmpPath = `${cachePath}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  const serialized = JSON.stringify(data);
+  if (Buffer.byteLength(serialized) > MAX_CACHE_BYTES) { throw new Error("usage cache is too large"); }
   const fd = openSync(tmpPath, "wx", 0o600);
   try {
-    writeSync(fd, JSON.stringify(data));
-    closeSync(fd);
-  } catch (error) {
-    closeSync(fd);
-    throw error;
+    try { writeFileSync(fd, serialized); } finally { closeSync(fd); }
+    renameSync(tmpPath, cachePath);
+  } finally {
+    rmSync(tmpPath, { force: true });
   }
-  renameSync(tmpPath, cachePath);
 }
 
 // キャッシュを安全条件（所有権・0700・サイズ上限）付きで読み込む単一実装。
 // server.ts の createApp もこの関数を共用するため、起動時読み込みと fetchUsage の
 // フォールバックで同一の検証列が走る（検証ロジックの二重実装を避ける）
-export function readCache(cachePath: string): FetchUsageResult | null {
+// Match config discovery in the pinned Rust ConfigContext: cwd first, then each
+// CLAUDE_CONFIG_DIR. Temporary HOME has no user config. Hash bytes, never paths
+// or configuration contents in the persisted metadata.
+export function collectionContext(command: string[] = DEFAULT_COMMAND): { fingerprint: string; timezone: string; windowSafe: boolean } {
+  const env = spawnEnv(process.env, { userHome: userHomeDir(process.env), emptyHome: "<temporary-home>" });
+  const sources = Object.fromEntries(Object.keys(AGENT_DATA_DIR_DEFAULTS).map((key) => [key, env[key]?.split(",").map((path) => {
+    const absolute = resolve(path.trim());
+    try { return realpathSync(absolute); } catch { return absolute; }
+  })]));
+  const explicit = command.find((arg) => arg.startsWith("--config="))?.slice(9) ?? (command.includes("--config") ? command[command.indexOf("--config") + 1] : undefined);
+  const configPaths = explicit ? [explicit] : [join(process.cwd(), ".ccusage", "ccusage.json"), ...(env.CLAUDE_CONFIG_DIR ?? "").split(",").map((dir) => dir.trim()).filter(Boolean).map((dir) => join(dir, "ccusage.json"))];
+  let config: Record<string, unknown> | undefined;
+  const configs = configPaths.map((path) => {
+    try {
+      const fd = openSync(path, "r");
+      try {
+        if (fstatSync(fd).size > 1024 * 1024) { throw new Error("ccusage config exceeds fingerprint limit"); }
+        const bytes = readFileSync(fd);
+        if (!config) {
+          try {
+            const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+            if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) { config = parsed as Record<string, unknown>; }
+          } catch { /* Upstream skips malformed JSON during discovery. */ }
+        }
+        return [resolve(path), createHash("sha256").update(bytes).digest("hex")];
+      } finally { closeSync(fd); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") { return [resolve(path), null]; }
+      throw error;
+    }
+  });
+  const defaults = config?.defaults as Record<string, unknown> | undefined;
+  const daily = (config?.commands as Record<string, Record<string, unknown>> | undefined)?.daily;
+  const configuredZone = daily?.timezone ?? defaults?.timezone;
+  const timezone = typeof configuredZone === "string" && configuredZone !== "local" ? configuredZone : Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let windowSafe = JSON.stringify(command) === JSON.stringify(DEFAULT_COMMAND) && process.env.TZ === undefined &&
+    ![defaults, daily].some((map) => map && ["since", "until", "last"].some((key) => map[key] !== undefined));
+  try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(); } catch { windowSafe = false; }
+  const fingerprint = createHash("sha256").update(JSON.stringify({ revision: 1, wrapper: CCUSAGE_WRAPPER_SHA256, native: expectedNativeCcusageHash(), command, sources, configs, cwd: process.cwd(), timezone, parentTZ: process.env.TZ })).digest("hex");
+  return { fingerprint, timezone, windowSafe };
+}
+
+export function collectionFingerprint(command: string[] = DEFAULT_COMMAND): string {
+  return collectionContext(command).fingerprint;
+}
+
+export function readCache(cachePath: string, fingerprint?: string): FetchUsageResult | null {
   try {
+    fingerprint ??= collectionFingerprint();
     // 読み込み側も書込み側と同じ安全条件（所有権・0700・サイズ）で検証してから読む。
     // 他人に書かれた/偽造されたキャッシュを配信しない（fail-closed）
     assertSafeCacheDir(dirname(cachePath));
@@ -588,8 +651,10 @@ export function readCache(cachePath: string): FetchUsageResult | null {
       closeSync(fd);
     }
     if (!isUsageData(parsed)) { throw new Error("invalid usage data shape"); }
+    const metadata = (parsed as { _ledger?: FetchUsageResult["metadata"] })._ledger;
+    if (metadata?.fingerprint !== undefined && metadata.fingerprint !== fingerprint) { return null; }
     // キャッシュは投影済みで保存されているが、旧形式のキャッシュへの安全策として再投影する（冪等）
-    return { data: projectUsageData(parsed), source: "cache" };
+    return { data: projectUsageData(parsed), source: "cache", metadata: (parsed as { _ledger?: FetchUsageResult["metadata"] })._ledger };
   } catch {
     return null;
   }

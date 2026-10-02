@@ -319,7 +319,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
     await fetchUsage({ cachePath, spawn });
 
     expect(statSync(cachePath).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
   });
 
   test("キャッシュは白リスト投影済みで保存する（totals などの未知フィールドを永続化しない）", async () => {
@@ -359,7 +359,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
 
     // 書き込み成功し、攻撃者の symlink は置き換えられていない
     expect(existsSync(cachePath)).toBe(true);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
     expect(lstatSync(decoy).isSymbolicLink()).toBe(true);
   });
 
@@ -375,7 +375,7 @@ describe("fetchUsage キャッシュ書き込み", () => {
 
     // 共有パーミッションのままキャッシュを書かない（fail-closed: 自分所有なら 0700 に直す）
     expect(statSync(cacheDir).mode & 0o777).toBe(0o700);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
   });
 
   test("キャッシュディレクトリが他人所有なら書き込まない（fail-closed）", async () => {
@@ -417,7 +417,7 @@ describe("fetchUsage", () => {
     expect(result!.source).toBe("fresh");
     expect(result!.data.daily).toHaveLength(3);
     expect(result!.data).toEqual(PROJECTED);
-    expect(JSON.parse(readFileSync(cachePath, "utf-8"))).toEqual(PROJECTED);
+    expect(projectUsageData(JSON.parse(readFileSync(cachePath, "utf-8")))).toEqual(PROJECTED);
   });
 
   test("取得失敗時は既存キャッシュへフォールバックする", async () => {

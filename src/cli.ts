@@ -104,6 +104,7 @@ export interface CliOptions {
   host?: string;
   port?: string;
   help: boolean;
+  rebuildCache?: boolean;
 }
 
 // 値を取るオプションの表。名前ごとに分岐を書くと「= 形式の対応漏れ」「次トークンを
@@ -115,8 +116,9 @@ const VALUE_OPTIONS: Record<string, { key: "host" | "port"; example: string }> =
   "-p": { key: "port", example: String(DEFAULT_PORT) },
 };
 
-const FLAG_OPTIONS: Record<string, "help"> = {
+const FLAG_OPTIONS: Record<string, "help" | "rebuildCache"> = {
   "--help": "help",
+  "--rebuild-cache": "rebuildCache",
   "-h": "help",
 };
 
@@ -125,6 +127,7 @@ export const USAGE = `Usage: ccusage-ledger [options]
 Options:
       --host <address>  Bind address (default: ${DEFAULT_HOST}, env: HOST)
   -p, --port <number>   Port to listen on (default: ${DEFAULT_PORT}, env: PORT)
+      --rebuild-cache   Reconcile the entire usage history
   -h, --help            Show this help
 
 Environment:
@@ -254,7 +257,7 @@ export async function main(): Promise<void> {
   // bind 後にデータ取得する（最大60s 掛かってもサーバーは起動したまま。取得後はメモリの usageBody を更新）。
   // fresh のときだけ usageBody を差し替える。cache フォールバック時は createApp が起動時に
   // 同じ readCache で既に読み込んでいるため、重複読み込み・再設定をしない
-  const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath });
+  const result = await fetchUsage({ command: DEFAULT_COMMAND, cachePath, rebuildCache: cli.rebuildCache });
   if (result !== null && result.source === "fresh") {
     app.setUsageBody(JSON.stringify(projectUsageData(result.data)));
   }
