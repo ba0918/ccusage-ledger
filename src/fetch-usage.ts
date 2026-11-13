@@ -127,25 +127,25 @@ export function ccusageCliPath(packageDir: string = PACKAGE_DIR): string {
   return join(ccusagePackageRoot(packageDir), "src", "cli.js");
 }
 
-// ccusage@20.0.26 のラッパー（node_modules/ccusage = cli.js + config-schema.json）の sha256。
+// ccusage@20.0.49 のラッパー（node_modules/ccusage = cli.js + config-schema.json）の sha256。
 // ラッパーは cli.js + config-schema.json のみでプラットフォーム非依存のため、全プラットフォームで
 // 同一の固定値を照合できる。依存を更新した場合は再計算して必ず更新する
 // （更新は `bun run refresh-ccusage-hashes` で行う。手順は scripts/refresh-ccusage-hashes.ts 参照）
-export const CCUSAGE_WRAPPER_SHA256 = "88bb22ad57a8cc1239276dc5582c709be8b4ea655fd64b791f4da9e8e6903291";
+export const CCUSAGE_WRAPPER_SHA256 = "51f665eaf4cef405df703d0f7aa5d3e4ba022848d50b009b679fe820b3d7002c";
 
 // 実行プラットフォームの native バイナリ（@ccusage/ccusage-<platform>-<arch>）の sha256。
 // native バイナリはプラットフォームごとに内容が異なるため、プラットフォーム別テーブルで照合する。
-// 登録値は ccusage@20.0.26 の npm tarball（registry が配布する実体）から、hashPackageFiles と
+// 登録値は ccusage@20.0.49 の npm tarball（registry が配布する実体）から、hashPackageFiles と
 // 同一アルゴリズムで計算した固定値（linux-x64 は node_modules 実インストールとの一致を裏取り済み）。
 // 依存を更新した場合は全プラットフォームで再計算して必ず更新する
 // （更新は `bun run refresh-ccusage-hashes` で行う。手順は scripts/refresh-ccusage-hashes.ts 参照）
 export const CCUSAGE_NATIVE_SHA256_BY_PLATFORM: Record<string, string> = {
-  "darwin-arm64": "6576f782ba32bc317185dc4f5341a09cee6f995648983b5d9d066ba0883add30",
-  "darwin-x64": "bb1138eda38eb98d65c7361e52d00b72d4431865e3dea54ad5f30ba5a6c71ac0",
-  "linux-arm64": "1402183579660ff60810de71ee0d833113d8338cca3f2e62282d3fe1d89979f8",
-  "linux-x64": "81706e6d2d0cf92c76f0a5d3aa2b067afbc33327216055b625b84ddef8cc72c9",
-  "win32-arm64": "38db0275f59b1c481c31745f384cf7850ea472436ad719d57b56a70d2e96e3ea",
-  "win32-x64": "4a0b39f19171de08bd3a2de9f10356301f01df4efa3c2b05961502e12d8651e3",
+  "darwin-arm64": "99178e0f8fd12ae7a6e2a67c1281857356d7feab4525ecb649780e1250c29620",
+  "darwin-x64": "682cccce2d77ea8bf225a78693b69d08dc24aebfdf2fe363968b017ae0bdce23",
+  "linux-arm64": "cb5dc6835d37a639ef50aa1a758089cc5a34b3eea800201107e3ccb6e3141704",
+  "linux-x64": "39c7dd1087bb86bf735b5defb9cc1ac4412d92df2a42cada54ef9f752a83e3ca",
+  "win32-arm64": "bba487ed657ff433f3ec0b77c536f8bbf4d7deb2fc939253dde8b2bc9c25e728",
+  "win32-x64": "a8d71688b2a3229320f7c978cafe937ff56aa8c5e5f4dcf440e541d79a81b7b4",
 };
 
 // プラットフォームキー（"linux-x64" 等）。native バイナリのハッシュ対象と期待値テーブルの
@@ -183,7 +183,7 @@ export function nativeIntegrityPolicy(
 }
 
 // ccusage の native バイナリパッケージ名（@ccusage/ccusage-<platform>-<arch>）。
-// ccusage@20.0.26 の cli.js が持つ解決ロジックと同一のものを、実行せずにハッシュ対象を
+// ccusage@20.0.49 の cli.js が持つ解決ロジックと同一のものを、実行せずにハッシュ対象を
 // 特定するために直接持つ（cli.js はラッパーで、実処理はこの native バイナリが担う）
 export function ccusageNativePackageName(
   platform: string = process.platform,
