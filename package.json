@@ -40,8 +40,8 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@hono/node-server": "2.1.5",
+    "@hono/node-server": "2.1.6",
     "ccusage": "20.0.26",
-    "hono": "4.13.11"
+    "hono": "4.13.17"
   }
 }
