@@ -99,7 +99,7 @@ Outputs a single HTML file to `dist/ccusage-ledger.html` in the current working 
 
 ## Data
 
-The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.26`) directly and keeps a private aggregate cache at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
+The server runs [ccusage](https://github.com/ccusage/ccusage) (pinned as `ccusage@20.0.49`) directly and keeps a private aggregate cache at `~/.cache/ccusage-ledger/usage.json` (based on `XDG_CACHE_HOME` if set). Secrets such as API keys are not passed to the child process.
 
 The first collection reads full history. Repeat startups refresh from the first day of the previous calendar month, replacing all daily and monthly records in that coverage, including deleted or now-empty periods. Earlier months stay cached. Monthly totals still come from ccusage itself.
 
@@ -110,7 +110,7 @@ Cache metadata is stored atomically with the data and fingerprints the pinned im
 Startup shows observed stages and elapsed monotonic time on a single stderr line in an interactive terminal. CI/nonterminal runs use ordinary lines. Fresh data, valid empty data, stale fallback, initial failure, and cache-write warnings have distinct outcomes. The browser opens only after usable fresh/fallback data is ready. Ctrl+C cancels collection and its child processes, clears the display, removes temporary resources, and prevents browser opening. The collection timeout remains 60 seconds.
 
 
-The child process gets an empty temporary `HOME` and only a small allowlist of non-secret env vars (`PATH`, `TERM`, `TMPDIR`, etc.) plus the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` or API keys — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. At startup the installed ccusage wrapper is sha256-verified against a pinned value on every platform, and the platform native binary against a per-platform table (all 6 platforms shipped by ccusage@20.0.26 are registered; on an unregistered platform startup is refused unless `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` is set).
+The child process gets an empty temporary `HOME` and only a small allowlist of non-secret env vars (`PATH`, `TERM`, `TMPDIR`, etc.) plus the agent data-directory env vars (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_DATA_DIR`, `OPENCODE_DATA_DIR`) — never the real `HOME` or API keys — so it cannot discover `~/.ssh`, `~/.aws`, etc. by default. At startup the installed ccusage wrapper is sha256-verified against a pinned value on every platform, and the platform native binary against a per-platform table (all 6 platforms shipped by ccusage@20.0.49 are registered; on an unregistered platform startup is refused unless `CCUSAGE_LEDGER_ALLOW_UNVERIFIED_NATIVE=1` is set).
 
 > This guards against accidental access and post-install tampering. The hash constant ships inside the artifact it verifies, so a supply-chain compromise of the pinned release itself (or a same-user attacker) is out of scope for this control.
 
